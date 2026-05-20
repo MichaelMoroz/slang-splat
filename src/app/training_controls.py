@@ -149,7 +149,6 @@ TRAIN_OPTIMIZER_CONTROL_DEFS = (
     _control("position_random_step_opacity_gate_sharpness", "input_float", "Noise Gate Sharpness", {"value": _default("position_random_step_opacity_gate_sharpness"), "step": 1.0, "step_fast": 10.0, "format": "%.4g"}, group=TRAINING_OPTIMIZER_GROUP, build_args=("position_random_step_opacity_gate_sharpness",), optimizer_tab="Regularization"),
     _control("max_anisotropy", "input_float", "Max Anisotropy", {"value": _default("max_anisotropy"), "step": 0.1, "step_fast": 0.5, "format": "%.6f"}, group=TRAINING_OPTIMIZER_GROUP, build_args=("max_anisotropy",), optimizer_tab="Regularization"),
     _control("grad_clip", "input_float", "Grad Clip", {"value": _default("grad_clip"), "step": 0.1, "step_fast": 1.0, "format": "%.4f"}, group=TRAINING_OPTIMIZER_GROUP, build_args=("grad_clip",), optimizer_tab="Regularization"),
-    _control("grad_norm_clip", "input_float", "Grad Norm Clip", {"value": _default("grad_norm_clip"), "step": 0.1, "step_fast": 1.0, "format": "%.4f"}, group=TRAINING_OPTIMIZER_GROUP, build_args=("grad_norm_clip",), optimizer_tab="Regularization"),
     _control("max_update", "input_float", "Max Update", {"value": _default("max_update"), "step": 1e-4, "step_fast": 1e-3, "format": "%.8f"}, group=TRAINING_OPTIMIZER_GROUP, build_args=("max_update",), optimizer_tab="Regularization"),
 )
 
@@ -376,7 +375,6 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--beta1", dest="beta1", build_arg="beta1", type=float, default=_default("beta1")),
     _cli_arg("--beta2", dest="beta2", build_arg="beta2", type=float, default=_default("beta2")),
     _cli_arg("--grad-clip", dest="grad_clip", build_arg="grad_clip", type=float, default=_default("grad_clip")),
-    _cli_arg("--grad-norm-clip", dest="grad_norm_clip", build_arg="grad_norm_clip", type=float, default=_default("grad_norm_clip")),
     _cli_arg("--max-update", dest="max_update", build_arg="max_update", type=float, default=_default("max_update")),
     _cli_arg("--min-opacity", dest="min_opacity", build_arg="min_opacity", type=float, default=_default("min_opacity")),
     _cli_arg("--max-opacity", dest="max_opacity", build_arg="max_opacity", type=float, default=_default("max_opacity")),

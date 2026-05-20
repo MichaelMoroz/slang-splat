@@ -501,7 +501,6 @@ def _photometric_status_texts(viewer: object) -> dict[str, str]:
             "photometric_status": "Photometric: not initialized",
             "photometric_time": "Time: n/a",
             "photometric_loss": "Loss: n/a",
-            "photometric_regularization": "Regularization: n/a",
             "photometric_pairs": "Pairs: n/a",
         }
     prepare_active = bool(getattr(trainer, "pair_dataset_prepare_active", False))
@@ -516,7 +515,6 @@ def _photometric_status_texts(viewer: object) -> dict[str, str]:
             "photometric_status": f"Photometric: {status} | frames={completed_frames:,}/{total_frames:,}",
             "photometric_time": "Time: n/a",
             "photometric_loss": "Loss: n/a",
-            "photometric_regularization": "Regularization: n/a",
             "photometric_pairs": f"Pairs: {len(getattr(trainer, 'pair_pool', ())):,}",
         }
     state = trainer.state
@@ -529,7 +527,6 @@ def _photometric_status_texts(viewer: object) -> dict[str, str]:
         ),
         "photometric_time": f"Time: {elapsed:.2f}s",
         "photometric_loss": f"Loss: last={_format_photometric_metric(float(state.last_loss))} | ema={_format_photometric_metric(float(state.ema_loss))}",
-        "photometric_regularization": f"Regularization: {_format_photometric_metric(float(state.last_regularization_loss))}",
         "photometric_pairs": f"Pairs: {int(state.last_pair_count):,}",
     }
 

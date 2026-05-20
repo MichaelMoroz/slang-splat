@@ -51,7 +51,6 @@ def test_build_training_params_preserves_numeric_ranges():
         beta1=2.0,
         beta2=-1.0,
         grad_clip=0.0,
-        grad_norm_clip=1e9,
         max_update=0.0,
         max_anisotropy=0.5,
         min_opacity=0.8,
@@ -89,7 +88,6 @@ def test_build_training_params_preserves_numeric_ranges():
     assert params.adam.beta1 == 2.0
     assert params.adam.beta2 == -1.0
     assert params.stability.grad_component_clip == 0.0
-    assert params.stability.grad_norm_clip == 1e9
     assert params.stability.max_update == 0.0
     assert params.stability.max_anisotropy == 0.5
     assert params.stability.min_opacity == 0.8

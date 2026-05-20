@@ -316,8 +316,8 @@ def test_photometric_param_settings_disable_selected_aspects() -> None:
     )
     settings = photometric_compensation_module.build_ppisp_param_settings(hparams).view(np.float32)
     lrs = np.asarray(settings[:, 0], dtype=np.float32)
-    regularize = np.asarray(settings[:, 8], dtype=np.float32)
-    regularize_l1 = np.asarray(settings[:, 9], dtype=np.float32)
+    regularize = np.asarray(settings[:, 5], dtype=np.float32)
+    regularize_l1 = np.asarray(settings[:, 6], dtype=np.float32)
 
     offset = 0
     for spec in photometric_compensation_module.PPISP_FIELD_SPECS:
@@ -465,7 +465,6 @@ def test_photometric_packed_adam_converges_per_frame_params(device) -> None:
                 "g_Grads": trainer.buffers["grads"],
                 "g_Stability": {
                     "gradComponentClip": float(hparams.grad_component_clip),
-                    "gradNormClip": float(hparams.grad_norm_clip),
                     "maxUpdate": float(hparams.max_update),
                     "hugeValue": float(hparams.huge_value),
                 },
@@ -792,38 +791,6 @@ def test_photometric_exposure_l1_regularization_uses_target_average_exposure(dev
 
     assert final_distance < start_distance * 0.5
     assert float(np.mean(final_exposure, dtype=np.float64)) == pytest.approx(0.5, abs=0.1)
-
-
-def test_photometric_gpu_regularization_loss_uses_target_average_exposure(device) -> None:
-    recon, frames = _make_reconstruction()
-    hparams = PhotometricCompensationHyperParams(
-        batch_pair_count=4,
-        neighborhood_size=3,
-        learning_rate=0.2,
-        target_average_exposure=0.5,
-        exposure_lr_mul=1.0,
-        exposure_regularize_weight=0.3,
-        vignette_regularize_weight=0.0,
-        chroma_regularize_weight=0.0,
-        crf_regularize_weight=0.0,
-        exposure_l1_weight=0.2,
-        vignette_l1_weight=0.0,
-        chroma_l1_weight=0.0,
-        crf_l1_weight=0.0,
-    )
-    trainer = PhotometricCompensationTrainer(device, recon, frames, hparams=hparams, seed=43)
-
-    params = identity_packed_ppisp_params(len(frames))
-    params[0, :] = np.array((-0.5, -0.25, -0.75), dtype=np.float32)
-    trainer.replace_packed_params(params)
-
-    trainer.zero_grads()
-    trainer.step_optimizer(1)
-
-    expected = photometric_compensation_module._photometric_regularization_loss(trainer.read_packed_params(), trainer.hparams)
-
-    assert trainer.state.last_regularization_loss == pytest.approx(expected, rel=1e-5, abs=1e-6)
-
 
 def test_photometric_gamma_l1_regularization_shrinks_toward_gamma_identity(device) -> None:
     recon, frames = _make_reconstruction()

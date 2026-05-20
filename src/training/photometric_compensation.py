@@ -26,7 +26,7 @@ from ..utility import (
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .ppisp import PPISP_FIELD_SPECS, PPISP_PACKED_PARAM_COUNT, PPISPTonemapParams, PPISPTonemapProvider
 
-_PARAM_SETTINGS_U32_WIDTH = 10
+_PARAM_SETTINGS_U32_WIDTH = 7
 _PAIR_GRAD_THREADS = 64
 _PHOTOMETRIC_SHADER_PATH = SHADER_ROOT / "utility" / "photometric_compensation.slang"
 _PHOTOMETRIC_FULL_PAIR_DATASET_MAX_PAIRS = 1_000_000
@@ -89,7 +89,6 @@ class PhotometricCompensationHyperParams:
     crf_l1_weight: float = 0.02
     gamma_l1_weight: float | None = None
     grad_component_clip: float = 10.0
-    grad_norm_clip: float = 10.0
     max_update: float = 0.05
     huge_value: float = 1e8
     ema_decay: float = 0.95
@@ -126,7 +125,6 @@ class PhotometricCompensationHyperParams:
             self.gamma_l1_weight = float(self.crf_l1_weight)
         self.gamma_l1_weight = float(max(self.gamma_l1_weight, 0.0))
         self.grad_component_clip = float(max(self.grad_component_clip, 1e-6))
-        self.grad_norm_clip = float(max(self.grad_norm_clip, 1e-6))
         self.max_update = float(max(self.max_update, 1e-6))
         self.huge_value = float(max(self.huge_value, 1.0))
         self.ema_decay = float(np.clip(self.ema_decay, 0.0, 0.9999))
@@ -137,7 +135,6 @@ class PhotometricCompensationState:
     step: int = 0
     last_loss: float = float("nan")
     ema_loss: float = float("nan")
-    last_regularization_loss: float = float("nan")
     last_pair_count: int = 0
 
 
@@ -703,8 +700,6 @@ def _field_value_bounds(attr: str) -> tuple[float, float]:
 
 def build_ppisp_param_settings(hparams: PhotometricCompensationHyperParams) -> np.ndarray:
     settings = np.zeros((PPISP_PACKED_PARAM_COUNT, _PARAM_SETTINGS_U32_WIDTH), dtype=np.uint32)
-    group_starts = np.arange(PPISP_PACKED_PARAM_COUNT, dtype=np.uint32)
-    group_sizes = np.ones((PPISP_PACKED_PARAM_COUNT,), dtype=np.uint32)
     lrs = np.zeros((PPISP_PACKED_PARAM_COUNT,), dtype=np.float32)
     value_mins = np.zeros((PPISP_PACKED_PARAM_COUNT,), dtype=np.float32)
     value_maxs = np.zeros((PPISP_PACKED_PARAM_COUNT,), dtype=np.float32)
@@ -714,8 +709,6 @@ def build_ppisp_param_settings(hparams: PhotometricCompensationHyperParams) -> n
 
     offset = 0
     for spec in PPISP_FIELD_SPECS:
-        group_starts[offset : offset + spec.size] = np.uint32(offset)
-        group_sizes[offset : offset + spec.size] = np.uint32(spec.size)
         value_min, value_max = _field_value_bounds(spec.attr)
         lrs[offset : offset + spec.size] = float(hparams.learning_rate) * _field_lr_mul(spec.attr, hparams)
         value_mins[offset : offset + spec.size] = float(value_min)
@@ -728,14 +721,11 @@ def build_ppisp_param_settings(hparams: PhotometricCompensationHyperParams) -> n
 
     settings[:, 0] = _float_bits(lrs)
     settings[:, 1] = _float_bits(float(hparams.grad_component_clip))
-    settings[:, 2] = _float_bits(float(hparams.grad_norm_clip))
-    settings[:, 3] = _float_bits(value_mins)
-    settings[:, 4] = _float_bits(value_maxs)
-    settings[:, 5] = group_starts
-    settings[:, 6] = group_sizes
-    settings[:, 7] = _float_bits(regularize_toward)
-    settings[:, 8] = _float_bits(regularize_weight)
-    settings[:, 9] = _float_bits(regularize_l1)
+    settings[:, 2] = _float_bits(value_mins)
+    settings[:, 3] = _float_bits(value_maxs)
+    settings[:, 4] = _float_bits(regularize_toward)
+    settings[:, 5] = _float_bits(regularize_weight)
+    settings[:, 6] = _float_bits(regularize_l1)
     return settings
 
 
@@ -802,24 +792,6 @@ def _pair_pool_batch(pair_pool: PhotometricObservationPairPool) -> PhotometricOb
         xy_a=np.ascontiguousarray(pair_pool.xy_a, dtype=np.float32),
         xy_b=np.ascontiguousarray(pair_pool.xy_b, dtype=np.float32),
     )
-
-
-def _photometric_regularization_loss(params: np.ndarray, hparams: PhotometricCompensationHyperParams) -> float:
-    packed = np.asarray(params, dtype=np.float32).reshape(PPISP_PACKED_PARAM_COUNT, -1)
-    total = 0.0
-    for spec in PPISP_FIELD_SPECS:
-        layout = next(layout for layout in _FIELD_LAYOUTS if layout.attr == spec.attr)
-        values = packed[layout.start : layout.stop]
-        regularize_toward = _PPISP_IDENTITY_VALUES[layout.start : layout.stop].reshape(layout.size, 1)
-        if spec.attr == "exposureEv":
-            regularize_toward = np.full((layout.size, 1), float(hparams.target_average_exposure), dtype=np.float32)
-        regularize_weight = _field_regularize_weight(spec.attr, hparams)
-        l1_weight = _field_l1_weight(spec.attr, hparams)
-        if regularize_weight > 0.0:
-            total += 0.5 * regularize_weight * float(np.mean(np.square(values - regularize_toward), dtype=np.float64))
-        if l1_weight > 0.0:
-            total += l1_weight * float(np.mean(np.abs(values - regularize_toward), dtype=np.float64))
-    return float(total)
 
 
 class PhotometricCompensationTrainer:
@@ -892,7 +864,6 @@ class PhotometricCompensationTrainer:
     def _runtime_hparams(self) -> AdamRuntimeHyperParams:
         return AdamRuntimeHyperParams(
             grad_component_clip=float(self.hparams.grad_component_clip),
-            grad_norm_clip=float(self.hparams.grad_norm_clip),
             max_update=float(self.hparams.max_update),
             huge_value=float(self.hparams.huge_value),
         )
@@ -1212,7 +1183,6 @@ class PhotometricCompensationTrainer:
         else:
             self.state.ema_loss = float(self.state.last_loss)
         packed = self.read_packed_params()
-        self.state.last_regularization_loss = self.adam_optimizer.read_regularization_loss()
         self._provider.replace_packed_params(packed)
 
     def _upload_param_settings(self) -> None:
@@ -1284,7 +1254,6 @@ class PhotometricCompensationTrainer:
             param_settings=self._buffers["param_settings"],
             param_settings_count=PPISP_PACKED_PARAM_COUNT,
             step_index=int(step_index),
-            track_regularization_loss=True,
         )
 
     def step_optimizer(self, step_index: int | None = None) -> None:
@@ -1294,7 +1263,6 @@ class PhotometricCompensationTrainer:
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         self.state.step = int(resolved_step)
-        self.state.last_regularization_loss = self.adam_optimizer.read_regularization_loss()
         packed = self.read_packed_params()
         self._provider.replace_packed_params(packed)
 

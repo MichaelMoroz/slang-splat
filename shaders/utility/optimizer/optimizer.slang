@@ -8,16 +8,12 @@ uniform uint g_OptimizerElementCount;
 uniform uint g_OptimizerParamCount;
 uniform uint g_OptimizerParamGroupSize;
 uniform uint g_OptimizerParamSettingsCount;
-uniform uint g_OptimizerTrackRegularizationLoss;
 
 uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
 uniform RWStructuredBuffer<float> g_OptimizerParams;
 uniform RWStructuredBuffer<float> g_OptimizerGrads;
 uniform RWStructuredBuffer<float2> g_OptimizerAdamMoments;
-uniform RWStructuredBuffer<float> g_OptimizerRegularizationLoss;
 uniform RWStructuredBuffer<float> g_OptimizerElementGradNorms;
-
-groupshared float gsRegularizationLoss[ADAM_GROUP_SIZE];
 
 uint optimizer_param_index(uint elementCount, uint paramId, uint elementId)
 {
@@ -27,11 +23,6 @@ uint optimizer_param_index(uint elementCount, uint paramId, uint elementId)
 float load_optimizer_grad(uint paramId, uint elementId)
 {
     return g_OptimizerGrads[optimizer_param_index(g_OptimizerElementCount, paramId, elementId)];
-}
-
-void store_optimizer_grad(uint paramId, uint elementId, float value)
-{
-    g_OptimizerGrads[optimizer_param_index(g_OptimizerElementCount, paramId, elementId)] = value;
 }
 
 float optimizer_shrink_abs(float value, float delta)
@@ -65,41 +56,6 @@ void csComputePackedElementGradNorms(uint3 dispatchThreadID : SV_DispatchThreadI
 
 [shader("compute")]
 [numthreads(ADAM_GROUP_SIZE, 1, 1)]
-void csClipPackedParamGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    uint elementId = dispatchThreadID.x;
-    if (elementId >= g_OptimizerElementCount) return;
-
-    [unroll] for (uint paramId = 0u; paramId < g_OptimizerParamSettingsCount; paramId++)
-    {
-        OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
-        if (settings.groupStart != paramId) continue;
-        if (settings.groupSize == 3u || settings.groupSize == 4u)
-        {
-            float4 grad = float4(
-                sanitize_scalar(load_optimizer_grad(paramId + 0u, elementId), g_OptimizerParamSettings[paramId + 0u].gradClipAbs),
-                sanitize_scalar(load_optimizer_grad(paramId + 1u, elementId), g_OptimizerParamSettings[paramId + 1u].gradClipAbs),
-                sanitize_scalar(load_optimizer_grad(paramId + 2u, elementId), g_OptimizerParamSettings[paramId + 2u].gradClipAbs),
-                settings.groupSize == 4u ? sanitize_scalar(load_optimizer_grad(paramId + 3u, elementId), g_OptimizerParamSettings[paramId + 3u].gradClipAbs) : 0.0
-            );
-            grad = clip_norm4(grad, settings.gradNormClip);
-            store_optimizer_grad(paramId + 0u, elementId, grad.x);
-            store_optimizer_grad(paramId + 1u, elementId, grad.y);
-            store_optimizer_grad(paramId + 2u, elementId, grad.z);
-            if (settings.groupSize == 4u) store_optimizer_grad(paramId + 3u, elementId, grad.w);
-        } else {
-            [unroll] for (uint offset = 0u; offset < 4u; offset++)
-            {
-                if (offset >= settings.groupSize) break;
-                uint groupParamId = paramId + offset;
-                store_optimizer_grad(groupParamId, elementId, sanitize_scalar(load_optimizer_grad(groupParamId, elementId), g_OptimizerParamSettings[groupParamId].gradClipAbs));
-            }
-        }
-    }
-}
-
-[shader("compute")]
-[numthreads(ADAM_GROUP_SIZE, 1, 1)]
 void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint paramIndex = dispatchThreadID.x;
@@ -128,56 +84,14 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     float update = settings.lr * mHat / (sqrt(max(vHat, 0.0)) + ADAM_EPSILON);
     update = clamp(sanitize_scalar(update, g_OptimizerRuntime.maxUpdate), -g_OptimizerRuntime.maxUpdate, g_OptimizerRuntime.maxUpdate);
     float nextValue = sanitize_scalar(value - update, g_OptimizerRuntime.hugeValue);
-    g_OptimizerParams[paramIndex] = clamp(nextValue, settings.valueMin, settings.valueMax);
+    if (settings.regularizeTowardWeight > 0.0)
+    {
+        nextValue = lerp(nextValue, settings.regularizeTowardValue, saturate(settings.lr * settings.regularizeTowardWeight));
+    }
+    if (settings.regularizeL1Weight > 0.0)
+    {
+        nextValue = optimizer_shrink_abs_toward(nextValue, settings.regularizeTowardValue, settings.lr * settings.regularizeL1Weight);
+    }
+    g_OptimizerParams[paramIndex] = clamp(sanitize_scalar(nextValue, g_OptimizerRuntime.hugeValue), settings.valueMin, settings.valueMax);
     g_OptimizerAdamMoments[paramIndex] = moments;
-}
-
-[shader("compute")]
-[numthreads(ADAM_GROUP_SIZE, 1, 1)]
-void csRegularizePacked(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID)
-{
-    uint paramIndex = dispatchThreadID.x;
-    bool trackRegularizationLoss = g_OptimizerTrackRegularizationLoss != 0u;
-    bool valid = paramIndex < g_OptimizerParamCount;
-    float regularizationLoss = 0.0;
-
-    if (valid)
-    {
-        uint paramGroupSize = max(g_OptimizerParamGroupSize, 1u);
-        uint paramId = paramIndex / paramGroupSize;
-        OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
-        float value = sanitize_scalar(g_OptimizerParams[paramIndex], g_OptimizerRuntime.hugeValue);
-        if (settings.regularizeTowardWeight > 0.0)
-        {
-            value = lerp(value, settings.regularizeTowardValue, saturate(settings.lr * settings.regularizeTowardWeight));
-        }
-        if (settings.regularizeL1Weight > 0.0)
-        {
-            value = optimizer_shrink_abs_toward(value, settings.regularizeTowardValue, settings.lr * settings.regularizeL1Weight);
-        }
-        value = clamp(sanitize_scalar(value, g_OptimizerRuntime.hugeValue), settings.valueMin, settings.valueMax);
-        g_OptimizerParams[paramIndex] = value;
-
-        if (trackRegularizationLoss)
-        {
-            float delta = value - settings.regularizeTowardValue;
-            float normalization = 1.0 / max(float(max(settings.groupSize, 1u) * paramGroupSize), 1.0);
-            if (settings.regularizeTowardWeight > 0.0) regularizationLoss += 0.5 * settings.regularizeTowardWeight * delta * delta * normalization;
-            if (settings.regularizeL1Weight > 0.0) regularizationLoss += settings.regularizeL1Weight * abs(delta) * normalization;
-        }
-    }
-
-    if (!trackRegularizationLoss) return;
-
-    uint lane = groupThreadID.x;
-    gsRegularizationLoss[lane] = regularizationLoss;
-    GroupMemoryBarrierWithGroupSync();
-
-    [unroll] for (uint stride = ADAM_GROUP_SIZE >> 1u; stride > 0u; stride >>= 1u)
-    {
-        if (lane < stride) gsRegularizationLoss[lane] += gsRegularizationLoss[lane + stride];
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    if (lane == 0u && gsRegularizationLoss[0u] != 0.0) InterlockedAdd(g_OptimizerRegularizationLoss[0], gsRegularizationLoss[0u]);
 }

@@ -145,7 +145,6 @@ def build_training_params(
     beta1: float = TRAINING_BUILD_ARG_DEFAULTS["beta1"],
     beta2: float = TRAINING_BUILD_ARG_DEFAULTS["beta2"],
     grad_clip: float = TRAINING_BUILD_ARG_DEFAULTS["grad_clip"],
-    grad_norm_clip: float = TRAINING_BUILD_ARG_DEFAULTS["grad_norm_clip"],
     max_update: float = TRAINING_BUILD_ARG_DEFAULTS["max_update"],
     max_anisotropy: float = TRAINING_BUILD_ARG_DEFAULTS["max_anisotropy"],
     min_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["min_opacity"],
@@ -306,7 +305,6 @@ def build_training_params(
     )
     stability = StabilityHyperParams(
         grad_component_clip=float(grad_clip),
-        grad_norm_clip=float(grad_norm_clip),
         max_update=float(max_update),
         max_anisotropy=float(max_anisotropy),
         min_opacity=float(min_opacity),

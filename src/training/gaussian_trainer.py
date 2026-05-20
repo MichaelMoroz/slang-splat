@@ -10,7 +10,7 @@ import weakref
 import numpy as np
 import slangpy as spy
 
-from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, clamp_index, debug_region, defer_resource_release, dispatch, grow_capacity, load_compute_items, thread_count_1d, thread_count_2d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, clamp_index, debug_region, defer_resource_release, dispatch, load_compute_items, thread_count_1d, thread_count_2d
 from ..filter import SeparableGaussianBlur
 from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
@@ -45,6 +45,14 @@ TRAIN_BACKGROUND_MODE_RANDOM = 1
 SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0
 _REFINEMENT_HASH_INIT = 0x9E3779B9
 _REFINEMENT_HASH_MIX = 0x85EBCA6B
+
+
+def _grow_trainer_buffer_capacity(required: int, current: int) -> int:
+    needed = max(int(required), 1)
+    base = max(int(current), 0)
+    if base <= 0:
+        return needed
+    return max(needed, base + max(base // 16, 1))
 
 
 class _RefinementBufferView(Mapping[str, spy.Buffer]):
@@ -260,7 +268,7 @@ class AdamHyperParams:
 
 @dataclass(slots=True)
 class StabilityHyperParams:
-    grad_component_clip: float = 10.0; grad_norm_clip: float = 10.0; max_update: float = 0.05
+    grad_component_clip: float = 10.0; max_update: float = 0.05
     max_anisotropy: float = 32.0; min_opacity: float = 1e-4; max_opacity: float = 0.9999
     position_abs_max: float = 1e4; huge_value: float = 1e8; loss_grad_clip: float = 10.0
 
@@ -530,7 +538,6 @@ class GaussianTrainer:
     def _adam_runtime_hparams(self) -> AdamRuntimeHyperParams:
         return AdamRuntimeHyperParams(
             grad_component_clip=float(self.stability.grad_component_clip),
-            grad_norm_clip=float(self.stability.grad_norm_clip),
             max_update=float(self.stability.max_update),
             huge_value=float(self.stability.huge_value),
         )
@@ -1083,8 +1090,8 @@ class GaussianTrainer:
         count = max(int(splat_count), 1)
         required_batch_steps = max(int(batch_step_count), 1)
         if self._buffers and count <= self._splat_capacity and required_batch_steps <= self._batch_step_capacity: return
-        self._splat_capacity = grow_capacity(count, self._splat_capacity)
-        self._batch_step_capacity = grow_capacity(required_batch_steps, self._batch_step_capacity)
+        self._splat_capacity = _grow_trainer_buffer_capacity(count, self._splat_capacity)
+        self._batch_step_capacity = _grow_trainer_buffer_capacity(required_batch_steps, self._batch_step_capacity)
         self._buffers.setdefault("loss", alloc_buffer(self.device, name="trainer.loss", size=self._LOSS_SLOT_COUNT * 4, usage=RW_BUFFER_USAGE))
         defer_resource_release(self._buffers.get("batch_step_info"))
         self._buffers["batch_step_info"] = alloc_buffer(
@@ -1135,7 +1142,7 @@ class GaussianTrainer:
         required = max(int(splat_count), 1)
         if required <= self._refinement_splat_capacity:
             return
-        self._refinement_splat_capacity = grow_capacity(required, self._refinement_splat_capacity)
+        self._refinement_splat_capacity = _grow_trainer_buffer_capacity(required, self._refinement_splat_capacity)
         self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         contribution = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
         contribution.copy_from_numpy(np.zeros((self._refinement_splat_capacity, 4), dtype=np.uint32))
@@ -1178,7 +1185,7 @@ class GaussianTrainer:
         if "append_counter" not in self._refinement_buffers:
             self._refinement_buffers["append_counter"] = alloc_buffer(self.device, name="trainer.refinement.append_counter", size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if grow_splats or "clone_counts" not in self._refinement_buffers:
-            self._refinement_splat_capacity = grow_capacity(required_splats, self._refinement_splat_capacity)
+            self._refinement_splat_capacity = _grow_trainer_buffer_capacity(required_splats, self._refinement_splat_capacity)
             self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("splat_contribution", alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("splat_contribution_history", alloc_buffer(self.device, name="trainer.refinement.splat_contribution_history", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
@@ -1216,13 +1223,13 @@ class GaussianTrainer:
         if "refinement_weight_total" not in self._refinement_buffers:
             self._refinement_buffers["refinement_weight_total"] = alloc_buffer(self.device, name="trainer.refinement.weight_total", size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if grow_append or "append_params" not in self._refinement_buffers:
-            self._refinement_append_capacity = grow_capacity(required_append, self._refinement_append_capacity)
+            self._refinement_append_capacity = _grow_trainer_buffer_capacity(required_append, self._refinement_append_capacity)
             self._set_refinement_buffer("append_params", alloc_buffer(self.device, name="trainer.refinement.append_params", size=self._refinement_append_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("append_splat_age", alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=self._refinement_append_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "append_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["append_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=max(self._refinement_append_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if grow_output or "dst_splat_params" not in self._refinement_buffers:
-            self._refinement_output_capacity = grow_capacity(required_output, self._refinement_output_capacity)
+            self._refinement_output_capacity = _grow_trainer_buffer_capacity(required_output, self._refinement_output_capacity)
             self._set_refinement_buffer("dst_splat_params", alloc_buffer(self.device, name="trainer.refinement.dst_splat_params", size=self._refinement_output_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_age", alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_contribution_history", alloc_buffer(self.device, name="trainer.refinement.dst_splat_contribution_history", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
@@ -1236,7 +1243,7 @@ class GaussianTrainer:
         self._refinement_packed_param_bytes = packed_param_bytes
         self._ensure_splat_age_capacity(required_splats)
         if grow_cameras or "camera_rows" not in self._refinement_buffers:
-            self._refinement_camera_capacity = grow_capacity(required_camera_count, self._refinement_camera_capacity)
+            self._refinement_camera_capacity = _grow_trainer_buffer_capacity(required_camera_count, self._refinement_camera_capacity)
             self._set_refinement_buffer("camera_rows", alloc_buffer(
                 self.device,
                 name="trainer.refinement.camera_rows",
@@ -1259,7 +1266,7 @@ class GaussianTrainer:
         required = max(int(splat_count), 1)
         if not reset and "splat_age" in self._refinement_buffers and required <= self._refinement_splat_age_capacity:
             return
-        capacity = grow_capacity(required, self._refinement_splat_age_capacity)
+        capacity = _grow_trainer_buffer_capacity(required, self._refinement_splat_age_capacity)
         ages = np.ones((capacity,), dtype=np.float32)
         if not reset and "splat_age" in self._refinement_buffers:
             old_count = min(self._refinement_splat_age_capacity, capacity)
@@ -1965,15 +1972,6 @@ class GaussianTrainer:
                 step_index=int(step_index),
                 debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
             )
-            self.optimizer.dispatch_regularization(
-                encoder,
-                scene_buffers=self.renderer.scene_buffers,
-                splat_count=self._scene_count,
-                training_hparams=self.training,
-                frame_camera=frame_camera,
-                step_index=int(step_index),
-                splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
-            )
             self.optimizer.dispatch_projection(
                 encoder,
                 scene_buffers=self.renderer.scene_buffers,
@@ -1983,6 +1981,7 @@ class GaussianTrainer:
                 width=self.renderer.width if frame_camera is not None else None,
                 height=self.renderer.height if frame_camera is not None else None,
                 step_index=int(step_index),
+                splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
             )
 
     def initialize_scene_from_pointcloud(self, splat_count: int, init_hparams: GaussianInitHyperParams, seed: int) -> None:

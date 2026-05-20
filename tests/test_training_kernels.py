@@ -54,6 +54,17 @@ _SSIM_BLUR_WEIGHTS = np.array(
 )
 
 
+def test_trainer_buffer_capacity_growth_is_conservative() -> None:
+    grow = gaussian_trainer_module._grow_trainer_buffer_capacity
+
+    assert grow(0, 0) == 1
+    assert grow(1, 0) == 1
+    assert grow(5, 2) == 5
+    assert grow(6, 4) == 6
+    assert grow(5, 10) == 11
+    assert grow(70, 64) == 70
+
+
 def _target_refinement_hparams(scene_count: int, clone_budget: int, **overrides: object) -> TrainingHyperParams:
     resolved_scene_count = max(int(scene_count), 0)
     resolved_clone_budget = max(int(clone_budget), 0)

@@ -16,7 +16,7 @@ def _nonzero_denominator(value: float) -> float:
 
 
 class GaussianOptimizer:
-    _PARAM_SETTINGS_U32_WIDTH = 10
+    _PARAM_SETTINGS_U32_WIDTH = 7
     _threads = staticmethod(thread_count_1d)
 
     def __init__(self, device: spy.Device, renderer: GaussianRenderer, adam_hparams: Any, stability_hparams: Any) -> None:
@@ -36,7 +36,6 @@ class GaussianOptimizer:
             SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang",
             {
                 "project_params": "csProjectGaussianParams",
-                "regularize": "csRegularizeGaussianPacked",
             },
         )
 
@@ -44,7 +43,6 @@ class GaussianOptimizer:
         return {
             "g_Stability": {
                 "gradComponentClip": float(self.stability.grad_component_clip),
-                "gradNormClip": float(self.stability.grad_norm_clip),
                 "maxUpdate": float(self.stability.max_update),
                 "maxAnisotropy": float(self.stability.max_anisotropy),
                 "minOpacity": float(self.stability.min_opacity),
@@ -79,7 +77,6 @@ class GaussianOptimizer:
     def _param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0) -> np.ndarray:
         count = int(self.renderer.packed_trainable_param_count)
         settings = np.zeros((count, self._PARAM_SETTINGS_U32_WIDTH), dtype=np.uint32)
-        param_ids = np.arange(count, dtype=np.uint32)
         position_ids = np.asarray(self.renderer.PARAM_POSITION_IDS, dtype=np.intp)
         scale_ids = np.asarray(self.renderer.PARAM_SCALE_IDS, dtype=np.intp)
         rotation_ids = np.asarray(self.renderer.PARAM_ROTATION_IDS, dtype=np.intp)
@@ -116,25 +113,15 @@ class GaussianOptimizer:
         value_mins[raw_opacity_id] = self._raw_opacity_from_alpha(float(self.stability.min_opacity))
         value_maxs[raw_opacity_id] = self._raw_opacity_from_alpha(float(self.stability.max_opacity))
 
-        group_starts = param_ids.copy()
-        group_sizes = np.ones((count,), dtype=np.uint32)
-        for group_start, group_size in ((0, 3), (3, 3), (6, 4), (10, min(stored_sh_coeff_count * 3, 12)), (raw_opacity_id, 1)):
-            group_stop = min(group_start + int(group_size), count)
-            group_starts[group_start:group_stop] = np.uint32(group_start)
-            group_sizes[group_start:group_stop] = np.uint32(group_size)
-
         settings[:, 0] = self._float_bits(lrs * scale * param_scales)
         settings[:, 1] = self._float_bits(float(self.stability.grad_component_clip))
-        settings[:, 2] = self._float_bits(float(self.stability.grad_norm_clip))
-        settings[:, 3] = self._float_bits(value_mins)
-        settings[:, 4] = self._float_bits(value_maxs)
-        settings[:, 5] = group_starts
-        settings[:, 6] = group_sizes
+        settings[:, 2] = self._float_bits(value_mins)
+        settings[:, 3] = self._float_bits(value_maxs)
         if scale_l2_weight != 0.0:
-            settings[scale_ids, 7] = self._float_bits(scale_ref_value)
-            settings[scale_ids, 8] = self._float_bits(scale_l2_weight)
+            settings[scale_ids, 4] = self._float_bits(scale_ref_value)
+            settings[scale_ids, 5] = self._float_bits(scale_l2_weight)
         if sh1_weight != 0.0 and len(higher_sh_ids) > 0:
-            settings[higher_sh_ids, 9] = self._float_bits(sh1_weight)
+            settings[higher_sh_ids, 6] = self._float_bits(sh1_weight)
         return settings
 
     def _upload_param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0) -> None:
@@ -168,37 +155,6 @@ class GaussianOptimizer:
             scale_reg_reference=scale_reg_reference,
         )
 
-    def dispatch_regularization(
-        self,
-        encoder: spy.CommandEncoder,
-        *,
-        scene_buffers: dict[str, spy.Buffer],
-        splat_count: int,
-        training_hparams: Any,
-        frame_camera: Camera | None = None,
-        step_index: int = 0,
-        splat_contribution_buffer: spy.Buffer | None = None,
-    ) -> None:
-        camera_position = np.zeros((3,), dtype=np.float32) if frame_camera is None else np.asarray(frame_camera.position, dtype=np.float32).reshape(3)
-        push_step = 0.0 if frame_camera is None else float(resolve_position_push_away_from_camera_step(training_hparams, int(step_index)))
-        opacity_reg_weight = float(resolve_opacity_reg_weight(training_hparams, int(step_index)))
-        dispatch(
-            kernel=self._kernels["regularize"],
-            thread_count=self._threads(splat_count * self.renderer.packed_trainable_param_count),
-            vars={
-                "g_SplatParamsRW": scene_buffers["splat_params"],
-                "g_SplatCount": int(splat_count),
-                "g_StoredPackedParamCount": np.uint32(int(self.renderer.packed_trainable_param_count)),
-                "g_OptimizerParamSettings": self.param_settings,
-                **self._stability_vars(),
-                "g_GaussianOptimizerRegularization": spy.float3(float(training_hparams.scale_abs_reg_weight), opacity_reg_weight, push_step),
-                "g_GaussianOptimizerRegularizationCameraPosition": spy.float3(*camera_position.tolist()),
-                "g_GaussianOptimizerSplatContributionInfo": self.renderer.work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
-            },
-            command_encoder=encoder,
-            debug_label="Gaussian Regularize",
-            debug_color_index=63,
-        )
     @property
     def param_settings(self) -> spy.Buffer:
         return self._buffers["param_settings"]
@@ -218,6 +174,7 @@ class GaussianOptimizer:
         width: int | None = None,
         height: int | None = None,
         step_index: int = 0,
+        splat_contribution_buffer: spy.Buffer | None = None,
     ) -> None:
         camera_vars: dict[str, object]
         if frame_camera is None or width is None or height is None:
@@ -243,6 +200,9 @@ class GaussianOptimizer:
                 },
                 "g_EnableCurrentCameraScreenScaleCap": np.uint32(1),
             }
+        camera_position = np.zeros((3,), dtype=np.float32) if frame_camera is None else np.asarray(frame_camera.position, dtype=np.float32).reshape(3)
+        push_step = 0.0 if frame_camera is None else float(resolve_position_push_away_from_camera_step(training_hparams, int(step_index)))
+        opacity_reg_weight = float(resolve_opacity_reg_weight(training_hparams, int(step_index)))
         dispatch(
             kernel=self._kernels["project_params"],
             thread_count=self._threads(splat_count),
@@ -251,6 +211,9 @@ class GaussianOptimizer:
                 **camera_vars,
                 "g_SplatCount": int(splat_count),
                 "g_OptimizerParamSettings": self.param_settings,
+                "g_GaussianOptimizerRegularization": spy.float3(float(training_hparams.scale_abs_reg_weight), opacity_reg_weight, push_step),
+                "g_GaussianOptimizerRegularizationCameraPosition": spy.float3(*camera_position.tolist()),
+                "g_GaussianOptimizerSplatContributionInfo": self.renderer.work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
                 "g_MaxViewAngleSlope": float(math.tan(math.radians(float(resolve_max_visible_angle_deg(training_hparams, int(step_index)))))),
                 "g_RendererRadiusScale": float(self.renderer.radius_scale),
                 "g_SHBand": np.uint32(int(self.renderer.sh_band)),
@@ -259,6 +222,6 @@ class GaussianOptimizer:
                 **self._stability_vars(),
             },
             command_encoder=encoder,
-            debug_label="Gaussian Param Projection",
+            debug_label="Gaussian Post Step",
             debug_color_index=71,
         )

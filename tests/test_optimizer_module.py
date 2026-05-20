@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-_SETTINGS_U32_WIDTH = 10
+_SETTINGS_U32_WIDTH = 7
 
 
 def test_generic_packed_adam_converges_on_quadratic(device):
@@ -32,11 +32,8 @@ def test_generic_packed_adam_converges_on_quadratic(device):
     settings = np.zeros((param_count, _SETTINGS_U32_WIDTH), dtype=np.uint32)
     settings[:, 0] = lrs.view(np.uint32)
     settings[:, 1] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
-    settings[:, 2] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
-    settings[:, 3] = np.full((param_count,), -1e6, dtype=np.float32).view(np.uint32)
-    settings[:, 4] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
-    settings[:, 5] = np.arange(param_count, dtype=np.uint32)
-    settings[:, 6] = 1
+    settings[:, 2] = np.full((param_count,), -1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 3] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
     settings_buf.copy_from_numpy(settings)
 
     common_vars = {
@@ -46,7 +43,6 @@ def test_generic_packed_adam_converges_on_quadratic(device):
         "g_Grads": grads,
         "g_Stability": {
             "gradComponentClip": 1e6,
-            "gradNormClip": 1e6,
             "maxUpdate": 1.0,
             "hugeValue": 1e6,
         },
@@ -59,7 +55,6 @@ def test_generic_packed_adam_converges_on_quadratic(device):
         "g_OptimizerAdamMoments": adam_moments,
         "g_OptimizerRuntime": {
             "gradComponentClip": 1e6,
-            "gradNormClip": 1e6,
             "maxUpdate": 1.0,
             "hugeValue": 1e6,
         },
@@ -108,11 +103,8 @@ def test_generic_packed_adam_decays_zero_gradient_entries_with_existing_moments(
     settings = np.zeros((param_count, _SETTINGS_U32_WIDTH), dtype=np.uint32)
     settings[:, 0] = np.full((param_count,), 0.1, dtype=np.float32).view(np.uint32)
     settings[:, 1] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
-    settings[:, 2] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
-    settings[:, 3] = np.full((param_count,), -1e6, dtype=np.float32).view(np.uint32)
-    settings[:, 4] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
-    settings[:, 5] = np.arange(param_count, dtype=np.uint32)
-    settings[:, 6] = 1
+    settings[:, 2] = np.full((param_count,), -1e6, dtype=np.float32).view(np.uint32)
+    settings[:, 3] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
 
     params = device.create_buffer(size=param_count * 4, usage=usage)
     grads = device.create_buffer(size=param_count * 4, usage=usage)
@@ -130,7 +122,6 @@ def test_generic_packed_adam_decays_zero_gradient_entries_with_existing_moments(
             "g_OptimizerAdam": {"beta1": 0.9, "beta2": 0.999, "stepIndex": 7},
             "g_OptimizerRuntime": {
                 "gradComponentClip": 1e6,
-                "gradNormClip": 1e6,
                 "maxUpdate": 1.0,
                 "hugeValue": 1e6,
             },

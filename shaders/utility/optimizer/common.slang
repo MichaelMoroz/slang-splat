@@ -10,7 +10,6 @@ static const float ADAM_EPSILON = 1e-8;
 struct OptimizerRuntimeParams
 {
     float gradComponentClip;
-    float gradNormClip;
     float maxUpdate;
     float hugeValue;
 };
@@ -19,11 +18,8 @@ struct OptimizerParamSettings
 {
     float lr;
     float gradClipAbs;
-    float gradNormClip;
     float valueMin;
     float valueMax;
-    uint groupStart;
-    uint groupSize;
     float regularizeTowardValue;
     float regularizeTowardWeight;
     float regularizeL1Weight;

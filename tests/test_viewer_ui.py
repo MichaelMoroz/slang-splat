@@ -1301,7 +1301,6 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
             "photometric_enable_vignette": True,
             "photometric_enable_gamma": True,
             "photometric_grad_component_clip": 10.0,
-            "photometric_grad_norm_clip": 10.0,
             "photometric_max_update": 0.05,
             "photometric_exposure_lr_mul": 0.5,
             "photometric_vignette_lr_mul": 0.25,
@@ -1334,7 +1333,6 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     assert viewer_ui._values["photometric_enable_vignette"] is True
     assert viewer_ui._values["photometric_enable_gamma"] is False
     assert viewer_ui._values["photometric_grad_component_clip"] == 9.0
-    assert viewer_ui._values["photometric_grad_norm_clip"] == 8.0
     assert viewer_ui._values["photometric_max_update"] == 0.07
     assert viewer_ui._values["photometric_exposure_lr_mul"] == 0.9
     assert viewer_ui._values["photometric_vignette_lr_mul"] == 0.8
@@ -1408,7 +1406,6 @@ def test_photometric_compensation_window_draws_prepare_progress(monkeypatch) -> 
             "photometric_min_track_length": 2,
             "photometric_learning_rate": 0.05,
             "photometric_grad_component_clip": 10.0,
-            "photometric_grad_norm_clip": 10.0,
             "photometric_max_update": 0.05,
             "photometric_exposure_lr_mul": 0.5,
             "photometric_vignette_lr_mul": 0.25,

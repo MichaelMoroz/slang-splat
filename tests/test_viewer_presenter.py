@@ -1081,7 +1081,7 @@ def test_update_ui_text_publishes_photometric_prepare_progress(monkeypatch) -> N
         pair_dataset_prepare_completed_frames=2,
         pair_pool=(0, 1, 2),
         provider=SimpleNamespace(params_for_frame=lambda _frame_index: presenter.PPISPTonemapParams()),
-        state=SimpleNamespace(step=0, last_loss=0.0, ema_loss=0.0, last_regularization_loss=0.0, last_pair_count=0),
+        state=SimpleNamespace(step=0, last_loss=0.0, ema_loss=0.0, last_pair_count=0),
     )
     monkeypatch.setattr(presenter, "_photometric_param_sections", lambda _viewer: ())
 

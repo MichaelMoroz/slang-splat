@@ -1399,6 +1399,9 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     renderer = _create_renderer(viewer, int(width), int(height), allow_debug_overlays=False)
     enc = viewer.device.create_command_encoder()
     previous_renderer.copy_scene_state_to(enc, renderer)
+    copy_prepass_capacity_state_to = getattr(previous_renderer, "copy_prepass_capacity_state_to", None)
+    if callable(copy_prepass_capacity_state_to):
+        copy_prepass_capacity_state_to(renderer)
     viewer.device.submit_command_buffer(enc.finish())
     viewer.s.training_renderer = renderer
     viewer.s.trainer.rebind_renderer(renderer)
@@ -2688,7 +2691,6 @@ def _photometric_hparams(viewer: object) -> PhotometricCompensationHyperParams:
         crf_l1_weight=float(values.get("photometric_crf_l1_weight", defaults.crf_l1_weight)),
         gamma_l1_weight=float(values.get("photometric_gamma_l1_weight", defaults.gamma_l1_weight)),
         grad_component_clip=float(values.get("photometric_grad_component_clip", defaults.grad_component_clip)),
-        grad_norm_clip=float(values.get("photometric_grad_norm_clip", defaults.grad_norm_clip)),
         max_update=float(values.get("photometric_max_update", defaults.max_update)),
     )
 
@@ -2722,7 +2724,6 @@ def sync_photometric_hparams(viewer: object) -> None:
         crf_l1_weight=float(values.get("photometric_crf_l1_weight", trainer.hparams.crf_l1_weight)),
         gamma_l1_weight=float(values.get("photometric_gamma_l1_weight", trainer.hparams.gamma_l1_weight)),
         grad_component_clip=float(values.get("photometric_grad_component_clip", trainer.hparams.grad_component_clip)),
-        grad_norm_clip=float(values.get("photometric_grad_norm_clip", trainer.hparams.grad_norm_clip)),
         max_update=float(values.get("photometric_max_update", trainer.hparams.max_update)),
     )
 

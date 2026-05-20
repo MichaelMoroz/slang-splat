@@ -21,7 +21,6 @@ static const uint SH_CLAMP_HASH_Z = 0x7f4a7c15u;
 struct GaussianStabilityParams
 {
     float gradComponentClip;
-    float gradNormClip;
     float maxUpdate;
     float maxAnisotropy;
     float minOpacity;
@@ -182,54 +181,6 @@ float gaussian_optimizer_relative_current_contribution(uint splatId)
 }
 
 [shader("compute")]
-[numthreads(ADAM_GROUP_SIZE, 1, 1)]
-void csRegularizeGaussianPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    uint paramIndex = dispatchThreadID.x;
-    uint packedParamCount = g_SplatCount * g_StoredPackedParamCount;
-    if (paramIndex >= packedParamCount) return;
-
-    uint splatCount = max(g_SplatCount, 1u);
-    uint paramId = paramIndex / splatCount;
-    uint splatId = paramIndex % splatCount;
-    uint rawOpacityParamId = packed_raw_opacity_param_id(g_StoredPackedParamCount);
-    OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
-    float value = sanitize_scalar(g_SplatParamsRW[paramIndex], g_Stability.hugeValue);
-
-    if (paramId >= PARAM_POSITION_X && paramId <= PARAM_POSITION_Z && g_GaussianOptimizerRegularization.z != 0.0)
-    {
-        float3 position = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_POSITION_X, splatId);
-        float3 logScale = load_splat_param_vector<3>(g_SplatParamsRW, g_SplatCount, PARAM_SCALE_X, splatId);
-        float3 cameraToSplat = position - g_GaussianOptimizerRegularizationCameraPosition;
-        float distance2 = dot(cameraToSplat, cameraToSplat);
-        if (distance2 > TINY_VALUE * TINY_VALUE)
-        {
-            float avgLogScale = (sanitize_scalar(logScale.x, g_Stability.hugeValue) + sanitize_scalar(logScale.y, g_Stability.hugeValue) + sanitize_scalar(logScale.z, g_Stability.hugeValue)) * (1.0 / 3.0);
-            float geoMeanScale = sanitize_scalar(exp(min(avgLogScale, log(max(g_Stability.hugeValue, 1.0)))), g_Stability.hugeValue);
-            float3 pushDir = cameraToSplat * rsqrt(distance2);
-            float pushStep = sanitize_scalar(geoMeanScale * gaussian_optimizer_relative_current_contribution(splatId) * g_GaussianOptimizerRegularization.z, g_Stability.hugeValue);
-            uint axisIndex = paramId - PARAM_POSITION_X;
-            if (axisIndex == 0u) value += pushDir.x * pushStep;
-            else if (axisIndex == 1u) value += pushDir.y * pushStep;
-            else value += pushDir.z * pushStep;
-        }
-    }
-
-    if (paramId >= PARAM_SCALE_X && paramId <= PARAM_SCALE_Z)
-    {
-        if (g_GaussianOptimizerRegularization.x != 0.0) value -= exp(value) * (settings.lr * g_GaussianOptimizerRegularization.x * (1.0 / 3.0));
-    } else if (paramId == rawOpacityParamId) {
-        if (g_GaussianOptimizerRegularization.y != 0.0)
-        {
-            float opacity = opacity_from_raw(value);
-            value -= settings.lr * g_GaussianOptimizerRegularization.y * opacity * (1.0 - opacity);
-        }
-    }
-
-    g_SplatParamsRW[paramIndex] = clamp(sanitize_scalar(value, g_Stability.hugeValue), settings.valueMin, settings.valueMax);
-}
-
-[shader("compute")]
 [numthreads(OPTIMIZER_GROUP_SIZE, 1, 1)]
 void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -237,12 +188,41 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (splatId >= g_SplatCount) return;
 
     TrainableGaussianState state = TrainableGaussianState.load(splatId);
+    uint rawOpacityParamId = packed_raw_opacity_param_id(g_StoredPackedParamCount);
+    OptimizerParamSettings positionSettings = g_OptimizerParamSettings[PARAM_POSITION_X];
+    OptimizerParamSettings scaleSettings = g_OptimizerParamSettings[PARAM_SCALE_X];
+    OptimizerParamSettings opacitySettings = g_OptimizerParamSettings[rawOpacityParamId];
+
+    if (g_GaussianOptimizerRegularization.z != 0.0)
+    {
+        float3 cameraToSplat = state.position - g_GaussianOptimizerRegularizationCameraPosition;
+        float distance2 = dot(cameraToSplat, cameraToSplat);
+        if (distance2 > TINY_VALUE * TINY_VALUE)
+        {
+            float avgLogScale = (state.logScale.x + state.logScale.y + state.logScale.z) * (1.0 / 3.0);
+            float geoMeanScale = sanitize_scalar(exp(min(avgLogScale, log(max(g_Stability.hugeValue, 1.0)))), g_Stability.hugeValue);
+            float pushStep = sanitize_scalar(geoMeanScale * gaussian_optimizer_relative_current_contribution(splatId) * g_GaussianOptimizerRegularization.z, g_Stability.hugeValue);
+            state.position += cameraToSplat * (pushStep * rsqrt(distance2));
+        }
+    }
+    if (g_GaussianOptimizerRegularization.x != 0.0)
+    {
+        state.logScale -= exp(state.logScale) * (scaleSettings.lr * g_GaussianOptimizerRegularization.x * (1.0 / 3.0));
+    }
+    if (g_GaussianOptimizerRegularization.y != 0.0)
+    {
+        float opacity = opacity_from_raw(state.rawOpacity);
+        state.rawOpacity -= opacitySettings.lr * g_GaussianOptimizerRegularization.y * opacity * (1.0 - opacity);
+    }
+
     uint activeCoeffCount = min(g_SHBand == 0u ? 1u : g_SHBand == 1u ? 4u : g_SHBand == 2u ? 9u : SH_COEFF_COUNT, packed_sh_coeff_count(g_StoredPackedParamCount));
+    state.position = clamp(sanitize_float3(state.position, g_Stability.hugeValue), float3(positionSettings.valueMin), float3(positionSettings.valueMax));
     float4 normalizedRotation = normalize_quaternion_safe(sanitize_float4(state.rotation, g_Stability.hugeValue));
-    state.logScale = sanitize_float3(state.logScale, g_Stability.hugeValue);
+    state.logScale = clamp(sanitize_float3(state.logScale, g_Stability.hugeValue), float3(scaleSettings.valueMin), float3(scaleSettings.valueMax));
     state.logScale = clamp_scale_anisotropy(state.logScale);
     state.logScale = clamp_screen_scale_upper_bound(state.position, state.logScale);
     state.rotation = normalizedRotation;
+    state.rawOpacity = clamp(sanitize_scalar(state.rawOpacity, g_Stability.hugeValue), opacitySettings.valueMin, opacitySettings.valueMax);
     state.shCoeffs[0u] = clamp_sh0_base_color(sanitize_float3(state.shCoeffs[0u], g_Stability.hugeValue));
     [unroll] for (uint coeffIndex = 1u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
     {

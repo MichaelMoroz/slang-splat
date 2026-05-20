@@ -170,11 +170,9 @@ Each trainer `step()` performs the following high-level sequence.
    - `csBackpropCachedRasterGrads`
 
 7. Run the optimizer path.
-   - packed gradient clipping,
    - optional packed per-splat grad-norm reduction,
-   - packed ADAM update,
-   - Gaussian-specific regularization,
-   - post-step projection (quaternion normalization, anisotropy clamp, screen-size clamp, SH projection).
+   - one fused packed per-parameter update that applies scalar gradient clipping, ADAM, and generic regularization in a single dispatch,
+   - one fused per-gaussian post step that applies gaussian-specific regularization and the post-step safety/projection rules (quaternion normalization, anisotropy clamp, screen-size clamp, SH projection).
 
 8. When the current refinement boundary is reached, run the refinement pass.
 

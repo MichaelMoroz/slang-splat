@@ -69,13 +69,10 @@ _VIEWER_DEBUG_KERNEL_ENTRIES = {
 }
 _ADAM_KERNEL_ENTRIES = {
     "compute_grad_norms": "csComputePackedElementGradNorms",
-    "clip_grads": "csClipPackedParamGrads",
     "adam_step": "csAdamStepPacked",
-    "regularize": "csRegularizePacked",
 }
 _GAUSSIAN_OPTIMIZER_KERNEL_ENTRIES = {
     "project_params": "csProjectGaussianParams",
-    "regularize": "csRegularizeGaussianPacked",
 }
 _PREFIX_SUM_ITEM_SPECS = {
     "scan_blocks": ("kernel", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixScanBlocks"),

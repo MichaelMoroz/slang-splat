@@ -6,19 +6,17 @@ from typing import Any
 import numpy as np
 import slangpy as spy
 
-from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, buffer_to_numpy, defer_resource_release, dispatch, grow_capacity, load_compute_items, thread_count_1d
+from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, defer_resource_release, dispatch, grow_capacity, load_compute_items, thread_count_1d
 
 
 @dataclass(slots=True)
 class AdamRuntimeHyperParams:
     grad_component_clip: float = 10.0
-    grad_norm_clip: float = 10.0
     max_update: float = 0.05
     huge_value: float = 1e8
 
 
 class AdamOptimizer:
-    _clip_threads = staticmethod(thread_count_1d)
     _grad_norm_threads = staticmethod(thread_count_1d)
     _param_threads = staticmethod(thread_count_1d)
 
@@ -35,21 +33,16 @@ class AdamOptimizer:
             self.device,
             {
                 "compute_grad_norms": ("kernel", SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang", "csComputePackedElementGradNorms"),
-                "clip_grads": ("kernel", SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang", "csClipPackedParamGrads"),
                 "adam_step": ("kernel", SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang", "csAdamStepPacked"),
-                "regularize": ("kernel", SHADER_ROOT / "utility" / "optimizer" / "optimizer.slang", "csRegularizePacked"),
-                "clear_float_buffer": ("kernel", SHADER_ROOT / "utility" / "metrics" / "metrics.slang", "csClearFloatBuffer"),
             },
         )
 
     def _ensure_state_buffers(self, packed_param_count: int) -> None:
         count = max(int(packed_param_count), 1)
-        if self._capacity >= count and "adam_moments" in self._buffers and "regularization_loss" in self._buffers: return
+        if self._capacity >= count and "adam_moments" in self._buffers: return
         self._capacity = grow_capacity(count, self._capacity)
         defer_resource_release(self._buffers.get("adam_moments"))
         self._buffers["adam_moments"] = alloc_buffer(self.device, name="adam.moments", size=self._capacity * 8, usage=RW_BUFFER_USAGE)
-        if "regularization_loss" not in self._buffers:
-            self._buffers["regularization_loss"] = alloc_buffer(self.device, name="adam.regularization_loss", size=4, usage=RW_BUFFER_USAGE)
 
     def update_hyperparams(self, adam_hparams: Any, runtime_hparams: AdamRuntimeHyperParams) -> None:
         self.adam = adam_hparams
@@ -74,21 +67,7 @@ class AdamOptimizer:
     def _buffer_shader_vars(self) -> dict[str, object]:
         return {
             "g_OptimizerAdamMoments": self._buffers["adam_moments"],
-            "g_OptimizerRegularizationLoss": self._buffers["regularization_loss"],
         }
-
-    def _dispatch_clear_float_buffer(self, encoder: spy.CommandEncoder, buffer: spy.Buffer, count: int, debug_label: str, debug_color_index: int) -> None:
-        dispatch(
-            kernel=self._kernels["clear_float_buffer"],
-            thread_count=thread_count_1d(count),
-            vars={
-                "g_ClearCount": int(count),
-                "g_ClearFloatBuffer": buffer,
-            },
-            command_encoder=encoder,
-            debug_label=debug_label,
-            debug_color_index=debug_color_index,
-        )
 
     @staticmethod
     def _packed_shader_vars(params_buffer: spy.Buffer, grads_buffer: spy.Buffer, param_settings: spy.Buffer) -> dict[str, object]:
@@ -107,7 +86,6 @@ class AdamOptimizer:
             },
             "g_OptimizerRuntime": {
                 "gradComponentClip": float(self.runtime.grad_component_clip),
-                "gradNormClip": float(self.runtime.grad_norm_clip),
                 "maxUpdate": float(self.runtime.max_update),
                 "hugeValue": float(self.runtime.huge_value),
             },
@@ -115,7 +93,6 @@ class AdamOptimizer:
             "g_OptimizerParamCount": int(packed_param_count),
             "g_OptimizerParamGroupSize": int(param_group_size),
             "g_OptimizerParamSettingsCount": int(param_settings_count),
-            "g_OptimizerTrackRegularizationLoss": np.uint32(0),
         }
 
     def dispatch_step(
@@ -130,7 +107,6 @@ class AdamOptimizer:
         param_settings: spy.Buffer,
         param_settings_count: int,
         step_index: int,
-        track_regularization_loss: bool = False,
         debug_element_grad_norm_buffer: spy.Buffer | None = None,
     ) -> None:
         count = max(int(packed_param_count), 1)
@@ -140,16 +116,6 @@ class AdamOptimizer:
             **self._buffer_shader_vars(),
             **self._optimizer_vars(element_count, count, param_group_size, param_settings_count, step_index),
         }
-        vars["g_OptimizerTrackRegularizationLoss"] = np.uint32(1 if track_regularization_loss else 0)
-        self._dispatch_clear_float_buffer(encoder, self._buffers["regularization_loss"], 1, "Adam Clear Regularization Loss", 59)
-        dispatch(
-            kernel=self._kernels["clip_grads"],
-            thread_count=self._clip_threads(element_count),
-            vars=vars,
-            command_encoder=encoder,
-            debug_label="Adam Clip Grads",
-            debug_color_index=60,
-        )
         if debug_element_grad_norm_buffer is not None:
             dispatch(
                 kernel=self._kernels["compute_grad_norms"],
@@ -167,20 +133,7 @@ class AdamOptimizer:
             debug_label="Adam Step",
             debug_color_index=62,
         )
-        dispatch(
-            kernel=self._kernels["regularize"],
-            thread_count=self._param_threads(count),
-            vars=vars,
-            command_encoder=encoder,
-            debug_label="Adam Regularize",
-            debug_color_index=63,
-        )
 
     @property
     def buffers(self) -> dict[str, spy.Buffer]:
         return self._buffers
-
-    def read_regularization_loss(self) -> float:
-        if "regularization_loss" not in self._buffers:
-            return 0.0
-        return float(buffer_to_numpy(self._buffers["regularization_loss"], np.float32)[0])

@@ -2838,7 +2838,7 @@ class ToolkitWindow:
         ToolkitWindow._register_non_viewport_window(self)
         ui._values["show_photometric_compensation"] = bool(show)
         if opened:
-            for key in ("photometric_status", "photometric_time", "photometric_loss", "photometric_regularization", "photometric_pairs"):
+            for key in ("photometric_status", "photometric_time", "photometric_loss", "photometric_pairs"):
                 text = str(ui._texts.get(key, "")).strip()
                 if text:
                     imgui.text_wrapped(text)
@@ -2942,18 +2942,6 @@ class ToolkitWindow:
                 max_value=1000.0,
                 fmt="%.4f",
                 tooltip="Per-component gradient clipping threshold for photometric optimizer updates.",
-                flags=imgui.SliderFlags_.logarithmic.value,
-            )
-            ToolkitWindow._draw_clamped_float(
-                ui,
-                key="photometric_grad_norm_clip",
-                label="Grad Norm Clip",
-                default=float(_PHOTOMETRIC_UI_DEFAULTS.grad_norm_clip),
-                speed=0.05,
-                min_value=1e-4,
-                max_value=1000.0,
-                fmt="%.4f",
-                tooltip="Per-frame packed gradient norm clipping threshold for photometric optimizer updates.",
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
             ToolkitWindow._draw_clamped_float(
@@ -3904,7 +3892,6 @@ def build_ui(renderer) -> ViewerUI:
     values["photometric_learning_rate"] = float(_VIEWER_UI_DEFAULTS.get("photometric_learning_rate", _PHOTOMETRIC_UI_DEFAULTS.learning_rate))
     values["photometric_target_average_exposure"] = float(_VIEWER_UI_DEFAULTS.get("photometric_target_average_exposure", _PHOTOMETRIC_UI_DEFAULTS.target_average_exposure))
     values["photometric_grad_component_clip"] = float(_VIEWER_UI_DEFAULTS.get("photometric_grad_component_clip", _PHOTOMETRIC_UI_DEFAULTS.grad_component_clip))
-    values["photometric_grad_norm_clip"] = float(_VIEWER_UI_DEFAULTS.get("photometric_grad_norm_clip", _PHOTOMETRIC_UI_DEFAULTS.grad_norm_clip))
     values["photometric_max_update"] = float(_VIEWER_UI_DEFAULTS.get("photometric_max_update", _PHOTOMETRIC_UI_DEFAULTS.max_update))
     values["photometric_exposure_lr_mul"] = float(_VIEWER_UI_DEFAULTS.get("photometric_exposure_lr_mul", _PHOTOMETRIC_UI_DEFAULTS.exposure_lr_mul))
     values["photometric_vignette_lr_mul"] = float(_VIEWER_UI_DEFAULTS.get("photometric_vignette_lr_mul", _PHOTOMETRIC_UI_DEFAULTS.vignette_lr_mul))
@@ -3981,7 +3968,7 @@ def build_ui(renderer) -> ViewerUI:
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
-            "photometric_status", "photometric_time", "photometric_loss", "photometric_regularization", "photometric_pairs",
+            "photometric_status", "photometric_time", "photometric_loss", "photometric_pairs",
             "photometric_prepare_current",
             "loss_debug_frame", "loss_debug_psnr",
             "colmap_import_status", "colmap_import_current",
