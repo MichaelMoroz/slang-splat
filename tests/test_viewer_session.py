@@ -557,7 +557,6 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
                 "photometric_chroma_lr_mul": 0.7,
                 "photometric_crf_lr_mul": 0.6,
                 "photometric_grad_component_clip": 9.0,
-                "photometric_grad_norm_clip": 8.0,
                 "photometric_max_update": 0.07,
                 "photometric_exposure_regularize_weight": 0.75,
                 "photometric_vignette_regularize_weight": 0.5,
@@ -610,7 +609,6 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
     assert float(captured["hparams"].crf_l1_weight) == pytest.approx(0.14)
     assert float(captured["hparams"].gamma_l1_weight) == pytest.approx(0.015)
     assert float(captured["hparams"].grad_component_clip) == pytest.approx(9.0)
-    assert float(captured["hparams"].grad_norm_clip) == pytest.approx(8.0)
     assert float(captured["hparams"].max_update) == pytest.approx(0.07)
     assert captured["began_prepare"] is True
     assert captured["sync_calls"] == 2
@@ -1025,6 +1023,131 @@ def test_ensure_training_runtime_resolution_rebinds_renderer_without_reset(monke
         ("copy", new_renderer),
         ("submit", "finished"),
         ("rebind", new_renderer),
+        ("invalidate", ()),
+        ("reset_loss_debug", None),
+        ("clear", None),
+    ]
+
+
+def test_copy_prepass_capacity_state_to_materializes_preserved_floors() -> None:
+    ensure_calls: list[tuple[int, int, int]] = []
+    src = SimpleNamespace(
+        _pending_min_list_entries=700,
+        _pending_min_scanline_entries=450,
+        _max_list_entries=512,
+        _max_scanline_entries=256,
+        _scene_count=32,
+    )
+    dst = SimpleNamespace(
+        _pending_min_list_entries=0,
+        _pending_min_scanline_entries=0,
+        _max_list_entries=0,
+        _max_scanline_entries=0,
+        _scene_count=32,
+    )
+
+    def _ensure_work_buffers(splat_count: int, min_list_entries: int = 0, min_scanline_entries: int = 0) -> None:
+        ensure_calls.append((int(splat_count), int(min_list_entries), int(min_scanline_entries)))
+        dst._max_list_entries = max(int(dst._max_list_entries), int(min_list_entries))
+        dst._max_scanline_entries = max(int(dst._max_scanline_entries), int(min_scanline_entries))
+        if dst._pending_min_list_entries > 0 and dst._max_list_entries >= dst._pending_min_list_entries:
+            dst._pending_min_list_entries = 0
+        if dst._pending_min_scanline_entries > 0 and dst._max_scanline_entries >= dst._pending_min_scanline_entries:
+            dst._pending_min_scanline_entries = 0
+
+    dst._ensure_work_buffers = _ensure_work_buffers
+
+    session.GaussianRenderer.copy_prepass_capacity_state_to(src, dst)
+
+    assert ensure_calls == [(32, 700, 450)]
+    assert dst._max_list_entries == 700
+    assert dst._max_scanline_entries == 450
+    assert dst._pending_min_list_entries == 0
+    assert dst._pending_min_scanline_entries == 0
+
+
+def test_replace_training_renderer_preserves_prepass_capacity_state(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _Encoder:
+        def finish(self) -> str:
+            return "finished"
+
+    class _NewRenderer(SimpleNamespace):
+        def __init__(self) -> None:
+            super().__init__(
+                _scene_count=0,
+                _pending_min_list_entries=0,
+                _pending_min_scanline_entries=0,
+                _max_list_entries=0,
+                _max_scanline_entries=0,
+            )
+            self.ensure_calls: list[tuple[int, int, int]] = []
+
+        def _ensure_work_buffers(self, splat_count: int, min_list_entries: int = 0, min_scanline_entries: int = 0) -> None:
+            self.ensure_calls.append((int(splat_count), int(min_list_entries), int(min_scanline_entries)))
+            self._max_list_entries = max(int(self._max_list_entries), int(min_list_entries))
+            self._max_scanline_entries = max(int(self._max_scanline_entries), int(min_scanline_entries))
+            if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
+                self._pending_min_list_entries = 0
+            if self._pending_min_scanline_entries > 0 and self._max_scanline_entries >= self._pending_min_scanline_entries:
+                self._pending_min_scanline_entries = 0
+
+    class _OldRenderer(SimpleNamespace):
+        def __init__(self) -> None:
+            super().__init__(
+                _scene_count=24,
+                _pending_min_list_entries=700,
+                _pending_min_scanline_entries=450,
+                _max_list_entries=512,
+                _max_scanline_entries=256,
+            )
+
+        def copy_scene_state_to(self, encoder, dst) -> None:
+            del encoder
+            calls.append(("copy", dst))
+            dst._scene_count = self._scene_count
+
+        def copy_prepass_capacity_state_to(self, dst) -> None:
+            calls.append(("capacity", dst))
+            session.GaussianRenderer.copy_prepass_capacity_state_to(self, dst)
+
+        def clear_scene_resources(self) -> None:
+            calls.append(("clear", None))
+
+    new_renderer = _NewRenderer()
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(
+            create_command_encoder=lambda: _Encoder(),
+            submit_command_buffer=lambda command_buffer: calls.append(("submit", command_buffer)),
+        ),
+        s=SimpleNamespace(
+            training_renderer=_OldRenderer(),
+            trainer=SimpleNamespace(rebind_renderer=lambda renderer: calls.append(("rebind", renderer))),
+            renderer="main-renderer",
+            debug_renderer="debug-renderer",
+        ),
+    )
+
+    monkeypatch.setattr(session, "_create_renderer", lambda viewer_obj, width, height, allow_debug_overlays: new_renderer)
+    monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer: calls.append(("debug", renderer)))
+    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: calls.append(("invalidate", targets)))
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
+
+    result = session._replace_training_renderer(viewer, 80, 40)
+
+    assert result is new_renderer
+    assert viewer.s.training_renderer is new_renderer
+    assert new_renderer.ensure_calls == [(24, 700, 450)]
+    assert new_renderer._max_list_entries == 700
+    assert new_renderer._max_scanline_entries == 450
+    assert calls == [
+        ("copy", new_renderer),
+        ("capacity", new_renderer),
+        ("submit", "finished"),
+        ("rebind", new_renderer),
+        ("debug", "main-renderer"),
+        ("debug", "debug-renderer"),
         ("invalidate", ()),
         ("reset_loss_debug", None),
         ("clear", None),

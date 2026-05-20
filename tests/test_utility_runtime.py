@@ -30,7 +30,7 @@ def test_grow_capacity_scales_monotonically() -> None:
     assert grow_capacity(1, 0) == 1
     assert grow_capacity(5, 2) == 5
     assert grow_capacity(6, 4) == 6
-    assert grow_capacity(5, 10) == 15
+    assert grow_capacity(5, 10) == 12
 
 
 def test_alloc_helpers_create_minimum_sized_resources(device: spy.Device) -> None:

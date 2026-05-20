@@ -702,7 +702,7 @@ class GaussianRenderer:
         max_anisotropy: float = 32.0,
         transmittance_threshold: float = 0.005,
         sort_splats_by: str = SORT_SPLATS_BY_DISTANCE_TO_CAMERA,
-        list_capacity_multiplier: int = 64,
+        list_capacity_multiplier: int = 8,
         max_prepass_memory_mb: int = 4096,
         allocate_grad_work_buffers: bool = True,
         proj_distortion_k1: float = 0.0,
@@ -1613,6 +1613,15 @@ class GaussianRenderer:
         dst._scene_count = self._scene_count
         if include_work_buffers:
             dst._current_scene = self._current_scene
+
+    def copy_prepass_capacity_state_to(self, dst: "GaussianRenderer") -> None:
+        dst._pending_min_list_entries = max(int(dst._pending_min_list_entries), int(self._pending_min_list_entries))
+        dst._pending_min_scanline_entries = max(int(dst._pending_min_scanline_entries), int(self._pending_min_scanline_entries))
+        required_list_entries = max(int(self._max_list_entries), int(dst._pending_min_list_entries), 0)
+        required_scanline_entries = max(int(self._max_scanline_entries), int(dst._pending_min_scanline_entries), 0)
+        scene_count = max(int(self._scene_count), int(getattr(dst, "_scene_count", 0)), 0)
+        if scene_count > 0 and (required_list_entries > 0 or required_scanline_entries > 0):
+            dst._ensure_work_buffers(scene_count, required_list_entries, required_scanline_entries)
 
     def read_scene_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
         count = self._scene_count if splat_count is None else int(splat_count)

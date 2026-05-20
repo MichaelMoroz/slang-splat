@@ -262,8 +262,11 @@ def _resource_details(resource: object, kind: str, byte_size: int) -> str:
 
 
 def grow_capacity(required: int, current: int) -> int:
-    base = max(int(current), 1)
-    return max(int(required), base + base // 2)
+    needed = max(int(required), 0)
+    base = max(int(current), 0)
+    if base <= 0:
+        return max(needed, 1)
+    return max(needed, base + base // 4)
 
 
 def ensure_capacity_resources(
