@@ -440,6 +440,28 @@ def _empty_photometric_observation_track_pool() -> PhotometricObservationTrackPo
     return PhotometricObservationTrackPool(empty_i64, empty_i32, empty_ranges, empty_i32, empty_xy, empty_ranges.copy())
 
 
+def _scale_observation_xy_to_frame(xy: np.ndarray, frame: ColmapFrame, source_width: int, source_height: int) -> np.ndarray:
+    points = np.asarray(xy, dtype=np.float32).reshape(-1, 2)
+    resolved_source_width = max(int(source_width), 1)
+    resolved_source_height = max(int(source_height), 1)
+    resolved_frame_width = max(int(frame.width), 1)
+    resolved_frame_height = max(int(frame.height), 1)
+    if resolved_source_width == resolved_frame_width and resolved_source_height == resolved_frame_height:
+        return np.ascontiguousarray(points, dtype=np.float32)
+    scale = np.asarray(
+        (
+            float(resolved_frame_width) / float(resolved_source_width),
+            float(resolved_frame_height) / float(resolved_source_height),
+        ),
+        dtype=np.float32,
+    ).reshape(1, 2)
+    return np.ascontiguousarray(points * scale, dtype=np.float32)
+
+
+def _normalized_colmap_image_name(name: str) -> str:
+    return Path(str(name).replace("\\", "/")).as_posix().casefold()
+
+
 def _build_photometric_observation_track_pool_from_sparse_tracks(
     reconstruction: ColmapReconstruction,
     frames: list[ColmapFrame],
@@ -448,6 +470,7 @@ def _build_photometric_observation_track_pool_from_sparse_tracks(
 ) -> PhotometricObservationTrackPool:
     frame_lookup = {int(frame.image_id): (frame_index, frame) for frame_index, frame in enumerate(frames)}
     min_track = max(int(min_track_length), 2)
+    cameras = getattr(reconstruction, "cameras", {})
     points = getattr(reconstruction, "points3d", {})
     images = getattr(reconstruction, "images", {})
     if not frame_lookup or not images or not points:
@@ -469,6 +492,9 @@ def _build_photometric_observation_track_pool_from_sparse_tracks(
         if frame_entry is None:
             continue
         frame_index, frame = frame_entry
+        camera = cameras.get(int(getattr(image, "camera_id", -1)))
+        source_width = int(getattr(camera, "width", frame.width))
+        source_height = int(getattr(camera, "height", frame.height))
         point_xy = np.asarray(getattr(image, "points2d_xy", ()), dtype=np.float32).reshape(-1, 2)
         point_ids = np.asarray(getattr(image, "points2d_point3d_ids", ()), dtype=np.int64).reshape(-1)
         count = min(int(point_xy.shape[0]), int(point_ids.size))
@@ -488,7 +514,7 @@ def _build_photometric_observation_track_pool_from_sparse_tracks(
         if not np.any(keep):
             continue
         valid_ids = valid_ids[keep]
-        valid_xy = valid_xy[keep]
+        valid_xy = _scale_observation_xy_to_frame(valid_xy[keep], frame, source_width, source_height)
         valid_track_lengths = valid_track_lengths[keep]
         finite = np.isfinite(valid_xy).all(axis=1)
         finite &= valid_xy[:, 0] >= 0.0
@@ -579,12 +605,11 @@ def _load_colmap_keypoint_xy_lookup(conn: sqlite3.Connection, image_ids: tuple[i
 def _build_photometric_observation_track_pool_from_match_table(
     conn: sqlite3.Connection,
     table_name: str,
-    frames: list[ColmapFrame],
+    frame_lookup: dict[int, tuple[int, ColmapFrame, int, int]],
     keypoint_lookup: dict[int, np.ndarray],
     *,
     min_track_length: int,
 ) -> PhotometricObservationTrackPool:
-    frame_lookup = {int(frame.image_id): (frame_index, frame) for frame_index, frame in enumerate(frames)}
     relevant_image_ids = set(frame_lookup)
     if not relevant_image_ids or not keypoint_lookup:
         return _empty_photometric_observation_track_pool()
@@ -632,8 +657,8 @@ def _build_photometric_observation_track_pool_from_match_table(
             return -1
         if keypoint_index < 0 or keypoint_index >= int(keypoints.shape[0]):
             return -1
-        frame_index, frame = frame_entry
-        xy = np.asarray(keypoints[int(keypoint_index)], dtype=np.float32).reshape(2)
+        frame_index, frame, source_width, source_height = frame_entry
+        xy = _scale_observation_xy_to_frame(keypoints[int(keypoint_index)], frame, source_width, source_height).reshape(2)
         if not np.isfinite(xy).all():
             return -1
         if not (0.0 <= float(xy[0]) <= float(frame.width) and 0.0 <= float(xy[1]) <= float(frame.height)):
@@ -731,6 +756,7 @@ def _build_photometric_observation_track_pool_from_match_table(
 
 
 def _build_photometric_observation_track_pool_from_database_matches(
+    reconstruction: ColmapReconstruction,
     frames: list[ColmapFrame],
     *,
     database_path: Path,
@@ -738,6 +764,19 @@ def _build_photometric_observation_track_pool_from_database_matches(
 ) -> PhotometricObservationTrackPool:
     if not frames:
         return _empty_photometric_observation_track_pool()
+    images = getattr(reconstruction, "images", {})
+    cameras = getattr(reconstruction, "cameras", {})
+    frame_lookup_by_image_id: dict[int, tuple[int, ColmapFrame, int, int]] = {}
+    frame_lookup_by_name: dict[str, tuple[int, ColmapFrame, int, int]] = {}
+    for frame_index, frame in enumerate(frames):
+        image = images.get(int(frame.image_id))
+        camera = None if image is None else cameras.get(int(getattr(image, "camera_id", -1)))
+        source_width = int(getattr(camera, "width", frame.width))
+        source_height = int(getattr(camera, "height", frame.height))
+        entry = (int(frame_index), frame, source_width, source_height)
+        frame_lookup_by_image_id[int(frame.image_id)] = entry
+        if image is not None:
+            frame_lookup_by_name[_normalized_colmap_image_name(getattr(image, "name", ""))] = entry
     db_path = Path(database_path).resolve()
     if not db_path.exists() or not db_path.is_file():
         return _empty_photometric_observation_track_pool()
@@ -746,14 +785,20 @@ def _build_photometric_observation_track_pool_from_database_matches(
             table_names = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "keypoints" not in table_names:
                 return _empty_photometric_observation_track_pool()
-            keypoint_lookup = _load_colmap_keypoint_xy_lookup(conn, tuple(int(frame.image_id) for frame in frames))
+            database_frame_lookup = dict(frame_lookup_by_image_id)
+            if "images" in table_names and frame_lookup_by_name:
+                for image_id, image_name in conn.execute("SELECT image_id, name FROM images ORDER BY image_id"):
+                    name_key = _normalized_colmap_image_name(str(image_name))
+                    if name_key in frame_lookup_by_name:
+                        database_frame_lookup[int(image_id)] = frame_lookup_by_name[name_key]
+            keypoint_lookup = _load_colmap_keypoint_xy_lookup(conn, tuple(int(image_id) for image_id in database_frame_lookup))
             for table_name in ("two_view_geometries", "matches"):
                 if table_name not in table_names:
                     continue
                 pool = _build_photometric_observation_track_pool_from_match_table(
                     conn,
                     table_name,
-                    frames,
+                    database_frame_lookup,
                     keypoint_lookup,
                     min_track_length=min_track_length,
                 )
@@ -779,6 +824,7 @@ def build_photometric_observation_track_pool(
     if len(track_pool) > 0 or database_path is None:
         return track_pool
     return _build_photometric_observation_track_pool_from_database_matches(
+        reconstruction,
         frames,
         database_path=database_path,
         min_track_length=min_track_length,

@@ -13,7 +13,7 @@ import src.training.photometric_compensation as photometric_compensation_module
 from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, ColmapReconstruction, GaussianScene, build_training_frames, load_colmap_reconstruction
 from src.scene._internal.colmap_ops import load_training_frame_rgba8
-from src.scene._internal.colmap_types import ColmapImage, ColmapPoint3D
+from src.scene._internal.colmap_types import ColmapCamera, ColmapImage, ColmapPoint3D
 from src.training import GaussianTrainer, TrainingHyperParams
 from src.training.photometric_compensation import (
     PPISP_PACKED_PARAM_COUNT,
@@ -97,40 +97,90 @@ def _colmap_pair_id(image_id_a: int, image_id_b: int) -> int:
     return int(first * photometric_compensation_module._COLMAP_PAIR_ID_PRIME + second)
 
 
-def _write_match_database(path: Path) -> Path:
-    keypoints = {
+def _write_match_database(
+    path: Path,
+    *,
+    image_names: dict[int, str] | None = None,
+    keypoints: dict[int, np.ndarray] | None = None,
+    matches: dict[tuple[int, int], np.ndarray] | None = None,
+) -> Path:
+    resolved_keypoints = {
         1: np.array([[10.0, 20.0], [40.0, 18.0]], dtype=np.float32),
         2: np.array([[12.0, 22.0], [42.0, 17.0], [8.0, 5.0]], dtype=np.float32),
         3: np.array([[14.0, 24.0], [60.0, 30.0]], dtype=np.float32),
-    }
-    matches = {
+    } if keypoints is None else {int(image_id): np.asarray(xy, dtype=np.float32).reshape(-1, 2) for image_id, xy in keypoints.items()}
+    resolved_matches = {
         (1, 2): np.array([[0, 0], [1, 1]], dtype=np.uint32),
         (1, 3): np.array([[0, 0]], dtype=np.uint32),
-    }
+    } if matches is None else {tuple(int(v) for v in pair): np.asarray(pair_matches, dtype=np.uint32).reshape(-1, 2) for pair, pair_matches in matches.items()}
+    resolved_image_names = {int(image_id): f"frame_{int(image_id)}.png" for image_id in resolved_keypoints} if image_names is None else {int(image_id): str(name) for image_id, name in image_names.items()}
     with sqlite3.connect(str(path)) as conn:
         conn.execute("CREATE TABLE images (image_id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
         conn.execute("CREATE TABLE keypoints (image_id INTEGER PRIMARY KEY, rows INTEGER NOT NULL, cols INTEGER NOT NULL, data BLOB)")
         conn.execute("CREATE TABLE two_view_geometries (pair_id INTEGER PRIMARY KEY, rows INTEGER NOT NULL, cols INTEGER NOT NULL, data BLOB)")
         conn.executemany(
             "INSERT INTO images(image_id, name) VALUES (?, ?)",
-            [(image_id, f"frame_{image_id}.png") for image_id in sorted(keypoints)],
+            [(image_id, resolved_image_names[image_id]) for image_id in sorted(resolved_keypoints)],
         )
         conn.executemany(
             "INSERT INTO keypoints(image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
             [
                 (int(image_id), int(xy.shape[0]), int(xy.shape[1]), np.ascontiguousarray(xy, dtype=np.float32).tobytes())
-                for image_id, xy in keypoints.items()
+                for image_id, xy in resolved_keypoints.items()
             ],
         )
         conn.executemany(
             "INSERT INTO two_view_geometries(pair_id, rows, cols, data) VALUES (?, ?, ?, ?)",
             [
                 (_colmap_pair_id(image_id_a, image_id_b), int(pair_matches.shape[0]), int(pair_matches.shape[1]), np.ascontiguousarray(pair_matches, dtype=np.uint32).tobytes())
-                for (image_id_a, image_id_b), pair_matches in matches.items()
+                for (image_id_a, image_id_b), pair_matches in resolved_matches.items()
             ],
         )
         conn.commit()
     return path
+
+
+def _make_scaled_reconstruction() -> tuple[ColmapReconstruction, list[ColmapFrame]]:
+    frames = [_make_frame(1), _make_frame(2), _make_frame(3)]
+    cameras = {
+        0: ColmapCamera(camera_id=0, model_id=1, width=128, height=96, fx=144.0, fy=144.0, cx=64.0, cy=48.0),
+    }
+    images = {
+        1: ColmapImage(
+            image_id=1,
+            q_wxyz=frames[0].q_wxyz,
+            t_xyz=frames[0].t_xyz,
+            camera_id=0,
+            name="frame_1.png",
+            points2d_xy=np.array([[20.0, 40.0], [80.0, 36.0], [14.0, 12.0]], dtype=np.float32),
+            points2d_point3d_ids=np.array([11, 12, -1], dtype=np.int64),
+        ),
+        2: ColmapImage(
+            image_id=2,
+            q_wxyz=frames[1].q_wxyz,
+            t_xyz=frames[1].t_xyz,
+            camera_id=0,
+            name="frame_2.png",
+            points2d_xy=np.array([[24.0, 44.0], [84.0, 34.0], [16.0, 10.0]], dtype=np.float32),
+            points2d_point3d_ids=np.array([11, 12, 13], dtype=np.int64),
+        ),
+        3: ColmapImage(
+            image_id=3,
+            q_wxyz=frames[2].q_wxyz,
+            t_xyz=frames[2].t_xyz,
+            camera_id=0,
+            name="frame_3.png",
+            points2d_xy=np.array([[28.0, 48.0], [120.0, 60.0]], dtype=np.float32),
+            points2d_point3d_ids=np.array([11, 13], dtype=np.int64),
+        ),
+    }
+    points3d = {
+        11: ColmapPoint3D(11, np.array([0.0, 0.0, 0.0], dtype=np.float32), np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.1, track_length=3),
+        12: ColmapPoint3D(12, np.array([0.1, 0.2, 0.3], dtype=np.float32), np.array([0.0, 1.0, 0.0], dtype=np.float32), 0.1, track_length=2),
+        13: ColmapPoint3D(13, np.array([0.3, 0.2, 0.1], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), 0.1, track_length=1),
+    }
+    recon = ColmapReconstruction(root=Path("."), sparse_dir=Path("sparse/0"), cameras=cameras, images=images, points3d=points3d)
+    return recon, frames
 
 
 def _make_scene(count: int = 4, seed: int = 7) -> GaussianScene:
@@ -468,10 +518,42 @@ def test_track_pool_dispatch_sampling_matches_full_sampling() -> None:
     np.testing.assert_array_equal(dispatch.observation_indices_b, full.observation_indices_b)
 
 
+def test_build_photometric_observation_pair_pool_scales_sparse_tracks_to_training_frame_resolution() -> None:
+    recon, frames = _make_scaled_reconstruction()
+
+    pool = build_photometric_observation_pair_pool(recon, frames, min_track_length=2)
+
+    assert len(pool) == 4
+    np.testing.assert_array_equal(pool.frame_indices_a, np.array([0, 0, 1, 0], dtype=np.int32))
+    np.testing.assert_array_equal(pool.frame_indices_b, np.array([1, 2, 2, 1], dtype=np.int32))
+    np.testing.assert_allclose(pool.xy_a, np.array([[10.0, 20.0], [10.0, 20.0], [12.0, 22.0], [40.0, 18.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pool.xy_b, np.array([[12.0, 22.0], [14.0, 24.0], [14.0, 24.0], [42.0, 17.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
 def test_build_photometric_observation_track_pool_falls_back_to_database_matches(tmp_path: Path) -> None:
     frames = [_make_frame(1), _make_frame(2), _make_frame(3)]
-    recon = ColmapReconstruction(root=tmp_path, sparse_dir=tmp_path / "sparse" / "0", cameras={}, images={}, points3d={})
-    database_path = _write_match_database(tmp_path / "database.db")
+    cameras = {
+        0: ColmapCamera(camera_id=0, model_id=1, width=128, height=96, fx=144.0, fy=144.0, cx=64.0, cy=48.0),
+    }
+    images = {
+        1: ColmapImage(1, frames[0].q_wxyz, frames[0].t_xyz, 0, "frame_1.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+        2: ColmapImage(2, frames[1].q_wxyz, frames[1].t_xyz, 0, "frame_2.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+        3: ColmapImage(3, frames[2].q_wxyz, frames[2].t_xyz, 0, "frame_3.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+    }
+    recon = ColmapReconstruction(root=tmp_path, sparse_dir=tmp_path / "sparse" / "0", cameras=cameras, images=images, points3d={})
+    database_path = _write_match_database(
+        tmp_path / "database.db",
+        image_names={101: "frame_1.png", 202: "frame_2.png", 303: "frame_3.png"},
+        keypoints={
+            101: np.array([[20.0, 40.0], [80.0, 36.0]], dtype=np.float32),
+            202: np.array([[24.0, 44.0], [84.0, 34.0], [16.0, 10.0]], dtype=np.float32),
+            303: np.array([[28.0, 48.0], [120.0, 60.0]], dtype=np.float32),
+        },
+        matches={
+            (101, 202): np.array([[0, 0], [1, 1]], dtype=np.uint32),
+            (101, 303): np.array([[0, 0]], dtype=np.uint32),
+        },
+    )
 
     track_pool = photometric_compensation_module.build_photometric_observation_track_pool(
         recon,
