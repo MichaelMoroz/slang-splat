@@ -471,20 +471,11 @@ def _build_photometric_observation_track_pool_from_sparse_tracks(
     frame_lookup = {int(frame.image_id): (frame_index, frame) for frame_index, frame in enumerate(frames)}
     min_track = max(int(min_track_length), 2)
     cameras = getattr(reconstruction, "cameras", {})
-    points = getattr(reconstruction, "points3d", {})
     images = getattr(reconstruction, "images", {})
-    if not frame_lookup or not images or not points:
+    if not frame_lookup or not images:
         return _empty_photometric_observation_track_pool()
 
-    max_point_id = max((int(point_id) for point_id in points), default=0)
-    track_length_lookup = np.zeros((max(max_point_id, 0) + 1,), dtype=np.int32)
-    for point_id, point in points.items():
-        track_length = int(getattr(point, "track_length", 0))
-        if track_length >= min_track:
-            track_length_lookup[int(point_id)] = np.int32(track_length)
-
     point_id_chunks: list[np.ndarray] = []
-    track_length_chunks: list[np.ndarray] = []
     frame_index_chunks: list[np.ndarray] = []
     xy_chunks: list[np.ndarray] = []
     for image_id, image in sorted(images.items()):
@@ -503,19 +494,11 @@ def _build_photometric_observation_track_pool_from_sparse_tracks(
         point_ids = point_ids[:count]
         point_xy = point_xy[:count]
         valid = point_ids > 0
-        valid &= point_ids < track_length_lookup.size
         if not np.any(valid):
             continue
         valid_ids = point_ids[valid]
         valid_xy = point_xy[valid]
-        valid_track_lengths = track_length_lookup[valid_ids]
-        valid &= False
-        keep = valid_track_lengths >= min_track
-        if not np.any(keep):
-            continue
-        valid_ids = valid_ids[keep]
-        valid_xy = _scale_observation_xy_to_frame(valid_xy[keep], frame, source_width, source_height)
-        valid_track_lengths = valid_track_lengths[keep]
+        valid_xy = _scale_observation_xy_to_frame(valid_xy, frame, source_width, source_height)
         finite = np.isfinite(valid_xy).all(axis=1)
         finite &= valid_xy[:, 0] >= 0.0
         finite &= valid_xy[:, 0] <= float(frame.width)
@@ -525,16 +508,13 @@ def _build_photometric_observation_track_pool_from_sparse_tracks(
             continue
         valid_ids = valid_ids[finite]
         valid_xy = valid_xy[finite]
-        valid_track_lengths = valid_track_lengths[finite]
         _, first_positions = np.unique(valid_ids, return_index=True)
         if first_positions.size <= 0:
             continue
         first_positions = np.sort(first_positions)
         valid_ids = np.ascontiguousarray(valid_ids[first_positions], dtype=np.int64)
         valid_xy = np.ascontiguousarray(valid_xy[first_positions], dtype=np.float32)
-        valid_track_lengths = np.ascontiguousarray(valid_track_lengths[first_positions], dtype=np.int32)
         point_id_chunks.append(valid_ids)
-        track_length_chunks.append(valid_track_lengths)
         frame_index_chunks.append(np.full((valid_ids.size,), int(frame_index), dtype=np.int32))
         xy_chunks.append(valid_xy)
 
@@ -542,12 +522,10 @@ def _build_photometric_observation_track_pool_from_sparse_tracks(
         return _empty_photometric_observation_track_pool()
 
     point_ids = np.ascontiguousarray(np.concatenate(point_id_chunks, axis=0), dtype=np.int64)
-    track_lengths = np.ascontiguousarray(np.concatenate(track_length_chunks, axis=0), dtype=np.int32)
     frame_indices = np.ascontiguousarray(np.concatenate(frame_index_chunks, axis=0), dtype=np.int32)
     xy = np.ascontiguousarray(np.concatenate(xy_chunks, axis=0), dtype=np.float32)
     order = np.lexsort((xy[:, 1], xy[:, 0], frame_indices, point_ids))
     point_ids = np.ascontiguousarray(point_ids[order], dtype=np.int64)
-    track_lengths = np.ascontiguousarray(track_lengths[order], dtype=np.int32)
     frame_indices = np.ascontiguousarray(frame_indices[order], dtype=np.int32)
     xy = np.ascontiguousarray(xy[order], dtype=np.float32)
     unique_point_ids, starts, counts = np.unique(point_ids, return_index=True, return_counts=True)
@@ -563,7 +541,7 @@ def _build_photometric_observation_track_pool_from_sparse_tracks(
     pair_ranges[1:] = np.cumsum(filtered_counts * (filtered_counts - 1) // 2, dtype=np.int64)
     return PhotometricObservationTrackPool(
         point_ids=np.ascontiguousarray(unique_point_ids[valid_tracks], dtype=np.int64),
-        track_lengths=np.ascontiguousarray(track_lengths[starts[valid_tracks]], dtype=np.int32),
+        track_lengths=np.ascontiguousarray(counts[valid_tracks], dtype=np.int32),
         observation_ranges=np.ascontiguousarray(observation_ranges, dtype=np.int64),
         observation_frame_indices=np.ascontiguousarray(frame_indices[keep_observations], dtype=np.int32),
         observation_xy=np.ascontiguousarray(xy[keep_observations], dtype=np.float32),

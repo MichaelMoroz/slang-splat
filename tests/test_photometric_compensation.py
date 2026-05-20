@@ -479,13 +479,13 @@ def test_build_photometric_observation_pair_pool_is_deterministic() -> None:
     recon, frames = _make_reconstruction()
     pool = build_photometric_observation_pair_pool(recon, frames, min_track_length=2)
 
-    assert len(pool) == 4
-    np.testing.assert_array_equal(pool.point_ids, np.array([11, 11, 11, 12], dtype=np.int64))
-    np.testing.assert_array_equal(pool.track_lengths, np.array([3, 3, 3, 2], dtype=np.int32))
-    np.testing.assert_array_equal(pool.frame_indices_a, np.array([0, 0, 1, 0], dtype=np.int32))
-    np.testing.assert_array_equal(pool.frame_indices_b, np.array([1, 2, 2, 1], dtype=np.int32))
-    np.testing.assert_allclose(pool.xy_a, np.array([[10.0, 20.0], [10.0, 20.0], [12.0, 22.0], [40.0, 18.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(pool.xy_b, np.array([[12.0, 22.0], [14.0, 24.0], [14.0, 24.0], [42.0, 17.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert len(pool) == 5
+    np.testing.assert_array_equal(pool.point_ids, np.array([11, 11, 11, 12, 13], dtype=np.int64))
+    np.testing.assert_array_equal(pool.track_lengths, np.array([3, 3, 3, 2, 2], dtype=np.int32))
+    np.testing.assert_array_equal(pool.frame_indices_a, np.array([0, 0, 1, 0, 1], dtype=np.int32))
+    np.testing.assert_array_equal(pool.frame_indices_b, np.array([1, 2, 2, 1, 2], dtype=np.int32))
+    np.testing.assert_allclose(pool.xy_a, np.array([[10.0, 20.0], [10.0, 20.0], [12.0, 22.0], [40.0, 18.0], [8.0, 5.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pool.xy_b, np.array([[12.0, 22.0], [14.0, 24.0], [14.0, 24.0], [42.0, 17.0], [60.0, 30.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
 
     batch = pool.sample(np.random.default_rng(9), 3)
     assert batch.pair_count == 3
@@ -523,11 +523,56 @@ def test_build_photometric_observation_pair_pool_scales_sparse_tracks_to_trainin
 
     pool = build_photometric_observation_pair_pool(recon, frames, min_track_length=2)
 
+    assert len(pool) == 5
+    np.testing.assert_array_equal(pool.frame_indices_a, np.array([0, 0, 1, 0, 1], dtype=np.int32))
+    np.testing.assert_array_equal(pool.frame_indices_b, np.array([1, 2, 2, 1, 2], dtype=np.int32))
+    np.testing.assert_allclose(pool.xy_a, np.array([[10.0, 20.0], [10.0, 20.0], [12.0, 22.0], [40.0, 18.0], [8.0, 5.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(pool.xy_b, np.array([[12.0, 22.0], [14.0, 24.0], [14.0, 24.0], [42.0, 17.0], [60.0, 30.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_build_photometric_observation_pair_pool_uses_image_observation_ids_when_points3d_metadata_is_unusable() -> None:
+    frames = [_make_frame(1), _make_frame(2), _make_frame(3)]
+    images = {
+        1: ColmapImage(
+            image_id=1,
+            q_wxyz=frames[0].q_wxyz,
+            t_xyz=frames[0].t_xyz,
+            camera_id=0,
+            name="frame_1.png",
+            points2d_xy=np.array([[10.0, 20.0], [40.0, 18.0]], dtype=np.float32),
+            points2d_point3d_ids=np.array([101773, 59175], dtype=np.int64),
+        ),
+        2: ColmapImage(
+            image_id=2,
+            q_wxyz=frames[1].q_wxyz,
+            t_xyz=frames[1].t_xyz,
+            camera_id=0,
+            name="frame_2.png",
+            points2d_xy=np.array([[12.0, 22.0], [42.0, 17.0], [8.0, 5.0]], dtype=np.float32),
+            points2d_point3d_ids=np.array([101773, 59175, 123456], dtype=np.int64),
+        ),
+        3: ColmapImage(
+            image_id=3,
+            q_wxyz=frames[2].q_wxyz,
+            t_xyz=frames[2].t_xyz,
+            camera_id=0,
+            name="frame_3.png",
+            points2d_xy=np.array([[14.0, 24.0]], dtype=np.float32),
+            points2d_point3d_ids=np.array([101773], dtype=np.int64),
+        ),
+    }
+    points3d = {
+        11: ColmapPoint3D(11, np.array([0.0, 0.0, 0.0], dtype=np.float32), np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.1, track_length=0),
+    }
+    recon = ColmapReconstruction(root=Path("."), sparse_dir=Path("sparse/0"), cameras={}, images=images, points3d=points3d)
+
+    pool = build_photometric_observation_pair_pool(recon, frames, min_track_length=2)
+
     assert len(pool) == 4
-    np.testing.assert_array_equal(pool.frame_indices_a, np.array([0, 0, 1, 0], dtype=np.int32))
-    np.testing.assert_array_equal(pool.frame_indices_b, np.array([1, 2, 2, 1], dtype=np.int32))
-    np.testing.assert_allclose(pool.xy_a, np.array([[10.0, 20.0], [10.0, 20.0], [12.0, 22.0], [40.0, 18.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(pool.xy_b, np.array([[12.0, 22.0], [14.0, 24.0], [14.0, 24.0], [42.0, 17.0]], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(pool.point_ids, np.array([59175, 101773, 101773, 101773], dtype=np.int64))
+    np.testing.assert_array_equal(pool.track_lengths, np.array([2, 3, 3, 3], dtype=np.int32))
+    np.testing.assert_array_equal(pool.frame_indices_a, np.array([0, 0, 0, 1], dtype=np.int32))
+    np.testing.assert_array_equal(pool.frame_indices_b, np.array([1, 1, 2, 2], dtype=np.int32))
 
 
 def test_build_photometric_observation_track_pool_falls_back_to_database_matches(tmp_path: Path) -> None:
