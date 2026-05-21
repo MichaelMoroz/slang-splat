@@ -36,6 +36,8 @@ from .state import (
     COLMAP_ROTATION_MODE_AUTO,
     COLMAP_ROTATION_MODE_CUSTOM,
     COLMAP_ROTATION_MODE_NONE,
+    DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
+    DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
     DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     LOSS_DEBUG_OPTIONS,
 )
@@ -2423,7 +2425,7 @@ class ToolkitWindow:
             ui,
             key="colmap_init_neighbor_count",
             label="Init Neighbor Count",
-            default=8,
+            default=DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
             speed=0.25,
             min_value=2,
             max_value=128,
@@ -2433,7 +2435,7 @@ class ToolkitWindow:
             ui,
             key="colmap_init_anisotropy_strength",
             label="Init Anisotropy Strength",
-            default=1.0,
+            default=DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
             speed=0.01,
             min_value=0.0,
             max_value=1.0,
@@ -3893,6 +3895,8 @@ def build_ui(renderer) -> ViewerUI:
     for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:
         default_value = False if cast is bool else 0 if cast is int else () if cast is tuple else 20.0
         values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, default_value))
+    values["colmap_init_neighbor_count"] = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT))
+    values["colmap_init_anisotropy_strength"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH))
     values["colmap_fibonacci_sphere_radius_multiplier"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
     values["colmap_rotation_mode"] = int(
         _VIEWER_IMPORT_DEFAULTS.get(

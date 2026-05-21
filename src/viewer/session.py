@@ -93,6 +93,8 @@ from .session_dataset_utils import (
 from .state import (
     COLMAP_ROTATION_MODE_AUTO,
     COLMAP_ROTATION_MODE_NONE,
+    DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
+    DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
     ColmapImportProgress,
     ColmapImportSettings,
     SceneCountProxy,
@@ -1638,8 +1640,8 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         raise RuntimeError("Training scene initialization requires a loaded COLMAP reconstruction.")
     import_cfg = viewer.s.colmap_import
     min_track_length = int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH))
-    init_neighbor_count = max(int(getattr(import_cfg, "init_neighbor_count", 8)), 2)
-    init_anisotropy_strength = float(np.clip(getattr(import_cfg, "init_anisotropy_strength", 1.0), 0.0, 1.0))
+    init_neighbor_count = max(int(getattr(import_cfg, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT)), 2)
+    init_anisotropy_strength = float(np.clip(getattr(import_cfg, "init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH), 0.0, 1.0))
     _ensure_cached_init_source(viewer, init)
     if _uses_depth_init(import_cfg):
         positions = getattr(viewer.s, "cached_init_point_positions", None)
@@ -2032,8 +2034,8 @@ def _finish_import_colmap_dataset(
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
-    init_neighbor_count: int = 8,
-    init_anisotropy_strength: float = 1.0,
+    init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
+    init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     fibonacci_sphere_point_count: int = 0,
@@ -2165,8 +2167,8 @@ def import_colmap_dataset(
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
-    init_neighbor_count: int = 8,
-    init_anisotropy_strength: float = 1.0,
+    init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
+    init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     fibonacci_sphere_point_count: int = 0,
@@ -2335,8 +2337,8 @@ def import_colmap_from_ui(viewer: object) -> None:
     image_downscale_scale = float(np.clip(viewer.ui._values.get("colmap_image_scale", 1.0), 1e-6, 1.0))
     nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.5))
     min_track_length = max(int(viewer.ui._values.get("colmap_min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)), 0)
-    init_neighbor_count = max(int(viewer.ui._values.get("colmap_init_neighbor_count", 8)), 2)
-    init_anisotropy_strength = float(np.clip(viewer.ui._values.get("colmap_init_anisotropy_strength", 1.0), 0.0, 1.0))
+    init_neighbor_count = max(int(viewer.ui._values.get("colmap_init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT)), 2)
+    init_anisotropy_strength = float(np.clip(viewer.ui._values.get("colmap_init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH), 0.0, 1.0))
     depth_point_count = max(int(viewer.ui._values.get("colmap_depth_point_count", 100000)), 1)
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     fibonacci_sphere_point_count = max(int(viewer.ui._values.get("colmap_fibonacci_sphere_point_count", 0)), 0)
@@ -2538,8 +2540,8 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
                 min_track_length=progress.min_track_length,
-                init_neighbor_count=getattr(progress, "init_neighbor_count", 8),
-                init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", 1.0),
+                init_neighbor_count=getattr(progress, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT),
+                init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH),
                 depth_point_count=progress.depth_point_count,
                 diffused_point_count=progress.diffused_point_count,
                 fibonacci_sphere_point_count=progress.fibonacci_sphere_point_count,
@@ -2624,8 +2626,8 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
                 min_track_length=progress.min_track_length,
-                init_neighbor_count=getattr(progress, "init_neighbor_count", 8),
-                init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", 1.0),
+                init_neighbor_count=getattr(progress, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT),
+                init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH),
                 depth_point_count=progress.depth_point_count,
                 diffused_point_count=progress.diffused_point_count,
                 fibonacci_sphere_point_count=progress.fibonacci_sphere_point_count,
