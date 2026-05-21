@@ -2183,7 +2183,7 @@ class GaussianTrainer:
             self.state.last_loss = loss
             self.state.last_mse = image_mse
             self.state.last_ssim = image_ssim
-            self.state.last_psnr = float(psnr_from_mse(image_mse))
+            self.state.last_psnr = float(psnr_from_mse(image_display_mse))
             self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_ssim, self.state.last_psnr)
         if had_nonfinite:
             self.state.last_instability = "Non-finite loss after batched ADAM; moments reset."
@@ -2271,6 +2271,7 @@ class GaussianTrainer:
             raise RuntimeError("Frame evaluation did not produce any metrics.")
         loss = float(step_metrics[0, self._LOSS_SLOT_TOTAL])
         mse = float(step_metrics[0, self._LOSS_SLOT_MSE])
+        display_mse = float(step_metrics[0, self._BATCH_STEP_INFO_DISPLAY_MSE])
         ssim = float(step_metrics[0, self._BATCH_STEP_INFO_SSIM])
         metrics = FrameEvaluationMetrics(
             frame_index=int(resolved_frame_index),
@@ -2279,10 +2280,15 @@ class GaussianTrainer:
             loss=loss,
             mse=mse,
             ssim=ssim,
-            psnr=float(psnr_from_mse(mse)),
+            psnr=float(psnr_from_mse(display_mse)),
         )
         if update_runtime_metrics:
             self._frame_metrics.update(metrics.frame_index, metrics.loss, metrics.mse, metrics.ssim, metrics.psnr)
+            self.state.last_loss = metrics.loss
+            self.state.last_mse = metrics.mse
+            self.state.last_ssim = metrics.ssim
+            self.state.last_psnr = metrics.psnr
+            self.state.last_frame_index = metrics.frame_index
             self.state.avg_loss = self._frame_metrics.mean("loss")
             self.state.avg_mse = self._frame_metrics.mean("mse")
             self.state.avg_ssim = self._frame_metrics.mean("ssim")
