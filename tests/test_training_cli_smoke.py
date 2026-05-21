@@ -82,7 +82,7 @@ def test_train_cli_garden_images4_reaches_25db(capsys) -> None:
 
     assert cli.run_train_colmap(args) == 0
     stdout = capsys.readouterr().out
-    matches = re.findall(r"avg_psnr=([0-9]+(?:\\.[0-9]+)?)dB", stdout)
+    matches = re.findall(r"avg_psnr=([0-9]+(?:\.[0-9]+)?)dB", stdout)
 
     assert matches, stdout
     assert float(matches[-1]) >= 25.0, stdout

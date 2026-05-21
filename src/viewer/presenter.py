@@ -1006,18 +1006,46 @@ def _apply_training_debug_renderer_hparams(viewer: object, debug_renderer: objec
         debug_renderer.sh_band = resolve_sh_band(trainer.training, step)
 
 
+def _apply_main_view_renderer_hparams(viewer: object, renderer: object) -> None:
+    trainer = getattr(getattr(viewer, "s", None), "trainer", None)
+    training_params_getter = getattr(viewer, "training_params", None)
+    training_params = training_params_getter().training if callable(training_params_getter) else getattr(trainer, "training", SimpleNamespace())
+    active_sh_band = resolve_sh_band(trainer.training, trainer.state.step) if trainer is not None and hasattr(trainer, "training") and hasattr(trainer, "state") else int(getattr(training_params, "sh_band", 3 if bool(getattr(training_params, "use_sh", False)) else 0))
+    viewport_sh_band = min(max(int(getattr(getattr(viewer, "ui", None), "_values", {}).get("_viewport_sh_band", active_sh_band)), 0), 3)
+    if trainer is not None:
+        renderer.max_sh_band = int(getattr(getattr(trainer, "training", None), "max_sh_band", getattr(renderer, "max_sh_band", 3)))
+    renderer.sh_band = viewport_sh_band
+    renderer.debug_refinement_grad_variance_weight_exponent = float(getattr(training_params, "refinement_grad_variance_weight_exponent", getattr(renderer, "debug_refinement_grad_variance_weight_exponent", 0.0)))
+    renderer.debug_refinement_contribution_weight_exponent = float(getattr(training_params, "refinement_contribution_weight_exponent", getattr(renderer, "debug_refinement_contribution_weight_exponent", 0.0)))
+    renderer_params_getter = getattr(viewer, "renderer_params", None)
+    if callable(renderer_params_getter):
+        params = renderer_params_getter(True)
+        runtime_kwargs = params.renderer_kwargs()
+        if params.debug_mode is None:
+            runtime_kwargs["debug_mode"] = "normal"
+        for key, value in runtime_kwargs.items():
+            setattr(renderer, key, value)
+
+
 def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, render_frame_index: int) -> tuple[spy.Texture, dict[str, int | bool | float], int, int, dict[str, object] | None]:
     step = _training_debug_step(viewer)
     debug_width, debug_height = _training_debug_resolution(viewer, frame_idx, step)
     native_width, native_height = _training_debug_frame_size(viewer, frame_idx)
     frame_camera = viewer.s.trainer.make_frame_camera(frame_idx, debug_width, debug_height)
     native_camera = viewer.s.trainer.make_frame_camera(frame_idx, native_width, native_height)
-    debug_renderer = session.ensure_renderer(viewer, "debug_renderer", debug_width, debug_height, allow_debug_overlays=True)
-    session.sync_scene_from_training_renderer(viewer, debug_renderer, target="debug")
+    debug_renderer = require_not_none(viewer.s.training_renderer, "Training renderer is unavailable for debug rendering.")
+    set_resolution = getattr(debug_renderer, "set_render_resolution", None)
+    if callable(set_resolution):
+        set_resolution(debug_width, debug_height)
     _apply_training_debug_renderer_hparams(viewer, debug_renderer, step)
     sample_vars = _training_debug_sample_vars(viewer, frame_idx, step, render_frame_index)
     sort_dither = viewer.s.trainer.sorting_dither(frame_idx, step, frame_camera) if hasattr(viewer.s.trainer, "sorting_dither") else None
     training = viewer.s.trainer.training
+    workspace_getter = getattr(viewer.s.trainer, "renderer_training_workspace", None)
+    training_workspace = workspace_getter() if callable(workspace_getter) else None
+    refinement_buffers = getattr(viewer.s.trainer, "refinement_buffers", {})
+    clone_counts_buffer = refinement_buffers["clone_counts"] if "clone_counts" in refinement_buffers else None
+    splat_contribution_buffer = refinement_buffers["splat_contribution"] if "splat_contribution" in refinement_buffers else None
     source_tex, stats = debug_renderer.render_training_forward_to_texture(
         frame_camera,
         background=_training_debug_background(viewer),
@@ -1030,6 +1058,9 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
         training_background_seed=_training_debug_background_seed(viewer, render_frame_index),
         training_native_camera=native_camera,
         training_sample_vars=sample_vars,
+        clone_counts_buffer=clone_counts_buffer,
+        splat_contribution_buffer=splat_contribution_buffer,
+        training_workspace=training_workspace,
     )
     return source_tex, stats, debug_width, debug_height, sample_vars
 
@@ -1153,12 +1184,19 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
         )
 def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     with debug_region(encoder, "Viewer Main View", 147):
-        if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
-            session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
+        active_renderer = viewer.s.training_renderer if viewer.s.trainer is not None and viewer.s.training_renderer is not None else viewer.s.renderer
+        active_renderer = require_not_none(active_renderer, "Main renderer is unavailable.")
+        if active_renderer is viewer.s.training_renderer:
+            _apply_main_view_renderer_hparams(viewer, active_renderer)
+            target_width = int(getattr(viewer.s.renderer, "width", active_renderer.width)) if getattr(viewer.s, "renderer", None) is not None else int(active_renderer.width)
+            target_height = int(getattr(viewer.s.renderer, "height", active_renderer.height)) if getattr(viewer.s, "renderer", None) is not None else int(active_renderer.height)
+            set_resolution = getattr(active_renderer, "set_render_resolution", None)
+            if callable(set_resolution):
+                set_resolution(target_width, target_height)
         camera = viewer.camera()
-        width, height = int(viewer.s.renderer.width), int(viewer.s.renderer.height)
+        width, height = int(active_renderer.width), int(active_renderer.height)
         if _ppisp_preview_enabled(viewer):
-            out_tex, stats = viewer.s.renderer.render_ppisp_to_texture(
+            out_tex, stats = active_renderer.render_ppisp_to_texture(
                 camera,
                 PPISPTonemapParams.from_viewer_values(viewer.ui._values).to_shader_dict(),
                 background=viewer.s.background,
@@ -1167,7 +1205,7 @@ def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Textur
             )
             viewer.s.stats = stats
             return _dispatch_viewport_present(viewer, encoder, out_tex, width, height, width, height, source_is_linear=False)
-        out_tex, stats = viewer.s.renderer.render_to_texture(camera, background=viewer.s.background, read_stats=True, command_encoder=encoder)
+        out_tex, stats = active_renderer.render_to_texture(camera, background=viewer.s.background, read_stats=True, command_encoder=encoder)
         viewer.s.stats = stats
         return _dispatch_viewport_present(viewer, encoder, out_tex, width, height, width, height, source_is_linear=False)
 

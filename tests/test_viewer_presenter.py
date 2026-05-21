@@ -42,10 +42,18 @@ class _DummyRenderer:
         self.height = height
         self.sh_band = 0
         self.debug_mode = "normal"
+        self.max_sh_band = 3
         self.training_forward_calls: list[dict[str, object]] = []
         self.render_calls: list[dict[str, object]] = []
         self.render_linear_calls: list[dict[str, object]] = []
         self.render_ppisp_calls: list[dict[str, object]] = []
+        self.resolution_calls: list[tuple[int, int]] = []
+
+    def set_render_resolution(self, width: int, height: int) -> bool:
+        self.width = int(width)
+        self.height = int(height)
+        self.resolution_calls.append((self.width, self.height))
+        return True
 
     def render_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
         self.render_calls.append({"camera": camera, "background": background, "read_stats": read_stats, "command_encoder": command_encoder})
@@ -179,6 +187,10 @@ class _DummyTrainer:
         self.target_calls: list[tuple[int, bool, bool]] = []
         self.subsample_factor = 1
         self.target_tonemap_provider = None
+        self.refinement_buffers = {
+            "clone_counts": "clone_counts",
+            "splat_contribution": "splat_contribution",
+        }
 
     def step(self) -> None:
         self.step_calls += 1
@@ -250,6 +262,9 @@ class _DummyTrainer:
     def sorting_dither(self, frame_index: int, step: int, camera: object) -> SimpleNamespace:
         self.sort_calls.append((int(frame_index), int(step), camera))
         return SimpleNamespace(position=np.asarray([1.0, 2.0, 3.0], dtype=np.float32), sigma=0.125, seed=555)
+
+    def renderer_training_workspace(self) -> dict[str, object]:
+        return {"workspace": True}
 
     def frame_metrics_snapshot(self) -> dict[str, np.ndarray]:
         return {
@@ -750,6 +765,18 @@ def test_render_main_view_skips_ppisp_when_not_ppisp_debug_mode(monkeypatch) -> 
     assert len(viewer.s.renderer.render_calls) == 1
     assert viewer.s.renderer.render_linear_calls == []
     assert viewer.s.renderer.render_ppisp_calls == []
+
+
+def test_render_main_view_uses_shared_training_renderer_when_training(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+
+    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda *args, **kwargs: "present_tex")
+
+    assert presenter._render_main_view(viewer, _DummyEncoder()) == "present_tex"
+    assert len(viewer.s.training_renderer.render_calls) == 1
+    assert viewer.s.training_renderer.render_calls[0]["camera"] == "camera"
+    assert viewer.s.training_renderer.resolution_calls == [(640, 360)]
+    assert viewer.s.renderer.render_calls == []
 
 
 def test_render_frame_checks_time_based_renderer_recycling(monkeypatch):
@@ -1498,15 +1525,12 @@ def test_update_ui_text_publishes_photometric_colmap_import_progress() -> None:
     assert viewer.t("colmap_import_current").text == "Loss: last=1.250000e-03 | ema=9.500000e-04"
 
 
-def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch) -> None:
+def test_render_debug_source_uses_shared_training_renderer_for_rendered_view(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
     viewer.c("loss_debug_view").value = 0
     viewer.s.trainer.state.step = 17
     overlay_renderer = _DummyRenderer()
-    calls: list[tuple[str, object]] = []
-
-    monkeypatch.setattr(presenter.session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: calls.append(("ensure", allow_debug_overlays)) or overlay_renderer)
-    monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda viewer_obj, dst_renderer, target: calls.append(("sync", target)))
+    viewer.s.training_renderer = overlay_renderer
 
     source_tex, stats, width, height, sample_vars = presenter._render_debug_source(viewer, _DummyEncoder(), 0, 42)
 
@@ -1514,7 +1538,6 @@ def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch
     assert width == 320
     assert height == 180
     assert stats["generated_entries"] == 1
-    assert calls == [("ensure", True), ("sync", "debug")]
     assert viewer.s.trainer.training_resolution_calls == [(0, 17)]
     assert viewer.s.trainer.sample_vars_calls == [(0, 17, 42)]
     assert viewer.s.trainer.background_seed_calls == [42]
@@ -1525,19 +1548,20 @@ def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch
     assert render_call["camera"] == (0, 320, 180)
     assert render_call["training_native_camera"] == (0, 640, 360)
     assert render_call["training_background_seed"] == 1042
+    assert render_call["clone_counts_buffer"] == "clone_counts"
+    assert render_call["splat_contribution_buffer"] == "splat_contribution"
+    assert render_call["training_workspace"] == {"workspace": True}
+    assert overlay_renderer.resolution_calls == [(320, 180)]
     np.testing.assert_allclose(render_call["sort_camera_position"], np.asarray([1.0, 2.0, 3.0], dtype=np.float32))
     assert render_call["sort_camera_dither_sigma"] == 0.125
     assert render_call["sort_camera_dither_seed"] == 555
 
 
-def test_render_debug_source_uses_overlay_renderer_for_abs_diff(monkeypatch) -> None:
+def test_render_debug_source_uses_shared_training_renderer_for_abs_diff(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
     viewer.c("loss_debug_view").value = 2
     overlay_renderer = _DummyRenderer()
-    calls: list[tuple[str, object]] = []
-
-    monkeypatch.setattr(presenter.session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: calls.append(("ensure", allow_debug_overlays)) or overlay_renderer)
-    monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda viewer_obj, dst_renderer, target: calls.append(("sync", target)))
+    viewer.s.training_renderer = overlay_renderer
 
     source_tex, stats, width, height, _ = presenter._render_debug_source(viewer, _DummyEncoder(), 0, 7)
 
@@ -1545,7 +1569,7 @@ def test_render_debug_source_uses_overlay_renderer_for_abs_diff(monkeypatch) -> 
     assert width == 320
     assert height == 180
     assert stats["written_entries"] == 2
-    assert calls == [("ensure", True), ("sync", "debug")]
+    assert overlay_renderer.resolution_calls == [(320, 180)]
 
 
 def test_render_debug_target_uses_downscaled_target_without_subsampling() -> None:

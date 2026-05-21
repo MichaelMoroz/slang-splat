@@ -93,3 +93,37 @@ def test_trainer_resolution_summary_cache_reuses_all_frame_scan() -> None:
     assert trainer.max_training_resolution(0) == (1024, 512)
     assert trainer.training_resolutions_vary(0) is True
     assert calls == [(0, 0), (1, 0), (2, 0)]
+
+
+def test_trainer_restores_uniform_training_resolution_after_viewport_resize() -> None:
+    trainer = object.__new__(GaussianTrainer)
+    calls: list[object] = []
+
+    class _Renderer:
+        def __init__(self) -> None:
+            self.width = 640
+            self.height = 360
+
+        def ensure_render_capacity(self, width: int, height: int) -> bool:
+            calls.append(("capacity", int(width), int(height)))
+            return False
+
+        def set_render_resolution(self, width: int, height: int) -> bool:
+            self.width = int(width)
+            self.height = int(height)
+            calls.append(("resolution", self.width, self.height))
+            return True
+
+    trainer.renderer = _Renderer()
+    trainer._dynamic_frame_resolution = False
+    trainer.training_resolution = lambda frame_index=0, step=None: (320, 180)
+    trainer._max_training_resolution = lambda step=None: (320, 180)
+    trainer._invalidate_downscaled_target = lambda: calls.append("invalidate")
+    trainer._refinement_camera_signature = "stale"
+
+    trainer._ensure_frame_render_resolution(0, 0)
+
+    assert trainer.renderer.width == 320
+    assert trainer.renderer.height == 180
+    assert calls == [("capacity", 320, 180), ("resolution", 320, 180), "invalidate"]
+    assert trainer._refinement_camera_signature is None

@@ -621,6 +621,7 @@ class GaussianTrainer:
         training_sample_vars: dict[str, object] | None = None,
     ) -> None:
         resolved_step = self.state.step if step is None else int(step)
+        workspace = self._renderer_training_workspace(self._scene_count)
         self.renderer.rasterize_training_forward_current_scene(
             encoder=encoder,
             camera=frame_camera,
@@ -631,6 +632,7 @@ class GaussianTrainer:
             training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
             training_sample_vars=self._training_sample_vars(frame_index, resolved_step) if training_sample_vars is None else training_sample_vars,
+            training_workspace=workspace,
         )
 
     def _dispatch_raster_backward(
@@ -644,7 +646,8 @@ class GaussianTrainer:
         target_texture: spy.Texture | None = None,
     ) -> None:
         resolved_step = self.state.step if step is None else int(step)
-        self.renderer.clear_raster_grads_current_scene(encoder)
+        workspace = self._renderer_training_workspace(self._scene_count)
+        self.renderer.clear_raster_grads_current_scene(encoder, training_workspace=workspace)
         self._ensure_gradient_stats_buffer()
         self._dispatch(
             "clear_current_contribution",
@@ -656,18 +659,19 @@ class GaussianTrainer:
             encoder=encoder,
             camera=frame_camera,
             background=background,
-            output_grad=self.renderer.output_grad_buffer,
+            output_grad=self._renderer_workspace_buffer("output_grad_buffer"),
             grad_scale=1.0,
             target_texture=target_texture,
             use_target_alpha_mask=bool(target_alpha_skip_mask_enabled(self.training.target_alpha_mode) and target_texture is not None),
             target_alpha_threshold=float(self.training.target_alpha_threshold),
-            regularizer_grad=self.renderer.work_buffers["training_regularizer_grad"],
+            regularizer_grad=self._renderer_workspace_buffer("training_regularizer_grad"),
             gradient_stats_buffer=self._refinement_buffers["gradient_stats"],
             splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
             training_background_mode=int(self.training.background_mode),
             training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
             training_sample_vars=self._training_sample_vars(frame_index, resolved_step),
+            training_workspace=workspace,
         )
         self._dispatch(
             "update_visible_average_contribution",
@@ -856,10 +860,7 @@ class GaussianTrainer:
         self.training = training_hparams
         self._invalidate_training_resolution_summary()
         self._apply_renderer_training_hparams()
-        self._dynamic_frame_resolution = (
-            int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)),
-            int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)),
-        ) == self._max_training_resolution(self.state.step)
+        self._dynamic_frame_resolution = self.training_resolutions_vary(self.state.step)
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self.state.last_base_lr = self.current_base_lr(self.state.step)
         self.adam_optimizer.update_hyperparams(self.adam, self._adam_runtime_hparams())
@@ -959,10 +960,7 @@ class GaussianTrainer:
         self._training_resolution_summary_cache: tuple[tuple[int, int], bool] | None = None
         self._frame_camera_nn_distances = self._nearest_camera_distances(self.frames)
         self._apply_renderer_training_hparams()
-        self._dynamic_frame_resolution = (
-            int(getattr(renderer, "_render_capacity_width", renderer.width)),
-            int(getattr(renderer, "_render_capacity_height", renderer.height)),
-        ) == self._max_training_resolution(0)
+        self._dynamic_frame_resolution = self.training_resolutions_vary(0)
         self.metrics = Metrics(self.device)
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._adam_runtime_hparams())
         self.optimizer = GaussianOptimizer(self.device, self.renderer, self.adam, self.stability)
@@ -982,6 +980,13 @@ class GaussianTrainer:
         self._buffers: dict[str, spy.Buffer] = {}
         self._refinement_buffers: dict[str, spy.Buffer] = {}
         self._refinement_buffer_view = _RefinementBufferView(self)
+        self._renderer_workspace_buffers: dict[str, spy.Buffer] = {}
+        self._renderer_workspace_textures: dict[str, spy.Texture] = {}
+        self._renderer_workspace_width = 0
+        self._renderer_workspace_height = 0
+        self._renderer_workspace_splat_capacity = 0
+        self._renderer_workspace_packed_param_count = 0
+        self._renderer_workspace_raster_param_count = 0
         self._splat_capacity = 0
         self._batch_step_capacity = 0
         self._refinement_splat_capacity = 0
@@ -1058,6 +1063,7 @@ class GaussianTrainer:
         self._buffers = {}
         _defer_owned_resources(self._refinement_buffers, seen)
         self._refinement_buffers = {}
+        self._release_renderer_workspace(seen)
 
         if self._ssim_blur is not None:
             _defer_owned_resources(getattr(self._ssim_blur, "_scratch_buffers", None), seen)
@@ -1127,11 +1133,94 @@ class GaussianTrainer:
             usage=RW_BUFFER_USAGE,
         )
 
+    def _release_renderer_workspace(self, seen: set[int] | None = None) -> None:
+        seen_ids = set() if seen is None else seen
+        _defer_owned_resources(self._renderer_workspace_buffers, seen_ids)
+        _defer_owned_resources(self._renderer_workspace_textures, seen_ids)
+        self._renderer_workspace_buffers = {}
+        self._renderer_workspace_textures = {}
+        self._renderer_workspace_width = 0
+        self._renderer_workspace_height = 0
+        self._renderer_workspace_splat_capacity = 0
+        self._renderer_workspace_packed_param_count = 0
+        self._renderer_workspace_raster_param_count = 0
+
+    def _ensure_renderer_workspace(self, splat_count: int | None = None) -> None:
+        required_splats = max(int(self._scene_count if splat_count is None else splat_count), 1)
+        required_width = max(int(self.renderer.width), 1)
+        required_height = max(int(self.renderer.height), 1)
+        packed_param_count = int(self.renderer.packed_trainable_param_count)
+        raster_param_count = int(getattr(self.renderer, "_RASTER_CACHE_PARAM_COUNT", packed_param_count))
+        target_splat_capacity = self._renderer_workspace_splat_capacity
+        if required_splats > target_splat_capacity:
+            target_splat_capacity = _grow_trainer_buffer_capacity(required_splats, target_splat_capacity)
+        target_width = max(required_width, self._renderer_workspace_width)
+        target_height = max(required_height, self._renderer_workspace_height)
+        if (
+            self._renderer_workspace_buffers
+            and self._renderer_workspace_textures
+            and target_splat_capacity == self._renderer_workspace_splat_capacity
+            and target_width == self._renderer_workspace_width
+            and target_height == self._renderer_workspace_height
+            and packed_param_count == self._renderer_workspace_packed_param_count
+            and raster_param_count == self._renderer_workspace_raster_param_count
+        ):
+            return
+        self._release_renderer_workspace()
+        pixel_capacity = max(target_width * target_height, 1)
+        tile_size = max(int(getattr(self.renderer, "tile_size", 1)), 1)
+        tile_width = (target_width + tile_size - 1) // tile_size
+        tile_height = (target_height + tile_size - 1) // tile_size
+        tile_capacity = max(tile_width * tile_height, 1)
+        self._renderer_workspace_buffers = {
+            "training_forward_state": alloc_buffer(self.device, name="trainer.render_workspace.training_forward_state", size=pixel_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE),
+            "training_density": alloc_buffer(self.device, name="trainer.render_workspace.training_density", size=pixel_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "training_rgb_loss": alloc_buffer(self.device, name="trainer.render_workspace.training_rgb_loss", size=pixel_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "training_rgb_loss_total": alloc_buffer(self.device, name="trainer.render_workspace.training_rgb_loss_total", size=self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "training_target_edge": alloc_buffer(self.device, name="trainer.render_workspace.training_target_edge", size=pixel_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "training_target_edge_total": alloc_buffer(self.device, name="trainer.render_workspace.training_target_edge_total", size=self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "training_regularizer_grad": alloc_buffer(self.device, name="trainer.render_workspace.training_regularizer_grad", size=pixel_capacity * self._U32_BYTES * 2, usage=RW_BUFFER_USAGE),
+            "training_processed_end": alloc_buffer(self.device, name="trainer.render_workspace.training_processed_end", size=pixel_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "training_batch_end": alloc_buffer(self.device, name="trainer.render_workspace.training_batch_end", size=tile_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "training_splat_contribution": alloc_buffer(self.device, name="trainer.render_workspace.training_splat_contribution", size=target_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE),
+            "output_grad_buffer": alloc_buffer(self.device, name="trainer.render_workspace.output_grad", size=pixel_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE),
+            "param_grads": alloc_buffer(self.device, name="trainer.render_workspace.param_grads", size=target_splat_capacity * packed_param_count * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "cached_raster_grads_fixed": alloc_buffer(self.device, name="trainer.render_workspace.cached_raster_grads_fixed", size=target_splat_capacity * raster_param_count * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "cached_raster_grads_float": alloc_buffer(self.device, name="trainer.render_workspace.cached_raster_grads_float", size=target_splat_capacity * raster_param_count * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+            "cached_raster_grads_metrics_float": alloc_buffer(self.device, name="trainer.render_workspace.cached_raster_grads_metrics_float", size=target_splat_capacity * raster_param_count * self._U32_BYTES, usage=RW_BUFFER_USAGE),
+        }
+        self._renderer_workspace_textures = {
+            "training_depth_stats_texture": alloc_texture_2d(
+                self.device,
+                name="trainer.render_workspace.training_depth_stats",
+                format=spy.Format.rgba32_float,
+                width=target_width,
+                height=target_height,
+                usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+            ),
+        }
+        self._renderer_workspace_width = target_width
+        self._renderer_workspace_height = target_height
+        self._renderer_workspace_splat_capacity = target_splat_capacity
+        self._renderer_workspace_packed_param_count = packed_param_count
+        self._renderer_workspace_raster_param_count = raster_param_count
+
+    def _renderer_training_workspace(self, splat_count: int | None = None) -> dict[str, object]:
+        self._ensure_renderer_workspace(splat_count)
+        return {**self._renderer_workspace_buffers, **self._renderer_workspace_textures}
+
+    def _renderer_workspace_buffer(self, name: str) -> spy.Buffer:
+        self._ensure_renderer_workspace(self._scene_count)
+        return self._renderer_workspace_buffers[name]
+
+    def renderer_training_workspace(self) -> Mapping[str, object]:
+        return self._renderer_training_workspace(self._scene_count)
+
     def _ensure_ssim_buffers(self) -> None:
         active_width = max(int(self.renderer.width), 1)
         active_height = max(int(self.renderer.height), 1)
-        capacity_width = max(int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)), active_width)
-        capacity_height = max(int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)), active_height)
+        capacity_width = max(active_width, int(self._ssim_resolution[0]) if self._ssim_resolution is not None else 0)
+        capacity_height = max(active_height, int(self._ssim_resolution[1]) if self._ssim_resolution is not None else 0)
         resolution = (capacity_width, capacity_height)
         if self._ssim_resolution == resolution and self._ssim_blur is not None and all(name in self._buffers for name in ("ssim_moments", "ssim_blurred_moments", "ssim_blurred_feature_grads", "ssim_feature_grads")):
             self._ssim_blur.set_active_size(active_width, active_height)
@@ -1532,9 +1621,9 @@ class GaussianTrainer:
         return camera
 
     def _ensure_frame_render_resolution(self, frame_index: int, step: int | None = None) -> None:
-        if not self._dynamic_frame_resolution:
-            return
         width, height = self.training_resolution(frame_index, step)
+        if not self._dynamic_frame_resolution and (int(self.renderer.width), int(self.renderer.height)) == (int(width), int(height)):
+            return
         set_resolution = getattr(self.renderer, "set_render_resolution", None)
         if set_resolution is None:
             if (int(self.renderer.width), int(self.renderer.height)) != (int(width), int(height)):
@@ -1717,11 +1806,14 @@ class GaussianTrainer:
         return self._refresh_compensated_native_target(encoder, frame_index)
 
     def _ensure_train_target_texture(self) -> None:
-        width = max(int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)), 1)
-        height = max(int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)), 1)
+        width = max(int(self.renderer.width), 1)
+        height = max(int(self.renderer.height), 1)
         texture = self._train_target_texture
-        if texture is not None and int(texture.width) == width and int(texture.height) == height:
+        if texture is not None and int(texture.width) >= width and int(texture.height) >= height:
             return
+        if texture is not None:
+            width = max(width, int(texture.width))
+            height = max(height, int(texture.height))
         defer_resource_release(self._train_target_texture)
         self._train_target_texture = alloc_texture_2d(
             self.device,
@@ -1739,11 +1831,14 @@ class GaussianTrainer:
         return self._psnr_target_texture
 
     def _ensure_psnr_target_texture(self) -> None:
-        width = max(int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)), 1)
-        height = max(int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)), 1)
+        width = max(int(self.renderer.width), 1)
+        height = max(int(self.renderer.height), 1)
         texture = self._psnr_target_texture
-        if texture is not None and int(texture.width) == width and int(texture.height) == height:
+        if texture is not None and int(texture.width) >= width and int(texture.height) >= height:
             return
+        if texture is not None:
+            width = max(width, int(texture.width))
+            height = max(height, int(texture.height))
         defer_resource_release(self._psnr_target_texture)
         self._psnr_target_texture = alloc_texture_2d(
             self.device,
@@ -1919,7 +2014,7 @@ class GaussianTrainer:
         frame_index: int = 0,
         training_sample_vars: dict[str, object] | None = None,
     ) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"], "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"], **self._loss_vars(frame_index, step, target_texture, training_sample_vars)}
+        shared = {"g_OutputGrad": self._renderer_workspace_buffer("output_grad_buffer"), "g_RegularizerGrad": self._renderer_workspace_buffer("training_regularizer_grad"), "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self._renderer_workspace_buffer("training_rgb_loss"), "g_TrainingRgbLossTotal": self._renderer_workspace_buffer("training_rgb_loss_total"), "g_TrainingTargetEdge": self._renderer_workspace_buffer("training_target_edge"), "g_TrainingTargetEdgeTotal": self._renderer_workspace_buffer("training_target_edge_total"), **self._loss_vars(frame_index, step, target_texture, training_sample_vars)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
         self._dispatch_ssim_feature_extraction(encoder, target_texture, step, frame_index, training_sample_vars)
         self._dispatch_ssim_blur(encoder, "ssim_moments", "ssim_blurred_moments")
@@ -1929,15 +2024,15 @@ class GaussianTrainer:
             self._pixel_thread_count(),
             {
                 "g_Rendered": self.renderer.output_texture,
-                "g_RenderedDensity": self.renderer.work_buffers["training_density"],
+                "g_RenderedDensity": self._renderer_workspace_buffer("training_density"),
                 "g_Target": target_texture,
-                "g_OutputGrad": self.renderer.output_grad_buffer,
-                "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"],
+                "g_OutputGrad": self._renderer_workspace_buffer("output_grad_buffer"),
+                "g_RegularizerGrad": self._renderer_workspace_buffer("training_regularizer_grad"),
                 "g_LossBuffer": self._buffers["loss"],
-                "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"],
-                "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"],
-                "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"],
-                "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"],
+                "g_TrainingRgbLoss": self._renderer_workspace_buffer("training_rgb_loss"),
+                "g_TrainingRgbLossTotal": self._renderer_workspace_buffer("training_rgb_loss_total"),
+                "g_TrainingTargetEdge": self._renderer_workspace_buffer("training_target_edge"),
+                "g_TrainingTargetEdgeTotal": self._renderer_workspace_buffer("training_target_edge_total"),
                 **self._ssim_vars(),
                 **self._psnr_metric_vars(encoder, frame_index, target_texture, step),
                 **self._loss_vars(frame_index, step, target_texture, training_sample_vars),
@@ -1953,10 +2048,10 @@ class GaussianTrainer:
             self._pixel_thread_count(),
             {
                 "g_Rendered": self.renderer.output_texture,
-                "g_RenderedDensity": self.renderer.work_buffers["training_density"],
+                "g_RenderedDensity": self._renderer_workspace_buffer("training_density"),
                 "g_Target": target_texture,
-                "g_OutputGrad": self.renderer.output_grad_buffer,
-                "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"],
+                "g_OutputGrad": self._renderer_workspace_buffer("output_grad_buffer"),
+                "g_RegularizerGrad": self._renderer_workspace_buffer("training_regularizer_grad"),
                 "g_LossBuffer": self._buffers["loss"],
                 **self._ssim_vars(),
                 **self._loss_vars(frame_index, step, target_texture),
@@ -2010,7 +2105,7 @@ class GaussianTrainer:
             self.adam_optimizer.dispatch_step(
                 encoder,
                 params_buffer=self.renderer.scene_buffers["splat_params"],
-                grads_buffer=self.renderer.work_buffers["param_grads"],
+                grads_buffer=self._renderer_workspace_buffer("param_grads"),
                 element_count=self._scene_count,
                 packed_param_count=self._scene_count * self.renderer.packed_trainable_param_count,
                 param_group_size=self._scene_count,
@@ -2093,13 +2188,11 @@ class GaussianTrainer:
         self.apply_renderer_training_hparams(renderer=renderer)
         if old_renderer.packed_trainable_param_count != renderer.packed_trainable_param_count:
             self._remap_adam_moments_for_renderer(old_renderer, renderer)
-        self._dynamic_frame_resolution = (
-            int(getattr(renderer, "_render_capacity_width", renderer.width)),
-            int(getattr(renderer, "_render_capacity_height", renderer.height)),
-        ) == self._max_training_resolution(self.state.step)
+        self._dynamic_frame_resolution = self.training_resolutions_vary(self.state.step)
         self.training.train_downscale_factor = self.effective_train_downscale_factor(self.state.step)
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_refinement_buffers(self._scene_count)
+        self._ensure_renderer_workspace(self._scene_count)
         self._refinement_camera_signature = None
         self._clear_clone_counts(preserve_refinement_history=True)
         self._ensure_train_target_texture()

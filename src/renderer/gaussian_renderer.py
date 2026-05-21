@@ -6,7 +6,7 @@ from functools import lru_cache
 import operator
 from pathlib import Path
 import re
-from typing import Callable
+from typing import Callable, Mapping
 
 import numpy as np
 import slangpy as spy
@@ -405,9 +405,32 @@ class GaussianRenderer:
     def _raster_cache_vars(self) -> dict[str, object]:
         return self._buffer_vars(self._RASTER_CACHE_SHADER_VARS, self._work_buffers)
 
-    def _raster_grad_vars(self) -> dict[str, object]:
+    def _resolve_training_workspace_buffer(self, name: str, training_workspace: Mapping[str, object] | None = None) -> spy.Buffer:
+        if training_workspace is not None:
+            buffer = training_workspace.get(name)
+            if buffer is not None:
+                return buffer
+        self._ensure_training_work_buffers(self._scene_count)
+        return self._work_buffers[name]
+
+    def _resolve_training_workspace_texture(self, name: str, training_workspace: Mapping[str, object] | None = None) -> spy.Texture:
+        if training_workspace is not None:
+            texture = training_workspace.get(name)
+            if texture is not None:
+                return texture
+        self._ensure_training_work_buffers(self._scene_count)
+        if name == "training_depth_stats_texture":
+            return self.training_depth_stats_texture
+        raise KeyError(f"Unknown training workspace texture: {name}")
+
+    def _raster_grad_var_buffers(self, training_workspace: Mapping[str, object] | None = None) -> dict[str, object]:
+        if training_workspace is not None and all(training_workspace.get(name) is not None for name in self._RASTER_GRAD_SHADER_VARS):
+            return {name: training_workspace[name] for name in self._RASTER_GRAD_SHADER_VARS}
         self._ensure_grad_work_buffers(self._scene_count)
-        return self._buffer_vars(self._RASTER_GRAD_SHADER_VARS, self._work_buffers)
+        return {name: self._work_buffers[name] for name in self._RASTER_GRAD_SHADER_VARS}
+
+    def _raster_grad_vars(self, training_workspace: Mapping[str, object] | None = None) -> dict[str, object]:
+        return self._buffer_vars(self._RASTER_GRAD_SHADER_VARS, self._raster_grad_var_buffers(training_workspace))
 
     @staticmethod
     def _raster_grad_decode_scale_var(grad_scale: float) -> dict[str, object]:
@@ -1484,9 +1507,9 @@ class GaussianRenderer:
             vars.update(self._debug_grad_stats_var())
         self._dispatch(shader, encoder, self._raster_thread_count(), vars, "Rasterize", 24)
 
-    def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int) -> None:
+    def _clear_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, training_workspace: Mapping[str, object] | None = None) -> None:
         clear_count = int(splat_count) * max(self.packed_trainable_param_count, self._RASTER_CACHE_PARAM_COUNT)
-        self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(max(clear_count, 1), 1, 1), {**self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
+        self._dispatch(self._raster_grad_shader_set().clear, encoder, spy.uint3(max(clear_count, 1), 1, 1), {**self._raster_grad_vars(training_workspace), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(splat_count)}, "Clear Raster Grads", 25)
 
     def _rasterize_training_forward(
         self,
@@ -1500,10 +1523,14 @@ class GaussianRenderer:
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
+        training_workspace: Mapping[str, object] | None = None,
     ) -> None:
         target = self.output_texture if output is None else output
         resolved_native_camera = camera if training_native_camera is None else training_native_camera
         resolved_sample_vars = self._disabled_training_sample_vars() if training_sample_vars is None else training_sample_vars
+        resolved_training_depth_stats = self._resolve_training_workspace_texture("training_depth_stats_texture", training_workspace)
+        resolved_clone_counts = self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer
+        resolved_splat_contribution = self._resolve_training_workspace_buffer("training_splat_contribution", training_workspace) if splat_contribution_buffer is None else splat_contribution_buffer
         vars = {
             **self._scene_vars(),
             **self._screen_vars(),
@@ -1511,13 +1538,13 @@ class GaussianRenderer:
             "g_SortedValues": self._sorted_values(),
             "g_TileRanges": self._work_buffers["tile_ranges"],
             "g_Output": target,
-            "g_TrainingForwardState": self._work_buffers["training_forward_state"],
-            "g_TrainingDepthStats": self._training_depth_stats_texture,
-            "g_TrainingDensity": self._work_buffers["training_density"],
-            "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"],
-            "g_TrainingBatchEnd": self._work_buffers["training_batch_end"],
-            "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer,
-            "g_SplatContributionInfo": self._work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
+            "g_TrainingForwardState": self._resolve_training_workspace_buffer("training_forward_state", training_workspace),
+            "g_TrainingDepthStats": resolved_training_depth_stats,
+            "g_TrainingDensity": self._resolve_training_workspace_buffer("training_density", training_workspace),
+            "g_TrainingProcessedEnd": self._resolve_training_workspace_buffer("training_processed_end", training_workspace),
+            "g_TrainingBatchEnd": self._resolve_training_workspace_buffer("training_batch_end", training_workspace),
+            "g_CloneCounts": resolved_clone_counts,
+            "g_SplatContributionInfo": resolved_splat_contribution,
             **self._raster_grad_decode_scale_var(1.0),
             **self._raster_grad_fixed_range_vars(),
             **self._prepass_uniforms(self._scene_count),
@@ -1546,16 +1573,17 @@ class GaussianRenderer:
         training_sample_vars: dict[str, object] | None = None,
         gradient_stats_buffer: spy.Buffer | None = None,
         splat_contribution_buffer: spy.Buffer | None = None,
+        training_workspace: Mapping[str, object] | None = None,
     ) -> None:
-        resolved_regularizer_grad = self._work_buffers["training_regularizer_grad"] if regularizer_grad is None else regularizer_grad
+        resolved_regularizer_grad = self._resolve_training_workspace_buffer("training_regularizer_grad", training_workspace) if regularizer_grad is None else regularizer_grad
         resolved_gradient_stats = self._work_buffers["debug_grad_stats"] if gradient_stats_buffer is None else gradient_stats_buffer
-        resolved_splat_contribution = self._work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer
+        resolved_splat_contribution = self._resolve_training_workspace_buffer("training_splat_contribution", training_workspace) if splat_contribution_buffer is None else splat_contribution_buffer
         resolved_native_camera = camera if training_native_camera is None else training_native_camera
         resolved_sample_vars = self._disabled_training_sample_vars() if training_sample_vars is None else training_sample_vars
         resolved_target_alpha_threshold = float(np.clip(target_alpha_threshold, 0.0, 1.0))
         if regularizer_grad is None:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
-        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_Target": self.output_texture if target_texture is None else target_texture, "g_UseTargetAlphaMask": int(bool(use_target_alpha_mask)), "g_TargetAlphaThreshold": resolved_target_alpha_threshold, "g_TrainingForwardState": self._work_buffers["training_forward_state"], "g_TrainingDepthStats": self._training_depth_stats_texture, "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._work_buffers["training_processed_end"], "g_TrainingBatchEnd": self._work_buffers["training_batch_end"], "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_SplatContributionInfo": resolved_splat_contribution, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
+        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_Target": self.output_texture if target_texture is None else target_texture, "g_UseTargetAlphaMask": int(bool(use_target_alpha_mask)), "g_TargetAlphaThreshold": resolved_target_alpha_threshold, "g_TrainingForwardState": self._resolve_training_workspace_buffer("training_forward_state", training_workspace), "g_TrainingDepthStats": self._resolve_training_workspace_texture("training_depth_stats_texture", training_workspace), "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._resolve_training_workspace_buffer("training_processed_end", training_workspace), "g_TrainingBatchEnd": self._resolve_training_workspace_buffer("training_batch_end", training_workspace), "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_SplatContributionInfo": resolved_splat_contribution, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(training_workspace), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
         self._dispatch(
             self._raster_grad_shader_set().resolve_stats,
@@ -1564,7 +1592,7 @@ class GaussianRenderer:
             {
                 "g_GradientStats": resolved_gradient_stats,
                 **self._raster_cache_vars(),
-                **self._raster_grad_vars(),
+                **self._raster_grad_vars(training_workspace),
                 **self._raster_grad_decode_scale_var(1.0),
                 **self._raster_grad_fixed_range_vars(),
                 **self._prepass_uniforms(self._scene_count),
@@ -1573,7 +1601,7 @@ class GaussianRenderer:
             28,
         )
 
-    def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0) -> None:
+    def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0, training_workspace: Mapping[str, object] | None = None) -> None:
         self._dispatch(
             self._raster_grad_shader_set().backprop,
             encoder,
@@ -1581,7 +1609,7 @@ class GaussianRenderer:
             {
                 **self._scene_vars(),
                 **self._raster_cache_vars(),
-                **self._raster_grad_vars(),
+                **self._raster_grad_vars(training_workspace),
                 **self._raster_grad_decode_scale_var(grad_scale),
                 **self._raster_grad_fixed_range_vars(),
                 **self._prepass_uniforms(splat_count),
@@ -2185,8 +2213,8 @@ class GaussianRenderer:
         self._require_scene()
         self._rasterize(encoder, camera, background)
 
-    def clear_raster_grads_current_scene(self, encoder: spy.CommandEncoder) -> None:
-        self._clear_raster_grads(encoder, self._require_scene().count)
+    def clear_raster_grads_current_scene(self, encoder: spy.CommandEncoder, training_workspace: Mapping[str, object] | None = None) -> None:
+        self._clear_raster_grads(encoder, self._require_scene().count, training_workspace)
 
     def rasterize_training_forward_current_scene(
         self,
@@ -2200,9 +2228,10 @@ class GaussianRenderer:
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
+        training_workspace: Mapping[str, object] | None = None,
     ) -> None:
         self._require_scene()
-        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, splat_contribution_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars)
+        self._rasterize_training_forward(encoder, camera, background, output, clone_counts_buffer, splat_contribution_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars, training_workspace)
 
     def rasterize_backward_current_scene(
         self,
@@ -2222,10 +2251,11 @@ class GaussianRenderer:
         training_sample_vars: dict[str, object] | None = None,
         gradient_stats_buffer: spy.Buffer | None = None,
         splat_contribution_buffer: spy.Buffer | None = None,
+        training_workspace: Mapping[str, object] | None = None,
     ) -> None:
         self._require_scene()
-        self._rasterize_backward(encoder, camera, background, output_grad, target_texture, use_target_alpha_mask, target_alpha_threshold, regularizer_grad, clone_counts_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars, gradient_stats_buffer, splat_contribution_buffer)
-        self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale)
+        self._rasterize_backward(encoder, camera, background, output_grad, target_texture, use_target_alpha_mask, target_alpha_threshold, regularizer_grad, clone_counts_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars, gradient_stats_buffer, splat_contribution_buffer, training_workspace)
+        self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale, training_workspace)
 
     def render_to_texture(
         self,
@@ -2358,11 +2388,17 @@ class GaussianRenderer:
         training_background_seed: int = 0,
         training_native_camera: Camera | None = None,
         training_sample_vars: dict[str, object] | None = None,
+        clone_counts_buffer: spy.Buffer | None = None,
+        splat_contribution_buffer: spy.Buffer | None = None,
+        training_workspace: Mapping[str, object] | None = None,
     ) -> tuple[spy.Texture, dict[str, int | bool | float]]:
         scene = self._require_scene()
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
-        self._ensure_training_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        if training_workspace is None:
+            self._ensure_training_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        else:
+            self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
         self._maybe_force_prepass_capacity_sync(camera)
         background_np = self._background_array(background)
         if command_encoder is None:
@@ -2372,7 +2408,7 @@ class GaussianRenderer:
                 frame_label="Renderer Training Preview",
                 prepass_label="Renderer Training Preview Prepass",
                 record_prepass=lambda: self._record_prepass(enc, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed),
-                rasterize=lambda: self._rasterize_training_forward(enc, camera, background_np, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars),
+                rasterize=lambda: self._rasterize_training_forward(enc, camera, background_np, clone_counts_buffer=clone_counts_buffer, splat_contribution_buffer=splat_contribution_buffer, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars, training_workspace=training_workspace),
             )
             self.device.submit_command_buffer(enc.finish())
             self._counter_readback_frame_id += 1
@@ -2383,7 +2419,7 @@ class GaussianRenderer:
                 frame_label="Renderer Training Preview",
                 prepass_label="Renderer Training Preview Prepass",
                 record_prepass=lambda: self._record_prepass(command_encoder, scene, camera, enqueue_counter_readback=True, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed),
-                rasterize=lambda: self._rasterize_training_forward(command_encoder, camera, background_np, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars),
+                rasterize=lambda: self._rasterize_training_forward(command_encoder, camera, background_np, clone_counts_buffer=clone_counts_buffer, splat_contribution_buffer=splat_contribution_buffer, training_background_mode=training_background_mode, training_background_seed=training_background_seed, training_native_camera=training_native_camera, training_sample_vars=training_sample_vars, training_workspace=training_workspace),
             )
             self._counter_readback_frame_id += 1
         if read_stats:

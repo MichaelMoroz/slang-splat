@@ -1098,6 +1098,7 @@ def _release_training_runtime(viewer: object, *, preserve_frame_targets: bool = 
     if callable(release_resources):
         release_resources(preserve_frame_targets=bool(preserve_frame_targets))
     viewer.s.trainer = None
+    _clear_debug_buffers(getattr(viewer.s, "training_renderer", None))
     _clear_debug_buffers(getattr(viewer.s, "renderer", None))
     _clear_debug_buffers(getattr(viewer.s, "debug_renderer", None))
 
@@ -1402,7 +1403,10 @@ def _training_debug_adam_moments_buffer(viewer: object):
 def _clear_debug_buffers(renderer: GaussianRenderer | None) -> None:
     if renderer is None:
         return
-    renderer.set_debug_grad_norm_buffer(None)
+    set_grad_norm = getattr(renderer, "set_debug_grad_norm_buffer", None)
+    if not callable(set_grad_norm):
+        return
+    set_grad_norm(None)
     bind_grad_stats = getattr(renderer, "set_debug_grad_stats_buffer", None)
     if callable(bind_grad_stats):
         bind_grad_stats(None)
@@ -1424,7 +1428,10 @@ def _clear_debug_buffers(renderer: GaussianRenderer | None) -> None:
 def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> None:
     if renderer is None:
         return
-    renderer.set_debug_grad_norm_buffer(
+    set_grad_norm = getattr(renderer, "set_debug_grad_norm_buffer", None)
+    if not callable(set_grad_norm):
+        return
+    set_grad_norm(
         viewer.s.training_renderer.work_buffers["debug_grad_norm"]
         if viewer.s.training_renderer is not None and viewer.s.trainer is not None
         else None
@@ -1489,6 +1496,8 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     viewer.device.submit_command_buffer(enc.finish())
     viewer.s.training_renderer = renderer
     viewer.s.trainer.rebind_renderer(renderer)
+    _apply_debug_buffers(viewer, viewer.s.training_renderer)
+    _apply_debug_buffers(viewer, viewer.s.training_renderer)
     _apply_debug_buffers(viewer, viewer.s.renderer)
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)
     _invalidate(viewer)
@@ -1541,8 +1550,8 @@ def maybe_reallocate_renderers(viewer: object, render_width: int, render_height:
 def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
     renderer = GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(
         viewer.device,
-        allocate_training_work_buffers=not allow_debug_overlays,
-        allocate_grad_work_buffers=not allow_debug_overlays,
+        allocate_training_work_buffers=False,
+        allocate_grad_work_buffers=False,
     )
     if not allow_debug_overlays or getattr(viewer.s, "trainer", None) is not None:
         _, params, _, _ = resolve_effective_training_setup(viewer)
@@ -1603,21 +1612,20 @@ def ensure_training_runtime_resolution(viewer: object) -> bool:
             viewer.s.applied_training_runtime_signature = runtime_signature
             runtime_changed = True
     current_factor = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
-    current_size = (
+    current_capacity = (
         int(getattr(viewer.s.training_renderer, "_render_capacity_width", viewer.s.training_renderer.width)),
         int(getattr(viewer.s.training_renderer, "_render_capacity_height", viewer.s.training_renderer.height)),
     )
     desired_width, desired_height = viewer.s.trainer.max_training_resolution()
     desired_size = (int(desired_width), int(desired_height))
-    if viewer.s.applied_training_runtime_factor == current_factor and current_size == desired_size and not runtime_changed:
+    capacity_satisfies_training = current_capacity[0] >= desired_size[0] and current_capacity[1] >= desired_size[1]
+    if viewer.s.applied_training_runtime_factor == current_factor and capacity_satisfies_training and not runtime_changed:
         viewer.s.pending_training_runtime_resize = False
         return False
-    if current_size == desired_size:
-        if runtime_changed:
-            _replace_training_renderer(viewer, desired_size[0], desired_size[1])
+    if capacity_satisfies_training:
         viewer.s.applied_training_runtime_factor = current_factor
         viewer.s.pending_training_runtime_resize = False
-        return True
+        return runtime_changed
     _replace_training_renderer(viewer, desired_size[0], desired_size[1])
     viewer.s.applied_training_runtime_factor = current_factor
     viewer.s.pending_training_runtime_resize = False
@@ -2941,10 +2949,11 @@ def initialize_training_scene(
         if trainer is not None and hasattr(trainer, "state"):
             preserved_training_step = max(int(getattr(trainer.state, "step", 0)), 0)
     _reset_dataset_metrics_state(viewer)
+    reuse_existing_frame_targets = bool(preserve_session_state and frame_targets_native is not None)
     if preserve_session_state:
-        _reset_gaussian_reinitialize_runtime(viewer, preserve_frame_targets=frame_targets_native is not None)
+        _reset_gaussian_reinitialize_runtime(viewer, preserve_frame_targets=reuse_existing_frame_targets)
     else:
-        _reset_training_runtime(viewer, preserve_frame_targets=frame_targets_native is not None)
+        _reset_training_runtime(viewer, preserve_frame_targets=reuse_existing_frame_targets)
     if not viewer.s.training_frames:
         _refresh_training_frames(viewer)
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
@@ -2995,8 +3004,14 @@ def initialize_training_scene(
         reset_main_camera(viewer)
     enc = viewer.device.create_command_encoder()
     _apply_training_image_color_init(viewer, viewer.s.trainer, enc)
-    renderer.copy_scene_state_to(enc, viewer.s.renderer, include_work_buffers=False)
     viewer.device.submit_command_buffer(enc.finish())
+    clear_scene_resources = getattr(viewer.s.renderer, "clear_scene_resources", None)
+    if callable(clear_scene_resources):
+        clear_scene_resources()
+    clear_debug_scene_resources = getattr(viewer.s.debug_renderer, "clear_scene_resources", None)
+    if callable(clear_debug_scene_resources):
+        clear_debug_scene_resources()
+    _apply_debug_buffers(viewer, renderer)
     _apply_debug_buffers(viewer, viewer.s.renderer)
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)
     if not preserve_session_state:
