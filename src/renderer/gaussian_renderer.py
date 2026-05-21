@@ -737,6 +737,7 @@ class GaussianRenderer:
         max_prepass_memory_mb: int = 4096,
         allocate_training_work_buffers: bool = True,
         allocate_grad_work_buffers: bool = True,
+        force_prepass_count_readback: bool = False,
         proj_distortion_k1: float = 0.0,
         proj_distortion_k2: float = 0.0,
         debug_mode: str | None = None,
@@ -785,6 +786,7 @@ class GaussianRenderer:
         self._max_prepass_memory_bytes = self.max_prepass_memory_mb * self._MEBIBYTE_BYTES
         self._allocate_training_work_buffers = bool(allocate_training_work_buffers or allocate_grad_work_buffers)
         self._allocate_grad_work_buffers = bool(allocate_grad_work_buffers)
+        self.force_prepass_count_readback = bool(force_prepass_count_readback)
         self.proj_distortion_k1, self.proj_distortion_k2 = float(proj_distortion_k1), float(proj_distortion_k2)
         self.max_sh_band = int(max_sh_band)
         self.sh_band = (3 if bool(use_sh) else 0) if sh_band is None else int(sh_band)
@@ -2168,8 +2170,14 @@ class GaussianRenderer:
         self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
         return True
 
+    def _maybe_force_prepass_capacity_sync(self, camera: Camera) -> None:
+        if not bool(self.force_prepass_count_readback):
+            return
+        self.sync_prepass_capacity_for_current_scene(camera)
+
     def record_prepass_for_current_scene(self, encoder: spy.CommandEncoder, camera: Camera, sort_camera_position: np.ndarray | None = None, sort_camera_dither_sigma: float = 0.0, sort_camera_dither_seed: int = 0) -> None:
         scene = self._require_scene()
+        self._maybe_force_prepass_capacity_sync(camera)
         with debug_region(encoder, "Renderer Prepass", 19):
             self._record_prepass(encoder, scene, camera, enqueue_counter_readback=False, sort_camera_position=sort_camera_position, sort_camera_dither_sigma=sort_camera_dither_sigma, sort_camera_dither_seed=sort_camera_dither_seed)
 
@@ -2230,6 +2238,7 @@ class GaussianRenderer:
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
         self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        self._maybe_force_prepass_capacity_sync(camera)
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
@@ -2268,6 +2277,7 @@ class GaussianRenderer:
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
         self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        self._maybe_force_prepass_capacity_sync(camera)
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
@@ -2307,6 +2317,7 @@ class GaussianRenderer:
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
         self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        self._maybe_force_prepass_capacity_sync(camera)
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
@@ -2352,6 +2363,7 @@ class GaussianRenderer:
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
         self._ensure_training_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        self._maybe_force_prepass_capacity_sync(camera)
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()

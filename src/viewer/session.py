@@ -1721,6 +1721,8 @@ def _restore_dataset_metrics_renderer(viewer: object, task: DatasetMetricsTask) 
                 invalidate_downscaled_target()
             if trainer is not None and hasattr(trainer, "_refinement_camera_signature"):
                 trainer._refinement_camera_signature = None
+    if renderer is not None:
+        renderer.force_prepass_count_readback = bool(getattr(task, "previous_force_prepass_count_readback", False))
     viewer.s.pending_training_runtime_resize = True
 
 
@@ -1751,6 +1753,7 @@ def start_dataset_metrics_logging(viewer: object) -> None:
         _fail("Wait for COLMAP import to finish before logging dataset metrics.")
     ensure_training_runtime_resolution(viewer)
     renderer = viewer.s.training_renderer
+    previous_force_prepass_count_readback = bool(getattr(renderer, "force_prepass_count_readback", False))
     frames = tuple(viewer.s.training_frames)
     previous_size = (int(renderer.width), int(renderer.height))
     previous_capacity = (
@@ -1761,11 +1764,14 @@ def start_dataset_metrics_logging(viewer: object) -> None:
     max_height = max(max(int(getattr(frame, "height", 0)), 1) for frame in frames)
     if previous_capacity != (max_width, max_height):
         _replace_training_renderer(viewer, max_width, max_height, reset_loss_debug=False)
+    renderer = viewer.s.training_renderer
+    renderer.force_prepass_count_readback = True
     viewer.s.dataset_metrics_task = DatasetMetricsTask(
         trainer_id=id(viewer.s.trainer),
         requested_frame_count=len(frames),
         splat_count=int(getattr(getattr(viewer.s.trainer, "scene", None), "count", 0)),
         dataset_root=getattr(viewer.s, "colmap_root", None),
+        previous_force_prepass_count_readback=previous_force_prepass_count_readback,
         previous_renderer_size=previous_size,
         previous_renderer_capacity=previous_capacity,
     )

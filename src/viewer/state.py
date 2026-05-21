@@ -180,6 +180,7 @@ class DatasetMetricsTask:
     requested_frame_count: int
     splat_count: int
     dataset_root: Path | None = None
+    previous_force_prepass_count_readback: bool = False
     started_at: float = field(default_factory=time.perf_counter)
     next_frame_index: int = 0
     rows: list[object] = field(default_factory=list)
