@@ -324,6 +324,31 @@ def _release_state_resource(viewer: object, attr: str) -> None:
     del value
 
 
+_TRAINING_VISUAL_STATE_DEFAULTS = {
+    "cached_raster_grad_histograms": None,
+    "cached_raster_grad_ranges": None,
+    "cached_raster_grad_histogram_mode": "",
+    "cached_raster_grad_histogram_step": -1,
+    "cached_raster_grad_histogram_scene_count": -1,
+    "cached_raster_grad_histogram_signature": None,
+    "cached_raster_grad_histogram_status": "",
+}
+_TRAINING_RUNTIME_TRACKING_DEFAULTS = {
+    "applied_renderer_params_training": None,
+    "applied_training_signature": None,
+    "applied_training_runtime_signature": None,
+    "applied_training_runtime_factor": None,
+    "training_runtime_factor_changed": False,
+    "pending_training_runtime_resize": False,
+    "last_training_batch_steps": 0,
+}
+
+
+def _apply_state_defaults(state: object, defaults: dict[str, object]) -> None:
+    for attr, value in defaults.items():
+        setattr(state, attr, value)
+
+
 def _release_debug_dssim_runtime(viewer: object) -> None:
     blur = getattr(viewer.s, "debug_dssim_blur", None)
     scratch_buffers = getattr(blur, "_scratch_buffers", None)
@@ -336,11 +361,6 @@ def _release_debug_dssim_runtime(viewer: object) -> None:
     viewer.s.debug_dssim_resolution = None
     if blur is not None:
         del blur
-
-
-def _release_loss_debug_textures(viewer: object) -> None:
-    for attr in ("viewport_texture", "loss_debug_texture", "debug_target_texture", "debug_present_texture"):
-        _release_state_resource(viewer, attr)
 
 
 def _flush_deferred_resources(viewer: object) -> None:
@@ -1064,8 +1084,11 @@ def _ensure_cached_init_source(viewer: object, init: object) -> None:
     _clear_cached_init_source(viewer)
     _load_enabled_init_source_payloads(viewer, init)
     setattr(viewer.s, "cached_init_signature", signature)
+
+
 def _reset_loss_debug(viewer: object) -> None:
-    _release_loss_debug_textures(viewer)
+    for attr in ("viewport_texture", "loss_debug_texture", "debug_target_texture", "debug_present_texture"):
+        _release_state_resource(viewer, attr)
     _release_debug_dssim_runtime(viewer)
     _clear(viewer, "debug_renderer")
 
@@ -1075,13 +1098,7 @@ def _reset_training_visual_state(viewer: object) -> None:
         reset_plot_history = getattr(viewer.toolkit, "reset_plot_history", None)
         if callable(reset_plot_history):
             reset_plot_history()
-    viewer.s.cached_raster_grad_histograms = None
-    viewer.s.cached_raster_grad_ranges = None
-    viewer.s.cached_raster_grad_histogram_mode = ""
-    viewer.s.cached_raster_grad_histogram_step = -1
-    viewer.s.cached_raster_grad_histogram_scene_count = -1
-    viewer.s.cached_raster_grad_histogram_signature = None
-    viewer.s.cached_raster_grad_histogram_status = ""
+    _apply_state_defaults(viewer.s, _TRAINING_VISUAL_STATE_DEFAULTS)
 
 
 def _release_training_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
@@ -1095,40 +1112,27 @@ def _release_training_runtime(viewer: object, *, preserve_frame_targets: bool = 
     _clear_debug_buffers(getattr(viewer.s, "debug_renderer", None))
 
 
-def _clear_training_runtime_resources(viewer: object) -> None:
-    _clear(viewer, "training_renderer")
-    _flush_deferred_resources(viewer)
-
-
-def _clear_training_runtime_tracking(viewer: object) -> None:
-    viewer.s.applied_renderer_params_training = None
-    viewer.s.applied_training_signature = None
-    viewer.s.applied_training_runtime_signature = None
-    viewer.s.applied_training_runtime_factor = None
-    viewer.s.training_runtime_factor_changed = False
-    viewer.s.pending_training_runtime_resize = False
-    viewer.s.last_training_batch_steps = 0
-
-
 def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
     viewer.s.training_active = False
     viewer.s.training_elapsed_s = 0.0
     viewer.s.training_resume_time = None
     _release_training_runtime(viewer, preserve_frame_targets=bool(preserve_frame_targets))
-    _clear_training_runtime_tracking(viewer)
+    _apply_state_defaults(viewer.s, _TRAINING_RUNTIME_TRACKING_DEFAULTS)
     viewer.s.applied_renderer_params_debug = None
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
     _reset_training_visual_state(viewer)
     _reset_loss_debug(viewer)
-    _clear_training_runtime_resources(viewer)
+    _clear(viewer, "training_renderer")
+    _flush_deferred_resources(viewer)
 
 
 def _reset_gaussian_reinitialize_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
     _release_training_runtime(viewer, preserve_frame_targets=bool(preserve_frame_targets))
-    _clear_training_runtime_tracking(viewer)
+    _apply_state_defaults(viewer.s, _TRAINING_RUNTIME_TRACKING_DEFAULTS)
     _reset_training_visual_state(viewer)
-    _clear_training_runtime_resources(viewer)
+    _clear(viewer, "training_renderer")
+    _flush_deferred_resources(viewer)
 
 
 def _reset_loaded_runtime(viewer: object) -> None:
@@ -1389,32 +1393,31 @@ def _training_debug_splat_viewed_fraction_buffer(viewer: object):
 
 
 def _training_debug_adam_moments_buffer(viewer: object):
-    return viewer.s.trainer.adam_optimizer.buffers["adam_moments"] if viewer.s.trainer is not None else None
+    trainer = getattr(viewer.s, "trainer", None)
+    optimizer = None if trainer is None else getattr(trainer, "adam_optimizer", None)
+    buffers = None if optimizer is None else getattr(optimizer, "buffers", None)
+    return None if not isinstance(buffers, dict) else buffers.get("adam_moments")
+
+
+def _set_optional_debug_binding(renderer: GaussianRenderer, setter_name: str, value: object) -> None:
+    setter = getattr(renderer, setter_name, None)
+    if callable(setter):
+        setter(value)
 
 
 def _clear_debug_buffers(renderer: GaussianRenderer | None) -> None:
-    if renderer is None:
+    if renderer is None or not callable(getattr(renderer, "set_debug_grad_norm_buffer", None)):
         return
-    set_grad_norm = getattr(renderer, "set_debug_grad_norm_buffer", None)
-    if not callable(set_grad_norm):
-        return
-    set_grad_norm(None)
-    bind_grad_stats = getattr(renderer, "set_debug_grad_stats_buffer", None)
-    if callable(bind_grad_stats):
-        bind_grad_stats(None)
-    renderer.set_debug_splat_age_buffer(None)
-    bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
-    if callable(bind_contribution):
-        bind_contribution(None)
-    bind_viewed_fraction = getattr(renderer, "set_debug_splat_viewed_fraction_buffer", None)
-    if callable(bind_viewed_fraction):
-        bind_viewed_fraction(None)
-    bind_adam_moments = getattr(renderer, "set_debug_adam_moments_buffer", None)
-    if callable(bind_adam_moments):
-        bind_adam_moments(None)
-    set_contribution_pixels = getattr(renderer, "set_debug_contribution_observed_pixel_count", None)
-    if callable(set_contribution_pixels):
-        set_contribution_pixels(0)
+    for setter_name in (
+        "set_debug_grad_norm_buffer",
+        "set_debug_grad_stats_buffer",
+        "set_debug_splat_age_buffer",
+        "set_debug_splat_contribution_buffer",
+        "set_debug_splat_viewed_fraction_buffer",
+        "set_debug_adam_moments_buffer",
+    ):
+        _set_optional_debug_binding(renderer, setter_name, None)
+    _set_optional_debug_binding(renderer, "set_debug_contribution_observed_pixel_count", 0)
 
 
 def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> None:
@@ -1423,48 +1426,51 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
     set_grad_norm = getattr(renderer, "set_debug_grad_norm_buffer", None)
     if not callable(set_grad_norm):
         return
+    refinement_buffers = getattr(viewer.s.trainer, "refinement_buffers", {}) if viewer.s.trainer is not None else {}
     set_grad_norm(
         viewer.s.training_renderer.work_buffers["debug_grad_norm"]
         if viewer.s.training_renderer is not None and viewer.s.trainer is not None
         else None
     )
-    bind_grad_stats = getattr(renderer, "set_debug_grad_stats_buffer", None)
-    if callable(bind_grad_stats):
-        refinement_buffers = getattr(viewer.s.trainer, "refinement_buffers", {}) if viewer.s.trainer is not None else {}
-        bind_grad_stats(
-            refinement_buffers["gradient_stats"]
-            if "gradient_stats" in refinement_buffers
-            else None
-        )
-    renderer.set_debug_splat_age_buffer(_training_debug_splat_age_buffer(viewer))
-    bind_contribution = getattr(renderer, "set_debug_splat_contribution_buffer", None)
-    if callable(bind_contribution):
-        bind_contribution(_training_debug_splat_contribution_buffer(viewer))
-    bind_viewed_fraction = getattr(renderer, "set_debug_splat_viewed_fraction_buffer", None)
-    if callable(bind_viewed_fraction):
-        bind_viewed_fraction(_training_debug_splat_viewed_fraction_buffer(viewer))
-    bind_adam_moments = getattr(renderer, "set_debug_adam_moments_buffer", None)
-    if callable(bind_adam_moments):
-        bind_adam_moments(_training_debug_adam_moments_buffer(viewer))
-    set_contribution_pixels = getattr(renderer, "set_debug_contribution_observed_pixel_count", None)
-    if callable(set_contribution_pixels):
-        set_contribution_pixels(0 if viewer.s.trainer is None else viewer.s.trainer.observed_contribution_pixel_count)
+    _set_optional_debug_binding(renderer, "set_debug_grad_stats_buffer", refinement_buffers.get("gradient_stats"))
+    _set_optional_debug_binding(renderer, "set_debug_splat_age_buffer", _training_debug_splat_age_buffer(viewer))
+    _set_optional_debug_binding(renderer, "set_debug_splat_contribution_buffer", _training_debug_splat_contribution_buffer(viewer))
+    _set_optional_debug_binding(renderer, "set_debug_splat_viewed_fraction_buffer", _training_debug_splat_viewed_fraction_buffer(viewer))
+    _set_optional_debug_binding(renderer, "set_debug_adam_moments_buffer", _training_debug_adam_moments_buffer(viewer))
+    _set_optional_debug_binding(
+        renderer,
+        "set_debug_contribution_observed_pixel_count",
+        0 if viewer.s.trainer is None else getattr(viewer.s.trainer, "observed_contribution_pixel_count", 0),
+    )
 
 
-def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool, *, force_recreate: bool = False) -> GaussianRenderer:
-    size, renderer = (int(width), int(height)), getattr(viewer.s, attr)
-    if renderer is not None:
-        renderer_size = (
+def _renderer_size(renderer: GaussianRenderer, attr: str) -> tuple[int, int]:
+    if attr == "training_renderer":
+        return (
             int(getattr(renderer, "_render_capacity_width", renderer.width)),
             int(getattr(renderer, "_render_capacity_height", renderer.height)),
-        ) if attr == "training_renderer" else (int(renderer.width), int(renderer.height))
-        if renderer_size == size and not force_recreate: return renderer
-    previous_renderer = renderer
-    renderer = _create_renderer(viewer, size[0], size[1], allow_debug_overlays)
-    if isinstance(viewer.s.scene, GaussianScene):
-        renderer.set_scene(viewer.s.scene)
+        )
+    return int(renderer.width), int(renderer.height)
+
+
+def _finalize_renderer_replacement(
+    viewer: object,
+    attr: str,
+    renderer: GaussianRenderer,
+    previous_renderer: GaussianRenderer | None,
+    *,
+    reset_loss_debug: bool = False,
+) -> GaussianRenderer:
     setattr(viewer.s, attr, renderer)
-    if attr != "training_renderer":
+    if attr == "training_renderer":
+        trainer = getattr(viewer.s, "trainer", None)
+        if trainer is not None:
+            trainer.rebind_renderer(renderer)
+        for renderer_attr in ("training_renderer", "renderer", "debug_renderer"):
+            _apply_debug_buffers(viewer, getattr(viewer.s, renderer_attr, None))
+        if reset_loss_debug:
+            _reset_loss_debug(viewer)
+    else:
         _apply_debug_buffers(viewer, renderer)
     if previous_renderer is not None:
         clear_scene_resources = getattr(previous_renderer, "clear_scene_resources", None)
@@ -1472,6 +1478,17 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
             clear_scene_resources()
         del previous_renderer
     return renderer
+
+
+def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool, *, force_recreate: bool = False) -> GaussianRenderer:
+    size = (int(width), int(height))
+    previous_renderer = getattr(viewer.s, attr)
+    if previous_renderer is not None and _renderer_size(previous_renderer, attr) == size and not force_recreate:
+        return previous_renderer
+    renderer = _create_renderer(viewer, size[0], size[1], allow_debug_overlays)
+    if isinstance(viewer.s.scene, GaussianScene):
+        renderer.set_scene(viewer.s.scene)
+    return _finalize_renderer_replacement(viewer, attr, renderer, previous_renderer)
 
 
 def _replace_training_renderer(viewer: object, width: int, height: int, *, reset_loss_debug: bool = True) -> GaussianRenderer:
@@ -1485,17 +1502,13 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     if callable(copy_prepass_capacity_state_to):
         copy_prepass_capacity_state_to(renderer)
     viewer.device.submit_command_buffer(enc.finish())
-    viewer.s.training_renderer = renderer
-    viewer.s.trainer.rebind_renderer(renderer)
-    _apply_debug_buffers(viewer, viewer.s.training_renderer)
-    _apply_debug_buffers(viewer, viewer.s.renderer)
-    _apply_debug_buffers(viewer, viewer.s.debug_renderer)
-    if reset_loss_debug:
-        _reset_loss_debug(viewer)
-    clear_scene_resources = getattr(previous_renderer, "clear_scene_resources", None)
-    if callable(clear_scene_resources):
-        clear_scene_resources()
-    return renderer
+    return _finalize_renderer_replacement(
+        viewer,
+        "training_renderer",
+        renderer,
+        previous_renderer,
+        reset_loss_debug=reset_loss_debug,
+    )
 
 
 def _periodic_renderer_reallocation_due(viewer: object, current_time: float) -> bool:
@@ -1526,8 +1539,7 @@ def maybe_reallocate_renderers(viewer: object, render_width: int, render_height:
         training_renderer = viewer.s.training_renderer
         _replace_training_renderer(
             viewer,
-            int(getattr(training_renderer, "_render_capacity_width", training_renderer.width)),
-            int(getattr(training_renderer, "_render_capacity_height", training_renderer.height)),
+            *_renderer_size(training_renderer, "training_renderer"),
             reset_loss_debug=not loss_debug_reset,
         )
         recycled = True
@@ -1601,10 +1613,7 @@ def ensure_training_runtime_resolution(viewer: object) -> bool:
             viewer.s.applied_training_runtime_signature = runtime_signature
             runtime_changed = True
     current_factor = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
-    current_capacity = (
-        int(getattr(viewer.s.training_renderer, "_render_capacity_width", viewer.s.training_renderer.width)),
-        int(getattr(viewer.s.training_renderer, "_render_capacity_height", viewer.s.training_renderer.height)),
-    )
+    current_capacity = _renderer_size(viewer.s.training_renderer, "training_renderer")
     desired_width, desired_height = viewer.s.trainer.max_training_resolution()
     desired_size = (int(desired_width), int(desired_height))
     capacity_satisfies_training = current_capacity[0] >= desired_size[0] and current_capacity[1] >= desired_size[1]
@@ -2039,29 +2048,38 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
     active_sh_band = resolve_sh_band(trainer.training, trainer.state.step) if trainer is not None and hasattr(trainer, "training") and hasattr(trainer, "state") else int(getattr(training_params, "sh_band", 3 if bool(getattr(training_params, "use_sh", False)) else 0))
     viewport_sh_band = min(max(int(viewer.ui._values.get("_viewport_sh_band", active_sh_band)), 0), 3) if hasattr(viewer, "ui") else active_sh_band
     viewer.s.background = viewer.render_background()
-    renderer_specs = (
-        ("renderer", True, "applied_renderer_params_main"),
-        ("training_renderer", False, "applied_renderer_params_training"),
-        ("debug_renderer", True, "applied_renderer_params_debug"),
-    )
-    for attr, allow_debug, state_attr in renderer_specs:
+    training_max_sh_band = None
+    if trainer is not None:
+        _, resolved_params, _, _ = resolve_effective_training_setup(viewer)
+        training_max_sh_band = int(getattr(resolved_params.training, "max_sh_band", 3))
+    for attr, allow_debug_overlays, state_attr, sh_band, max_sh_band in (
+        ("renderer", True, "applied_renderer_params_main", viewport_sh_band, training_max_sh_band),
+        ("training_renderer", False, "applied_renderer_params_training", active_sh_band, None),
+        ("debug_renderer", True, "applied_renderer_params_debug", viewport_sh_band, training_max_sh_band),
+    ):
         renderer = getattr(viewer.s, attr)
         if renderer is None:
             setattr(viewer.s, state_attr, None)
             continue
-        if trainer is not None and attr != "training_renderer":
-            if resolved_params is None:
-                _, resolved_params, _, _ = resolve_effective_training_setup(viewer)
-            renderer.max_sh_band = int(getattr(resolved_params.training, "max_sh_band", getattr(renderer, "max_sh_band", 3)))
-        renderer.sh_band = active_sh_band if attr == "training_renderer" else viewport_sh_band
-        renderer.debug_refinement_grad_variance_weight_exponent = float(getattr(training_params, "refinement_grad_variance_weight_exponent", getattr(renderer, "debug_refinement_grad_variance_weight_exponent", 0.0)))
-        renderer.debug_refinement_contribution_weight_exponent = float(getattr(training_params, "refinement_contribution_weight_exponent", getattr(renderer, "debug_refinement_contribution_weight_exponent", 0.0)))
-        params = viewer.renderer_params(allow_debug)
+        if max_sh_band is not None:
+            renderer.max_sh_band = int(max_sh_band)
+        renderer.sh_band = int(sh_band)
+        for renderer_attr, training_attr in (
+            ("debug_refinement_grad_variance_weight_exponent", "refinement_grad_variance_weight_exponent"),
+            ("debug_refinement_contribution_weight_exponent", "refinement_contribution_weight_exponent"),
+        ):
+            setattr(
+                renderer,
+                renderer_attr,
+                float(getattr(training_params, training_attr, getattr(renderer, renderer_attr, 0.0))),
+            )
+        params = viewer.renderer_params(allow_debug_overlays)
         signature = _renderer_params_signature(params)
         if getattr(viewer.s, state_attr) == signature:
             continue
         runtime_kwargs = params.renderer_kwargs()
-        if params.debug_mode is None: runtime_kwargs["debug_mode"] = GaussianRenderer.DEBUG_MODE_NORMAL
+        if params.debug_mode is None:
+            runtime_kwargs["debug_mode"] = GaussianRenderer.DEBUG_MODE_NORMAL
         for key, value in runtime_kwargs.items():
             setattr(renderer, key, value)
         setattr(viewer.s, state_attr, signature)

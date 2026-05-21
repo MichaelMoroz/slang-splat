@@ -312,6 +312,61 @@ def _text() -> SimpleNamespace:
     return SimpleNamespace(text="")
 
 
+def _render_context(width: int = 640, height: int = 360) -> SimpleNamespace:
+    return SimpleNamespace(surface_texture=SimpleNamespace(width=width, height=height), command_encoder=_DummyEncoder())
+
+
+def _patch_render_frame(
+    monkeypatch,
+    calls: list[object],
+    *,
+    apply_live_params=None,
+    ensure_training_runtime_resolution=None,
+    recreate_renderer=None,
+    maybe_reallocate_renderers=None,
+    advance_colmap_import=None,
+    render_debug_view=None,
+    render_main_view=None,
+    update_ui_text=None,
+    refresh_cached_raster_grad_histograms=None,
+) -> None:
+    monkeypatch.setattr(presenter.session, "apply_live_params", apply_live_params or (lambda viewer_obj: calls.append("apply")))
+    monkeypatch.setattr(
+        presenter.session,
+        "ensure_training_runtime_resolution",
+        ensure_training_runtime_resolution or (lambda viewer_obj: calls.append("train_resize")),
+    )
+    monkeypatch.setattr(
+        presenter.session,
+        "recreate_renderer",
+        recreate_renderer or (lambda viewer_obj, width, height: calls.append("resize")),
+    )
+    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(presenter.session, "advance_photometric_initialization", lambda viewer_obj: None)
+    monkeypatch.setattr(presenter.session, "advance_dataset_metrics", lambda viewer_obj: None)
+    if maybe_reallocate_renderers is not None:
+        monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", maybe_reallocate_renderers)
+    if advance_colmap_import is not None:
+        monkeypatch.setattr(presenter.session, "advance_colmap_import", advance_colmap_import)
+    if refresh_cached_raster_grad_histograms is not None:
+        monkeypatch.setattr(
+            presenter.session,
+            "refresh_cached_raster_grad_histograms",
+            refresh_cached_raster_grad_histograms,
+        )
+    monkeypatch.setattr(
+        presenter,
+        "_render_debug_view",
+        render_debug_view or (lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex"),
+    )
+    monkeypatch.setattr(
+        presenter,
+        "_render_main_view",
+        render_main_view or (lambda viewer_obj, encoder: calls.append("main") or "main_tex"),
+    )
+    monkeypatch.setattr(presenter, "update_ui_text", update_ui_text or (lambda viewer_obj, dt: calls.append("ui")))
+
+
 def _viewer(loss_debug: bool) -> SimpleNamespace:
     trainer = _DummyTrainer()
     controls = {
@@ -672,16 +727,14 @@ def test_update_ui_text_skips_training_camera_colmap_payload_when_overlay_inacti
 
 def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypatch):
     viewer = _viewer(loss_debug=True)
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append(f"debug:{render_frame_index}") or "debug_tex")
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        render_debug_view=lambda viewer_obj, encoder, width, height, render_frame_index: calls.append(f"debug:{render_frame_index}") or "debug_tex",
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -693,17 +746,14 @@ def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypat
 
 def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypatch):
     viewer = _viewer(loss_debug=False)
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, current_time: calls.append(f"periodic:{current_time:.1f}"))
-    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex")
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        maybe_reallocate_renderers=lambda viewer_obj, width, height, current_time: calls.append(f"periodic:{current_time:.1f}"),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -782,17 +832,15 @@ def test_render_main_view_uses_shared_training_renderer_when_training(monkeypatc
 def test_render_frame_checks_time_based_renderer_recycling(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.s.last_periodic_renderer_reallocation_time = 0.0
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
     current_time = viewer_session._PERIODIC_RENDERER_REALLOCATION_INTERVAL_S + 1.0
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, time_value: calls.append(f"periodic:{time_value:.1f}"))
-    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        maybe_reallocate_renderers=lambda viewer_obj, width, height, time_value: calls.append(f"periodic:{time_value:.1f}"),
+    )
     monkeypatch.setattr(presenter.time, "perf_counter", lambda: current_time)
 
     presenter.render_frame(viewer, render_context)
@@ -804,16 +852,10 @@ def test_render_frame_checks_time_based_renderer_recycling(monkeypatch):
 def test_render_frame_runs_configured_training_batch(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.c("training_steps_per_frame").value = 3
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex")
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(monkeypatch, calls)
 
     presenter.render_frame(viewer, render_context)
 
@@ -827,16 +869,10 @@ def test_render_frame_reduces_training_batch_while_recently_interacting(monkeypa
     viewer = _viewer(loss_debug=False)
     viewer.c("training_steps_per_frame").value = 3
     viewer.s.last_interaction_time = viewer.s.last_time
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter, "_render_debug_view", lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex")
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(monkeypatch, calls)
 
     presenter.render_frame(viewer, render_context)
 
@@ -849,15 +885,14 @@ def test_render_frame_reduces_training_batch_while_recently_interacting(monkeypa
 def test_render_frame_refreshes_histograms_when_requested(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.ui._values["_histograms_refresh_requested"] = True
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "refresh_cached_raster_grad_histograms", lambda viewer_obj, force=False: calls.append("hist"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        refresh_cached_raster_grad_histograms=lambda viewer_obj, force=False: calls.append("hist"),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -867,15 +902,14 @@ def test_render_frame_refreshes_histograms_when_requested(monkeypatch):
 def test_render_frame_skips_histogram_refresh_without_request(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.ui._values["show_histograms"] = True
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "refresh_cached_raster_grad_histograms", lambda viewer_obj, force=False: calls.append("hist"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        refresh_cached_raster_grad_histograms=lambda viewer_obj, force=False: calls.append("hist"),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -887,15 +921,14 @@ def test_render_frame_refreshes_histograms_when_realtime_updates_are_enabled(mon
     viewer.ui._values["show_histograms"] = True
     viewer.ui._values["_histograms_update_realtime"] = True
     viewer.ui._values["_histograms_realtime_next_refresh_time"] = 0.0
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "refresh_cached_raster_grad_histograms", lambda viewer_obj, force=False: calls.append("hist"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        refresh_cached_raster_grad_histograms=lambda viewer_obj, force=False: calls.append("hist"),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -907,15 +940,14 @@ def test_render_frame_skips_histogram_refresh_between_realtime_intervals(monkeyp
     viewer.ui._values["show_histograms"] = True
     viewer.ui._values["_histograms_update_realtime"] = True
     viewer.ui._values["_histograms_realtime_next_refresh_time"] = float("inf")
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append("resize"))
-    monkeypatch.setattr(presenter.session, "refresh_cached_raster_grad_histograms", lambda viewer_obj: calls.append("hist"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        refresh_cached_raster_grad_histograms=lambda viewer_obj: calls.append("hist"),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -926,14 +958,14 @@ def test_render_frame_handles_resize_failure_without_raising(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.s.renderer.width = 320
     viewer.s.renderer.height = 180
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: (_ for _ in ()).throw(RuntimeError("resize boom")))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        recreate_renderer=lambda viewer_obj, width, height: (_ for _ in ()).throw(RuntimeError("resize boom")),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -946,13 +978,15 @@ def test_render_frame_handles_resize_failure_without_raising(monkeypatch):
 
 def test_render_frame_handles_live_param_failure_without_raising(monkeypatch):
     viewer = _viewer(loss_debug=False)
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: (_ for _ in ()).throw(RuntimeError("live params boom")))
-    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        apply_live_params=lambda viewer_obj: (_ for _ in ()).throw(RuntimeError("live params boom")),
+        advance_colmap_import=lambda viewer_obj: calls.append("import"),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -965,13 +999,14 @@ def test_render_frame_handles_live_param_failure_without_raising(monkeypatch):
 
 def test_render_frame_handles_import_failure_without_raising(monkeypatch):
     viewer = _viewer(loss_debug=False)
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: (_ for _ in ()).throw(RuntimeError("import boom")))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        advance_colmap_import=lambda viewer_obj: (_ for _ in ()).throw(RuntimeError("import boom")),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -1324,15 +1359,16 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.s.renderer = None
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[object] = []
     replacement_renderer = _DummyRenderer()
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append(("resize", width, height)) or setattr(viewer_obj.s, "renderer", replacement_renderer))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        advance_colmap_import=lambda viewer_obj: calls.append("import"),
+        recreate_renderer=lambda viewer_obj, width, height: calls.append(("resize", width, height)) or setattr(viewer_obj.s, "renderer", replacement_renderer),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -1345,14 +1381,11 @@ def test_render_frame_consumes_pending_reinitialize_before_live_params(monkeypat
     viewer = _viewer(loss_debug=False)
     viewer.s.training_active = False
     viewer.s.pending_training_reinitialize = True
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
     monkeypatch.setattr(presenter.session, "reinitialize_training_scene", lambda viewer_obj: calls.append("init"))
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(monkeypatch, calls, advance_colmap_import=lambda viewer_obj: calls.append("import"))
 
     presenter.render_frame(viewer, render_context)
 
@@ -1364,7 +1397,7 @@ def test_render_frame_consumes_pending_reinitialize_before_live_params(monkeypat
 def test_render_frame_consumes_pending_python_capture(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.s.pending_python_frame_capture = True
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[object] = []
     summary = presenter.frame_capture.PythonFrameCaptureSummary(recent_frame_times_s=(1.0 / 60.0,), smoothed_fps=60.0)
 
@@ -1376,10 +1409,11 @@ def test_render_frame_consumes_pending_python_capture(monkeypatch):
 
     monkeypatch.setattr(presenter.frame_capture, "capture_python_frame", _capture)
     monkeypatch.setattr(presenter, "_python_frame_capture_summary", lambda _viewer: summary)
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, current_time: calls.append(("periodic", width, height)))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        maybe_reallocate_renderers=lambda viewer_obj, width, height, current_time: calls.append(("periodic", width, height)),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -1391,13 +1425,14 @@ def test_render_frame_consumes_pending_python_capture(monkeypatch):
 def test_render_frame_leaves_pending_renderdoc_capture_for_app(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.s.pending_renderdoc_frame_capture = True
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[object] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, current_time: calls.append(("periodic", width, height)))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        maybe_reallocate_renderers=lambda viewer_obj, width, height, current_time: calls.append(("periodic", width, height)),
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -1408,18 +1443,20 @@ def test_render_frame_leaves_pending_renderdoc_capture_for_app(monkeypatch):
 
 def test_render_frame_skips_training_batch_when_runtime_resize_is_applied(monkeypatch):
     viewer = _viewer(loss_debug=False)
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
+    render_context = _render_context()
     calls: list[str] = []
 
     def _apply_live_params(viewer_obj) -> None:
         viewer_obj.s.pending_training_runtime_resize = True
         calls.append("apply")
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", _apply_live_params)
-    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
-    monkeypatch.setattr(presenter.session, "ensure_training_runtime_resolution", lambda viewer_obj: calls.append("train_resize") or True)
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        apply_live_params=_apply_live_params,
+        advance_colmap_import=lambda viewer_obj: calls.append("import"),
+        ensure_training_runtime_resolution=lambda viewer_obj: calls.append("train_resize") or True,
+    )
 
     presenter.render_frame(viewer, render_context)
 
@@ -1434,14 +1471,15 @@ def test_render_frame_resizes_main_renderer_from_viewport_size(monkeypatch):
     viewer.toolkit.viewport_size = lambda: (480, 270)
     viewer.s.renderer.width = 640
     viewer.s.renderer.height = 360
-    render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=1280, height=720), command_encoder=_DummyEncoder())
+    render_context = _render_context(1280, 720)
     calls: list[object] = []
 
-    monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
-    monkeypatch.setattr(presenter.session, "advance_colmap_import", lambda viewer_obj: calls.append("import"))
-    monkeypatch.setattr(presenter.session, "recreate_renderer", lambda viewer_obj, width, height: calls.append(("resize", width, height)) or setattr(viewer_obj.s.renderer, "width", width) or setattr(viewer_obj.s.renderer, "height", height))
-    monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
-    monkeypatch.setattr(presenter, "update_ui_text", lambda viewer_obj, dt: calls.append("ui"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        advance_colmap_import=lambda viewer_obj: calls.append("import"),
+        recreate_renderer=lambda viewer_obj, width, height: calls.append(("resize", width, height)) or setattr(viewer_obj.s.renderer, "width", width) or setattr(viewer_obj.s.renderer, "height", height),
+    )
 
     presenter.render_frame(viewer, render_context)
 

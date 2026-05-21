@@ -50,6 +50,83 @@ def _renderer_params(**kwargs) -> SimpleNamespace:
     return _Params(**values)
 
 
+class _FinishedEncoder:
+    def finish(self) -> str:
+        return "finished"
+
+
+class _DebugViewportRenderer:
+    def __init__(self) -> None:
+        self.grad_buffer = "stale-grad"
+        self.splat_age_buffer = "stale-splat-age"
+        self.copy_targets: list[object] = []
+
+    def set_debug_grad_norm_buffer(self, buffer) -> None:
+        self.grad_buffer = buffer
+
+    def set_debug_splat_age_buffer(self, buffer) -> None:
+        self.splat_age_buffer = buffer
+
+    def copy_scene_state_to(self, encoder, dst) -> None:
+        del encoder
+        self.copy_targets.append(dst)
+
+
+class _DebugTrainingRenderer:
+    width = 32
+    height = 32
+    work_buffers = {"debug_grad_norm": "new-grad"}
+
+    def __init__(self) -> None:
+        self.copy_calls: list[tuple[object, bool]] = []
+        self.grad_buffer = None
+        self.splat_age_buffer = None
+
+    def copy_scene_state_to(self, encoder, dst, *, include_work_buffers: bool = True) -> None:
+        del encoder
+        self.copy_calls.append((dst, bool(include_work_buffers)))
+        dst.copy_targets.append(self)
+
+    def set_debug_grad_norm_buffer(self, buffer) -> None:
+        self.grad_buffer = buffer
+
+    def set_debug_splat_age_buffer(self, buffer) -> None:
+        self.splat_age_buffer = buffer
+
+
+class _TonemapAwareTrainer(SimpleNamespace):
+    def set_target_tonemap_provider(self, provider) -> None:
+        self.target_tonemap_provider = provider
+
+
+def _training_setup(*, max_sh_band: int | None = None):
+    training = {"max_gaussians": 8}
+    if max_sh_band is not None:
+        training["max_sh_band"] = max_sh_band
+    return (
+        SimpleNamespace(seed=7),
+        SimpleNamespace(training=SimpleNamespace(**training), adam=SimpleNamespace(tag="adam"), stability=SimpleNamespace(tag="stability")),
+        SimpleNamespace(),
+        SimpleNamespace(name="test"),
+    )
+
+
+def _patch_fixed_training_resolution(monkeypatch) -> None:
+    monkeypatch.setattr(session, "resolve_effective_train_render_factor", lambda training, step, width=None, height=None: 1)
+    monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
+
+
+_TRAINING_VISUAL_CACHE_DEFAULTS = {
+    "cached_raster_grad_histograms": None,
+    "cached_raster_grad_ranges": None,
+    "cached_raster_grad_histogram_mode": "",
+    "cached_raster_grad_histogram_step": -1,
+    "cached_raster_grad_histogram_scene_count": -1,
+    "cached_raster_grad_histogram_signature": None,
+    "cached_raster_grad_histogram_status": "",
+}
+
+
 def _identity_q() -> np.ndarray:
     return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
@@ -214,55 +291,14 @@ def test_reinitialize_training_scene_reuses_existing_native_targets(monkeypatch)
 
 
 def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -> None:
-    class _Encoder:
-        def finish(self) -> str:
-            return "finished"
-
-    class _ViewportRenderer:
-        def __init__(self) -> None:
-            self.grad_buffer = "stale-grad"
-            self.splat_age_buffer = "stale-splat-age"
-            self.copy_targets: list[object] = []
-
-        def set_debug_grad_norm_buffer(self, buffer) -> None:
-            self.grad_buffer = buffer
-
-        def set_debug_splat_age_buffer(self, buffer) -> None:
-            self.splat_age_buffer = buffer
-
-    class _TrainingRenderer:
-        width = 32
-        height = 32
-        work_buffers = {"debug_grad_norm": "new-grad"}
-
-        def __init__(self) -> None:
-            self.copy_calls: list[tuple[object, bool]] = []
-            self.grad_buffer = None
-            self.splat_age_buffer = None
-
-        def copy_scene_state_to(self, encoder, dst, *, include_work_buffers: bool = True) -> None:
-            del encoder
-            self.copy_calls.append((dst, bool(include_work_buffers)))
-            dst.copy_targets.append(self)
-
-        def set_debug_grad_norm_buffer(self, buffer) -> None:
-            self.grad_buffer = buffer
-
-        def set_debug_splat_age_buffer(self, buffer) -> None:
-            self.splat_age_buffer = buffer
-
-    class _NewTrainer(SimpleNamespace):
-        def set_target_tonemap_provider(self, provider) -> None:
-            self.target_tonemap_provider = provider
-
     calls: list[object] = []
     captured: dict[str, object] = {}
-    training_renderer = _TrainingRenderer()
-    main_renderer = _ViewportRenderer()
-    debug_renderer = _ViewportRenderer()
+    training_renderer = _DebugTrainingRenderer()
+    main_renderer = _DebugViewportRenderer()
+    debug_renderer = _DebugViewportRenderer()
     frame_targets = [object(), object()]
     provider = object()
-    new_trainer = _NewTrainer(
+    new_trainer = _TonemapAwareTrainer(
         target_tonemap_provider=None,
         refinement_buffers={"splat_age": "new-splat-age"},
         effective_train_downscale_factor=lambda step=0: 1,
@@ -270,7 +306,7 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
     )
     viewer = SimpleNamespace(
         device=SimpleNamespace(
-            create_command_encoder=lambda: _Encoder(),
+            create_command_encoder=lambda: _FinishedEncoder(),
             submit_command_buffer=lambda command_buffer: None,
         ),
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset_plot_history")),
@@ -319,9 +355,8 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
         ),
     )
 
-    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(tag="adam"), stability=SimpleNamespace(tag="stability")), SimpleNamespace(), SimpleNamespace(name="test")))
-    monkeypatch.setattr(session, "resolve_effective_train_render_factor", lambda training, step, width=None, height=None: 1)
-    monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: _training_setup())
+    _patch_fixed_training_resolution(monkeypatch)
 
     def _ensure_renderer(viewer_obj, attr, width, height, allow_debug_overlays):
         del attr, width, height, allow_debug_overlays
@@ -375,10 +410,6 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
 
 
 def test_initialize_training_scene_does_not_preserve_old_native_targets_on_fresh_import(monkeypatch) -> None:
-    class _Encoder:
-        def finish(self) -> str:
-            return "finished"
-
     new_targets = [object(), object()]
     calls: list[object] = []
     captured: dict[str, object] = {}
@@ -389,7 +420,7 @@ def test_initialize_training_scene_does_not_preserve_old_native_targets_on_fresh
     )
     viewer = SimpleNamespace(
         device=SimpleNamespace(
-            create_command_encoder=lambda: _Encoder(),
+            create_command_encoder=lambda: _FinishedEncoder(),
             submit_command_buffer=lambda command_buffer: None,
         ),
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset_plot_history")),
@@ -433,21 +464,14 @@ def test_initialize_training_scene_does_not_preserve_old_native_targets_on_fresh
             applied_training_runtime_signature=None,
             applied_training_runtime_factor=None,
             pending_training_runtime_resize=True,
-            cached_raster_grad_histograms=None,
-            cached_raster_grad_ranges=None,
-            cached_raster_grad_histogram_mode="",
-            cached_raster_grad_histogram_step=-1,
-            cached_raster_grad_histogram_scene_count=-1,
-            cached_raster_grad_histogram_signature=None,
-            cached_raster_grad_histogram_status="",
+            **_TRAINING_VISUAL_CACHE_DEFAULTS,
             last_error="stale",
             colmap_root=None,
         ),
     )
 
-    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8, max_sh_band=3), adam=SimpleNamespace(tag="adam"), stability=SimpleNamespace(tag="stability")), SimpleNamespace(), SimpleNamespace(name="test")))
-    monkeypatch.setattr(session, "resolve_effective_train_render_factor", lambda training, step, width=None, height=None: 1)
-    monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: _training_setup(max_sh_band=3))
+    _patch_fixed_training_resolution(monkeypatch)
     monkeypatch.setattr(session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: SimpleNamespace(copy_scene_state_to=lambda encoder, dst, include_work_buffers=False: None, work_buffers={"debug_grad_norm": None}, max_sh_band=3))
     monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (SimpleNamespace(count=8), 0.25))
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
@@ -1116,10 +1140,6 @@ def test_copy_prepass_capacity_state_to_materializes_preserved_floors() -> None:
 def test_replace_training_renderer_preserves_prepass_capacity_state(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
-    class _Encoder:
-        def finish(self) -> str:
-            return "finished"
-
     class _NewRenderer(SimpleNamespace):
         def __init__(self) -> None:
             super().__init__(
@@ -1165,7 +1185,7 @@ def test_replace_training_renderer_preserves_prepass_capacity_state(monkeypatch)
     new_renderer = _NewRenderer()
     viewer = SimpleNamespace(
         device=SimpleNamespace(
-            create_command_encoder=lambda: _Encoder(),
+            create_command_encoder=lambda: _FinishedEncoder(),
             submit_command_buffer=lambda command_buffer: calls.append(("submit", command_buffer)),
         ),
         s=SimpleNamespace(
@@ -2822,13 +2842,7 @@ def test_refresh_cached_raster_grad_histograms_requires_explicit_request() -> No
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=3), scene=SimpleNamespace(count=32), metrics=metrics),
             training_renderer=renderer,
-            cached_raster_grad_histograms=None,
-            cached_raster_grad_ranges=None,
-            cached_raster_grad_histogram_mode="",
-            cached_raster_grad_histogram_step=-1,
-            cached_raster_grad_histogram_scene_count=-1,
-            cached_raster_grad_histogram_signature=None,
-            cached_raster_grad_histogram_status="",
+            **_TRAINING_VISUAL_CACHE_DEFAULTS,
         ),
     )
 
@@ -2853,13 +2867,7 @@ def test_refresh_cached_raster_grad_histograms_skips_without_request() -> None:
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=3), scene=SimpleNamespace(count=32), metrics=object()),
             training_renderer=renderer,
-            cached_raster_grad_histograms=None,
-            cached_raster_grad_ranges=None,
-            cached_raster_grad_histogram_mode="",
-            cached_raster_grad_histogram_step=-1,
-            cached_raster_grad_histogram_scene_count=-1,
-            cached_raster_grad_histogram_signature=None,
-            cached_raster_grad_histogram_status="",
+            **_TRAINING_VISUAL_CACHE_DEFAULTS,
         ),
     )
 
@@ -2882,13 +2890,7 @@ def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=0), scene=SimpleNamespace(count=12), metrics=object()),
             training_renderer=renderer,
-            cached_raster_grad_histograms=None,
-            cached_raster_grad_ranges=None,
-            cached_raster_grad_histogram_mode="",
-            cached_raster_grad_histogram_step=-1,
-            cached_raster_grad_histogram_scene_count=-1,
-            cached_raster_grad_histogram_signature=None,
-            cached_raster_grad_histogram_status="",
+            **_TRAINING_VISUAL_CACHE_DEFAULTS,
         ),
     )
 
@@ -2924,13 +2926,7 @@ def test_refresh_cached_raster_grad_histograms_supports_loaded_scene_without_tra
             training_renderer=None,
             renderer=renderer,
             scene=SimpleNamespace(count=9),
-            cached_raster_grad_histograms=None,
-            cached_raster_grad_ranges=None,
-            cached_raster_grad_histogram_mode="",
-            cached_raster_grad_histogram_step=-1,
-            cached_raster_grad_histogram_scene_count=-1,
-            cached_raster_grad_histogram_signature=None,
-            cached_raster_grad_histogram_status="",
+            **_TRAINING_VISUAL_CACHE_DEFAULTS,
         ),
     )
 
@@ -2962,13 +2958,7 @@ def test_refresh_cached_raster_grad_histograms_uses_scene_param_ranges_directly(
         s=SimpleNamespace(
             trainer=SimpleNamespace(state=SimpleNamespace(step=5), scene=SimpleNamespace(count=7), metrics=object()),
             training_renderer=renderer,
-            cached_raster_grad_histograms=None,
-            cached_raster_grad_ranges=None,
-            cached_raster_grad_histogram_mode="",
-            cached_raster_grad_histogram_step=-1,
-            cached_raster_grad_histogram_scene_count=-1,
-            cached_raster_grad_histogram_signature=None,
-            cached_raster_grad_histogram_status="",
+            **_TRAINING_VISUAL_CACHE_DEFAULTS,
         ),
     )
 
@@ -3045,13 +3035,7 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
         s=SimpleNamespace(
             trainer=trainer,
             training_renderer=renderer,
-            cached_raster_grad_histograms=None,
-            cached_raster_grad_ranges=None,
-            cached_raster_grad_histogram_mode="",
-            cached_raster_grad_histogram_step=-1,
-            cached_raster_grad_histogram_scene_count=-1,
-            cached_raster_grad_histogram_signature=None,
-            cached_raster_grad_histogram_status="",
+            **_TRAINING_VISUAL_CACHE_DEFAULTS,
         ),
     )
 
@@ -3080,51 +3064,10 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
 
 
 def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeypatch) -> None:
-    class _Encoder:
-        def finish(self) -> str:
-            return "finished"
-
-    class _ViewportRenderer:
-        def __init__(self) -> None:
-            self.grad_buffer = "stale-grad"
-            self.splat_age_buffer = "stale-splat-age"
-            self.copy_targets: list[object] = []
-
-        def set_debug_grad_norm_buffer(self, buffer) -> None:
-            self.grad_buffer = buffer
-
-        def set_debug_splat_age_buffer(self, buffer) -> None:
-            self.splat_age_buffer = buffer
-
-        def copy_scene_state_to(self, encoder, dst) -> None:
-            del encoder
-            self.copy_targets.append(dst)
-
-    class _TrainingRenderer:
-        width = 32
-        height = 32
-        work_buffers = {"debug_grad_norm": "new-grad"}
-
-        def __init__(self) -> None:
-            self.copy_calls: list[tuple[object, bool]] = []
-            self.grad_buffer = None
-            self.splat_age_buffer = None
-
-        def copy_scene_state_to(self, encoder, dst, *, include_work_buffers: bool = True) -> None:
-            del encoder
-            self.copy_calls.append((dst, bool(include_work_buffers)))
-            dst.copy_targets.append(self)
-
-        def set_debug_grad_norm_buffer(self, buffer) -> None:
-            self.grad_buffer = buffer
-
-        def set_debug_splat_age_buffer(self, buffer) -> None:
-            self.splat_age_buffer = buffer
-
-    training_renderer = _TrainingRenderer()
+    training_renderer = _DebugTrainingRenderer()
     old_training_renderer = object()
-    main_renderer = _ViewportRenderer()
-    debug_renderer = _ViewportRenderer()
+    main_renderer = _DebugViewportRenderer()
+    debug_renderer = _DebugViewportRenderer()
     new_trainer = SimpleNamespace(
         refinement_buffers={"splat_age": "new-splat-age"},
         effective_train_downscale_factor=lambda step=0: 1,
@@ -3133,7 +3076,7 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     calls: list[str] = []
     viewer = SimpleNamespace(
         device=SimpleNamespace(
-            create_command_encoder=lambda: _Encoder(),
+            create_command_encoder=lambda: _FinishedEncoder(),
             submit_command_buffer=lambda command_buffer: None,
         ),
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset_plot_history")),
@@ -3174,9 +3117,8 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
         ),
     )
 
-    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(tag="adam"), stability=SimpleNamespace(tag="stability")), SimpleNamespace(), SimpleNamespace(name="test")))
-    monkeypatch.setattr(session, "resolve_effective_train_render_factor", lambda training, step: 1)
-    monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: _training_setup())
+    _patch_fixed_training_resolution(monkeypatch)
     def _ensure_renderer(viewer_obj, attr, width, height, allow_debug_overlays):
         del attr, width, height, allow_debug_overlays
         calls.append(f"ensure_renderer_cleared={viewer_obj.s.training_renderer is None}")
@@ -3248,13 +3190,7 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
             applied_training_signature=None,
             applied_training_runtime_factor=None,
             pending_training_runtime_resize=False,
-            cached_raster_grad_histograms=None,
-            cached_raster_grad_ranges=None,
-            cached_raster_grad_histogram_mode="",
-            cached_raster_grad_histogram_step=-1,
-            cached_raster_grad_histogram_scene_count=-1,
-            cached_raster_grad_histogram_signature=None,
-            cached_raster_grad_histogram_status="",
+            **_TRAINING_VISUAL_CACHE_DEFAULTS,
             last_error="",
             colmap_root=Path("dataset/garden"),
         ),
