@@ -1195,6 +1195,7 @@ def test_replace_training_renderer_preserves_prepass_capacity_state(monkeypatch)
         ("capacity", new_renderer),
         ("submit", "finished"),
         ("rebind", new_renderer),
+        ("debug", new_renderer),
         ("debug", "main-renderer"),
         ("debug", "debug-renderer"),
         ("invalidate", ()),

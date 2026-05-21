@@ -240,7 +240,6 @@ class ViewerState:
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_edge_kernel: spy.ComputeKernel | None = None; debug_dssim_features_kernel: spy.ComputeKernel | None = None; debug_dssim_compose_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_target_sample_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
     debug_dssim_blur: object | None = None; debug_dssim_resolution: tuple[int, int] | None = None
     debug_dssim_moments: spy.Buffer | None = None; debug_dssim_blurred_moments: spy.Buffer | None = None
-    synced_step_main: int = -1; synced_step_debug: int = -1
     applied_renderer_params_main: tuple[object, ...] | None = None; applied_renderer_params_training: tuple[object, ...] | None = None; applied_renderer_params_debug: tuple[object, ...] | None = None
     applied_training_signature: tuple[object, ...] | None = None; applied_training_runtime_signature: tuple[object, ...] | None = None; applied_training_runtime_factor: int | None = None
     cached_training_setup_signature: tuple[object, ...] | None = None; cached_training_setup: tuple[object, object, object, object] | None = None

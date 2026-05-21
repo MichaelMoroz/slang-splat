@@ -1909,7 +1909,6 @@ def test_render_main_view_wraps_viewport_present_in_main_view_group(monkeypatch)
     output = SimpleNamespace(width=640, height=360)
 
     monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
-    monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(presenter, "_ppisp_preview_enabled", lambda _viewer: False)
 
     result = presenter._render_main_view(viewer, encoder)

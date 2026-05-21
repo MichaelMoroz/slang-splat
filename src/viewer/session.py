@@ -1497,7 +1497,6 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     viewer.s.training_renderer = renderer
     viewer.s.trainer.rebind_renderer(renderer)
     _apply_debug_buffers(viewer, viewer.s.training_renderer)
-    _apply_debug_buffers(viewer, viewer.s.training_renderer)
     _apply_debug_buffers(viewer, viewer.s.renderer)
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)
     _invalidate(viewer)
@@ -2092,18 +2091,6 @@ def apply_live_params(viewer: object, force_init_defaults: bool = False) -> None
             viewer.s.pending_training_runtime_resize = True
         elif getattr(viewer.s, "applied_training_runtime_signature", None) != runtime_signature:
             viewer.s.pending_training_runtime_resize = True
-
-
-def sync_scene_from_training_renderer(viewer: object, dst_renderer: GaussianRenderer, target: str, force: bool = False) -> None:
-    if viewer.s.training_renderer is None or viewer.s.trainer is None:
-        return
-    step = int(viewer.s.trainer.state.step)
-    if not force and getattr(viewer.s, f"synced_step_{target}") == step:
-        return
-    enc = viewer.device.create_command_encoder()
-    viewer.s.training_renderer.copy_scene_state_to(enc, dst_renderer)
-    viewer.device.submit_command_buffer(enc.finish())
-    setattr(viewer.s, f"synced_step_{target}", step)
 
 
 def _histogram_scene_source(viewer: object) -> tuple[GaussianRenderer | None, int, int, object | None, object | None]:
