@@ -361,6 +361,128 @@ def _build_colmap_tree_without_database(tmp_path: Path, *, image_names: list[str
     return root.resolve(), images_root.resolve()
 
 
+def _make_import_renderer(calls: list[object] | None = None) -> SimpleNamespace:
+    def _record(name: str, value: object = None) -> None:
+        if calls is not None:
+            calls.append((name, value))
+
+    return SimpleNamespace(
+        clear_scene_resources=lambda: _record("clear_renderer"),
+        set_debug_grad_norm_buffer=lambda buffer: _record("clear_grad_debug", buffer),
+        set_debug_splat_age_buffer=lambda buffer: _record("clear_splat_age_debug", buffer),
+    )
+
+
+def _make_import_viewer(
+    *,
+    calls: list[object] | None = None,
+    ui_values: dict[str, object] | None = None,
+    toolkit: object | None = None,
+    init_params=None,
+    trainer: object | None = None,
+    training_frames: list[object] | None = None,
+    scene: object | None = None,
+    scene_path: Path | None = None,
+    colmap_root: Path | None = None,
+    colmap_recon: object | None = None,
+    colmap_import_progress: ColmapImportProgress | None = None,
+    last_error: str = "",
+    state_overrides: dict[str, object] | None = None,
+) -> SimpleNamespace:
+    state = {
+        "renderer": _make_import_renderer(calls),
+        "trainer": trainer,
+        "training_active": False,
+        "training_elapsed_s": 0.0,
+        "training_resume_time": None,
+        "training_renderer": None,
+        "training_frames": [] if training_frames is None else training_frames,
+        "scene": scene,
+        "scene_path": scene_path,
+        "colmap_root": colmap_root,
+        "colmap_recon": colmap_recon,
+        "colmap_import_progress": colmap_import_progress,
+        "applied_renderer_params_training": None,
+        "applied_renderer_params_debug": None,
+        "applied_training_signature": None,
+        "applied_training_runtime_factor": None,
+        "pending_training_runtime_resize": False,
+        "applied_renderer_params_main": None,
+        "cached_training_setup_signature": None,
+        "cached_training_setup": None,
+        "last_error": last_error,
+    }
+    if state_overrides is not None:
+        state.update(state_overrides)
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={} if ui_values is None else dict(ui_values)),
+        s=SimpleNamespace(**state),
+        c=lambda key: SimpleNamespace(value=0),
+    )
+    if toolkit is not None:
+        viewer.toolkit = toolkit
+    if init_params is not None:
+        viewer.init_params = init_params
+    return viewer
+
+
+def _patch_import_runtime_resets(monkeypatch, calls: list[object] | None = None) -> None:
+    def _record(name: str):
+        def _patched(viewer_obj) -> None:
+            del viewer_obj
+            if calls is not None:
+                calls.append((name, None))
+
+        return _patched
+
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", _record("update_slider"))
+    monkeypatch.setattr(session, "_clear_cached_init_source", _record("clear_cached_init"))
+    monkeypatch.setattr(session, "_reset_training_visual_state", _record("reset_training_visual"))
+    monkeypatch.setattr(session, "_reset_loss_debug", _record("reset_loss_debug"))
+
+
+def _patch_import_pipeline(
+    monkeypatch,
+    *,
+    recon,
+    load_reconstruction=None,
+    build_training_frames=None,
+    create_textures=None,
+    finish=None,
+) -> None:
+    monkeypatch.setattr(
+        session,
+        "_load_aligned_colmap_reconstruction",
+        load_reconstruction or (lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon),
+    )
+    monkeypatch.setattr(
+        session,
+        "build_training_frames_from_root",
+        build_training_frames or (lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: []),
+    )
+    monkeypatch.setattr(session, "_create_native_dataset_textures", create_textures or (lambda viewer_obj, frames: []))
+    monkeypatch.setattr(session, "_finish_import_colmap_dataset", finish or (lambda viewer_obj, **kwargs: None))
+
+
+def _patch_advance_import_pipeline(
+    monkeypatch,
+    *,
+    recon,
+    load_reconstruction=None,
+    load_training_frame=None,
+    create_texture=None,
+    finish=None,
+) -> None:
+    monkeypatch.setattr(
+        session,
+        "_load_aligned_colmap_reconstruction",
+        load_reconstruction or (lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon),
+    )
+    monkeypatch.setattr(session, "load_training_frame_rgba8", load_training_frame or (lambda frame: None))
+    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", create_texture or (lambda viewer_obj, rgba8: None))
+    monkeypatch.setattr(session, "_finish_import_colmap_dataset", finish or (lambda viewer_obj, **kwargs: None))
+
+
 def test_bc7_cache_compression_uses_resized_frame_image(tmp_path: Path, monkeypatch) -> None:
     images_root = tmp_path / "images"
     images_root.mkdir()
@@ -1723,52 +1845,25 @@ def test_choose_colmap_root_supports_opencv_camera_models(tmp_path: Path, model_
 
 def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
-    viewer = SimpleNamespace(
-        s=SimpleNamespace(
-            renderer=SimpleNamespace(
-                clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
-                set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
-                set_debug_splat_age_buffer=lambda buffer: calls.append(("clear_splat_age_debug", buffer)),
-            ),
-            trainer=SimpleNamespace(state=SimpleNamespace(step=0)),
-            training_active=False,
-            training_elapsed_s=0.0,
-            training_resume_time=None,
-            training_renderer=None,
-            training_frames=[SimpleNamespace(width=8, height=8)],
-            scene=SimpleNamespace(count=123),
-            scene_path=Path("scene.ply"),
-            colmap_root=Path("dataset/old"),
-            colmap_recon=object(),
-            colmap_import_progress=None,
-            applied_renderer_params_training=None,
-            applied_renderer_params_debug=None,
-            applied_training_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=False,
-            applied_renderer_params_main=None,
-            cached_training_setup_signature=None,
-            cached_training_setup=None,
-        ),
-        c=lambda key: SimpleNamespace(value=0),
+    viewer = _make_import_viewer(
+        calls=calls,
+        trainer=SimpleNamespace(state=SimpleNamespace(step=0)),
+        training_frames=[SimpleNamespace(width=8, height=8)],
+        scene=SimpleNamespace(count=123),
+        scene_path=Path("scene.ply"),
+        colmap_root=Path("dataset/old"),
+        colmap_recon=object(),
     )
 
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: calls.append(("update_slider", None)))
-    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: calls.append(("clear_cached_init", None)))
-    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("reset_training_visual", None)))
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
-    monkeypatch.setattr(
-        session,
-        "_load_aligned_colmap_reconstruction",
-        lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): calls.append(("load_recon", root, rotation_mode, tuple(custom_rotation_deg))) or "recon",
+    _patch_import_runtime_resets(monkeypatch, calls)
+    _patch_import_pipeline(
+        monkeypatch,
+        recon="recon",
+        load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): calls.append(("load_recon", Path(root), rotation_mode, tuple(custom_rotation_deg))) or "recon",
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("build_frames", recon_obj, tuple(selected_camera_ids))) or ["frame"],
+        create_textures=lambda viewer_obj, frames: calls.append(("create_textures", list(frames))) or ["tex"],
+        finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"])),
     )
-    monkeypatch.setattr(
-        session,
-        "build_training_frames_from_root",
-        lambda recon, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("build_frames", recon, tuple(selected_camera_ids))) or ["frame"],
-    )
-    monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, frames: calls.append(("create_textures", list(frames))) or ["tex"])
-    monkeypatch.setattr(session, "_finish_import_colmap_dataset", lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"])))
 
     session.import_colmap_dataset(
         viewer,
@@ -1809,64 +1904,38 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
         image_root_rel=Path("images"),
     )
     calls: list[tuple[str, object]] = []
-    viewer = SimpleNamespace(
-        ui=SimpleNamespace(
-            _values={
-                "colmap_root_path": str(database_path.parents[1]),
-                "colmap_database_path": str(database_path),
-                "colmap_images_root": str(images_root),
-                "colmap_depth_value_mode": 1,
-                "colmap_init_mode": 0,
-                "colmap_custom_ply_path": "",
-                "colmap_image_downscale_mode": 0,
-                "colmap_image_max_size": 2048,
-                "colmap_image_scale": 1.0,
-                "colmap_nn_radius_scale_coef": 0.5,
-                "colmap_min_track_length": 5,
-                "colmap_diffused_point_count": 100000,
-                "colmap_pointcloud_enabled": True,
-                "colmap_training_image_color_init": True,
-                "colmap_photometric_compensation_enabled": True,
-                "colmap_selected_camera_ids": (7,),
-                "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
-                "target_alpha_mode": 1,
-                "target_alpha_threshold": 0.25,
-            }
-        ),
-        s=SimpleNamespace(
-            renderer=SimpleNamespace(
-                clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
-                set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
-                set_debug_splat_age_buffer=lambda buffer: calls.append(("clear_splat_age_debug", buffer)),
-            ),
-            trainer=None,
-            training_active=False,
-            training_elapsed_s=0.0,
-            training_resume_time=None,
-            training_renderer=None,
-            training_frames=[SimpleNamespace(width=8, height=8)],
-            scene=SimpleNamespace(count=123),
-            scene_path=Path("scene.ply"),
-            colmap_root=Path("dataset/old"),
-            colmap_recon=object(),
-            colmap_import_progress=None,
-            applied_renderer_params_training=None,
-            applied_renderer_params_debug=None,
-            applied_training_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=False,
-            applied_renderer_params_main=None,
-            cached_training_setup_signature=None,
-            cached_training_setup=None,
-            last_error="stale",
-        ),
-        c=lambda key: SimpleNamespace(value=0),
+    viewer = _make_import_viewer(
+        calls=calls,
+        ui_values={
+            "colmap_root_path": str(database_path.parents[1]),
+            "colmap_database_path": str(database_path),
+            "colmap_images_root": str(images_root),
+            "colmap_depth_value_mode": 1,
+            "colmap_init_mode": 0,
+            "colmap_custom_ply_path": "",
+            "colmap_image_downscale_mode": 0,
+            "colmap_image_max_size": 2048,
+            "colmap_image_scale": 1.0,
+            "colmap_nn_radius_scale_coef": 0.5,
+            "colmap_min_track_length": 5,
+            "colmap_diffused_point_count": 100000,
+            "colmap_pointcloud_enabled": True,
+            "colmap_training_image_color_init": True,
+            "colmap_photometric_compensation_enabled": True,
+            "colmap_selected_camera_ids": (7,),
+            "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
+            "target_alpha_mode": 1,
+            "target_alpha_threshold": 0.25,
+        },
+        training_frames=[SimpleNamespace(width=8, height=8)],
+        scene=SimpleNamespace(count=123),
+        scene_path=Path("scene.ply"),
+        colmap_root=Path("dataset/old"),
+        colmap_recon=object(),
+        last_error="stale",
     )
 
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: calls.append(("update_slider", None)))
-    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: calls.append(("clear_cached_init", None)))
-    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("reset_training_visual", None)))
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
+    _patch_import_runtime_resets(monkeypatch, calls)
 
     session.import_colmap_from_ui(viewer)
 
@@ -1903,64 +1972,31 @@ def test_import_colmap_from_ui_queues_custom_mesh_mode(tmp_path: Path, monkeypat
     )
     mesh_path = tmp_path / "seed.obj"
     mesh_path.write_text("o seed\n", encoding="utf-8")
-    viewer = SimpleNamespace(
-        ui=SimpleNamespace(
-            _values={
-                "colmap_root_path": str(database_path.parents[1]),
-                "colmap_database_path": str(database_path),
-                "colmap_images_root": str(images_root),
-                "colmap_depth_value_mode": 1,
-                "colmap_init_mode": 0,
-                "colmap_custom_ply_path": "",
-                "colmap_custom_mesh_path": str(mesh_path),
-                "colmap_image_downscale_mode": 0,
-                "colmap_image_max_size": 2048,
-                "colmap_image_scale": 1.0,
-                "colmap_rotation_mode": COLMAP_ROTATION_MODE_NONE,
-                "colmap_custom_rotation_deg": (0.0, 0.0, 0.0),
-                "colmap_nn_radius_scale_coef": 0.5,
-                "colmap_min_track_length": 5,
-                "colmap_diffused_point_count": 4096,
-                "colmap_custom_mesh_enabled": True,
-                "colmap_selected_camera_ids": (7,),
-                "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
-                "use_target_alpha_mask": False,
-            }
-        ),
-        s=SimpleNamespace(
-            renderer=SimpleNamespace(
-                clear_scene_resources=lambda: None,
-                set_debug_grad_norm_buffer=lambda buffer: None,
-                set_debug_splat_age_buffer=lambda buffer: None,
-            ),
-            trainer=None,
-            training_active=False,
-            training_elapsed_s=0.0,
-            training_resume_time=None,
-            training_renderer=None,
-            training_frames=[],
-            scene=None,
-            scene_path=None,
-            colmap_root=None,
-            colmap_recon=None,
-            colmap_import_progress=None,
-            applied_renderer_params_training=None,
-            applied_renderer_params_debug=None,
-            applied_training_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=False,
-            applied_renderer_params_main=None,
-            cached_training_setup_signature=None,
-            cached_training_setup=None,
-            last_error="",
-        ),
-        c=lambda key: SimpleNamespace(value=0),
+    viewer = _make_import_viewer(
+        ui_values={
+            "colmap_root_path": str(database_path.parents[1]),
+            "colmap_database_path": str(database_path),
+            "colmap_images_root": str(images_root),
+            "colmap_depth_value_mode": 1,
+            "colmap_init_mode": 0,
+            "colmap_custom_ply_path": "",
+            "colmap_custom_mesh_path": str(mesh_path),
+            "colmap_image_downscale_mode": 0,
+            "colmap_image_max_size": 2048,
+            "colmap_image_scale": 1.0,
+            "colmap_rotation_mode": COLMAP_ROTATION_MODE_NONE,
+            "colmap_custom_rotation_deg": (0.0, 0.0, 0.0),
+            "colmap_nn_radius_scale_coef": 0.5,
+            "colmap_min_track_length": 5,
+            "colmap_diffused_point_count": 4096,
+            "colmap_custom_mesh_enabled": True,
+            "colmap_selected_camera_ids": (7,),
+            "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
+            "use_target_alpha_mask": False,
+        },
     )
 
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
+    _patch_import_runtime_resets(monkeypatch)
 
     session.import_colmap_from_ui(viewer)
 
@@ -1981,80 +2017,47 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
     ply_path.write_text("ply\n", encoding="utf-8")
     mesh_path = tmp_path / "seed.obj"
     mesh_path.write_text("o seed\n", encoding="utf-8")
-    viewer = SimpleNamespace(
-        ui=SimpleNamespace(
-            _values={
-                "colmap_root_path": str(database_path.parents[1]),
-                "colmap_database_path": str(database_path),
-                "colmap_images_root": str(images_root),
-                "colmap_depth_value_mode": 1,
-                "colmap_pointcloud_enabled": True,
-                "colmap_pointcloud_nn_radius_scale_coef": 0.4,
-                "colmap_diffused_enabled": True,
-                "colmap_diffused_point_count": 4096,
-                "colmap_diffused_diffusion_radius": 0.75,
-                "colmap_diffused_nn_radius_scale_coef": 0.45,
-                "colmap_custom_ply_enabled": True,
-                "colmap_custom_ply_path": str(ply_path),
-                "colmap_custom_ply_nn_radius_scale_coef": 1.1,
-                "colmap_custom_mesh_enabled": True,
-                "colmap_custom_mesh_path": str(mesh_path),
-                "colmap_custom_mesh_point_count": 2048,
-                "colmap_custom_mesh_nn_radius_scale_coef": 0.55,
-                "colmap_fibonacci_sphere_enabled": True,
-                "colmap_fibonacci_sphere_point_count": 512,
-                "colmap_fibonacci_sphere_radius_multiplier": 2.5,
-                "colmap_fibonacci_sphere_color": (0.2, 0.4, 0.6),
-                "colmap_fibonacci_sphere_upper_hemisphere_only": True,
-                "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.2,
-                "colmap_image_downscale_mode": 0,
-                "colmap_image_max_size": 2048,
-                "colmap_image_scale": 1.0,
-                "colmap_rotation_mode": COLMAP_ROTATION_MODE_AUTO,
-                "colmap_custom_rotation_deg": (0.0, 0.0, 0.0),
-                "colmap_selected_camera_ids": (),
-                "_colmap_camera_rows": (),
-                "use_target_alpha_mask": False,
-                "compress_dataset_using_bc7": False,
-                "colmap_init_mode": 0,
-                "colmap_nn_radius_scale_coef": 0.5,
-                "colmap_min_track_length": 3,
-            }
-        ),
-        s=SimpleNamespace(
-            renderer=SimpleNamespace(
-                clear_scene_resources=lambda: None,
-                set_debug_grad_norm_buffer=lambda buffer: None,
-                set_debug_splat_age_buffer=lambda buffer: None,
-            ),
-            trainer=None,
-            training_active=False,
-            training_elapsed_s=0.0,
-            training_resume_time=None,
-            training_renderer=None,
-            training_frames=[],
-            scene=None,
-            scene_path=None,
-            colmap_root=None,
-            colmap_recon=None,
-            colmap_import_progress=None,
-            applied_renderer_params_training=None,
-            applied_renderer_params_debug=None,
-            applied_training_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=False,
-            applied_renderer_params_main=None,
-            cached_training_setup_signature=None,
-            cached_training_setup=None,
-            last_error="",
-        ),
-        c=lambda key: SimpleNamespace(value=0),
+    viewer = _make_import_viewer(
+        ui_values={
+            "colmap_root_path": str(database_path.parents[1]),
+            "colmap_database_path": str(database_path),
+            "colmap_images_root": str(images_root),
+            "colmap_depth_value_mode": 1,
+            "colmap_pointcloud_enabled": True,
+            "colmap_pointcloud_nn_radius_scale_coef": 0.4,
+            "colmap_diffused_enabled": True,
+            "colmap_diffused_point_count": 4096,
+            "colmap_diffused_diffusion_radius": 0.75,
+            "colmap_diffused_nn_radius_scale_coef": 0.45,
+            "colmap_custom_ply_enabled": True,
+            "colmap_custom_ply_path": str(ply_path),
+            "colmap_custom_ply_nn_radius_scale_coef": 1.1,
+            "colmap_custom_mesh_enabled": True,
+            "colmap_custom_mesh_path": str(mesh_path),
+            "colmap_custom_mesh_point_count": 2048,
+            "colmap_custom_mesh_nn_radius_scale_coef": 0.55,
+            "colmap_fibonacci_sphere_enabled": True,
+            "colmap_fibonacci_sphere_point_count": 512,
+            "colmap_fibonacci_sphere_radius_multiplier": 2.5,
+            "colmap_fibonacci_sphere_color": (0.2, 0.4, 0.6),
+            "colmap_fibonacci_sphere_upper_hemisphere_only": True,
+            "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.2,
+            "colmap_image_downscale_mode": 0,
+            "colmap_image_max_size": 2048,
+            "colmap_image_scale": 1.0,
+            "colmap_rotation_mode": COLMAP_ROTATION_MODE_AUTO,
+            "colmap_custom_rotation_deg": (0.0, 0.0, 0.0),
+            "colmap_selected_camera_ids": (),
+            "_colmap_camera_rows": (),
+            "use_target_alpha_mask": False,
+            "compress_dataset_using_bc7": False,
+            "colmap_init_mode": 0,
+            "colmap_nn_radius_scale_coef": 0.5,
+            "colmap_min_track_length": 3,
+        },
     )
 
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
+    _patch_import_runtime_resets(monkeypatch)
 
     session.import_colmap_from_ui(viewer)
 
@@ -2186,35 +2189,35 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
         },
     )
     calls: list[object] = []
-    viewer = SimpleNamespace(
+    viewer = _make_import_viewer(
         toolkit=SimpleNamespace(close_colmap_import_window=lambda: calls.append("close")),
-        s=SimpleNamespace(
-            colmap_import_progress=ColmapImportProgress(
-                dataset_root=images_root.parent,
-                colmap_root=images_root.parent,
-                database_path=None,
-                images_root=images_root,
-                init_mode="pointcloud",
-                custom_ply_path=None,
-                image_downscale_mode="original",
-                image_downscale_max_size=1600,
-                image_downscale_scale=1.0,
-                nn_radius_scale_coef=0.25,
-                photometric_compensation_enabled=False,
-                selected_camera_ids=(7,),
-            ),
+        colmap_import_progress=ColmapImportProgress(
+            dataset_root=images_root.parent,
+            colmap_root=images_root.parent,
+            database_path=None,
+            images_root=images_root,
+            init_mode="pointcloud",
+            custom_ply_path=None,
+            image_downscale_mode="original",
+            image_downscale_max_size=1600,
+            image_downscale_scale=1.0,
+            nn_radius_scale_coef=0.25,
+            photometric_compensation_enabled=False,
+            selected_camera_ids=(7,),
         ),
     )
-
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon)
-    monkeypatch.setattr(session, "load_training_frame_rgba8", lambda frame: f"rgba:{Path(frame.image_path).name}")
-    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda viewer_obj, rgba8: f"tex:{rgba8}")
 
     def _finish(viewer_obj, **kwargs) -> None:
         calls.append(("finish", len(kwargs["training_frames"]), list(kwargs["frame_targets_native"])))
         viewer_obj.s.colmap_import_progress = None
 
-    monkeypatch.setattr(session, "_finish_import_colmap_dataset", _finish)
+    _patch_advance_import_pipeline(
+        monkeypatch,
+        recon=recon,
+        load_training_frame=lambda frame: f"rgba:{Path(frame.image_path).name}",
+        create_texture=lambda viewer_obj, rgba8: f"tex:{rgba8}",
+        finish=_finish,
+    )
 
     while viewer.s.colmap_import_progress is not None:
         session.advance_colmap_import(viewer)
@@ -2234,36 +2237,36 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
         cameras={7: SimpleNamespace(width=12, height=6, fx=120.0, fy=60.0, cx=6.0, cy=3.0)},
     )
     calls: list[object] = []
-    viewer = SimpleNamespace(
+    viewer = _make_import_viewer(
         toolkit=SimpleNamespace(close_colmap_import_window=lambda: calls.append("close")),
-        s=SimpleNamespace(
-            colmap_import_progress=ColmapImportProgress(
-                dataset_root=images_root.parent,
-                colmap_root=images_root.parent,
-                database_path=None,
-                images_root=images_root,
-                init_mode="pointcloud",
-                custom_ply_path=None,
-                image_downscale_mode="max_size",
-                image_downscale_max_size=4,
-                image_downscale_scale=1.0,
-                nn_radius_scale_coef=0.25,
-                photometric_compensation_enabled=False,
-                selected_camera_ids=(),
-            ),
+        colmap_import_progress=ColmapImportProgress(
+            dataset_root=images_root.parent,
+            colmap_root=images_root.parent,
+            database_path=None,
+            images_root=images_root,
+            init_mode="pointcloud",
+            custom_ply_path=None,
+            image_downscale_mode="max_size",
+            image_downscale_max_size=4,
+            image_downscale_scale=1.0,
+            nn_radius_scale_coef=0.25,
+            photometric_compensation_enabled=False,
+            selected_camera_ids=(),
         ),
     )
-
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon)
-    monkeypatch.setattr(session, "load_training_frame_rgba8", lambda frame: calls.append((frame.width, frame.height, frame.fx, frame.fy)) or "rgba")
-    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda viewer_obj, rgba8: calls.append(("upload", rgba8)) or "tex")
 
     def _finish(viewer_obj, **kwargs) -> None:
         frame = kwargs["training_frames"][0]
         calls.append((frame.width, frame.height, frame.fx, frame.fy, kwargs["frame_targets_native"]))
         viewer_obj.s.colmap_import_progress = None
 
-    monkeypatch.setattr(session, "_finish_import_colmap_dataset", _finish)
+    _patch_advance_import_pipeline(
+        monkeypatch,
+        recon=recon,
+        load_training_frame=lambda frame: calls.append((frame.width, frame.height, frame.fx, frame.fy)) or "rgba",
+        create_texture=lambda viewer_obj, rgba8: calls.append(("upload", rgba8)) or "tex",
+        finish=_finish,
+    )
 
     while viewer.s.colmap_import_progress is not None:
         session.advance_colmap_import(viewer)
@@ -2594,56 +2597,17 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     recon = object()
     frames = [SimpleNamespace(width=32, height=32, image_id=1)]
     calls: list[object] = []
-    viewer = SimpleNamespace(
-        s=SimpleNamespace(
-            renderer=SimpleNamespace(
-                clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
-                set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
-                set_debug_splat_age_buffer=lambda buffer: calls.append(("clear_splat_age_debug", buffer)),
-            ),
-            trainer=None,
-            training_active=False,
-            training_elapsed_s=0.0,
-            training_resume_time=None,
-            training_renderer=None,
-            training_frames=[],
-            scene=None,
-            scene_path=None,
-            colmap_root=None,
-            colmap_recon=None,
-            colmap_import_progress=None,
-            applied_renderer_params_training=None,
-            applied_renderer_params_debug=None,
-            applied_training_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=False,
-            applied_renderer_params_main=None,
-            cached_training_setup_signature=None,
-            cached_training_setup=None,
-        ),
-        c=lambda key: SimpleNamespace(value=0),
-    )
+    viewer = _make_import_viewer(calls=calls)
 
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-    monkeypatch.setattr(
-        session,
-        "_load_aligned_colmap_reconstruction",
-        lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon if rotation_mode == COLMAP_ROTATION_MODE_AUTO else (_ for _ in ()).throw(AssertionError("expected aligned reconstruction")),
+    _patch_import_runtime_resets(monkeypatch)
+    _patch_import_pipeline(
+        monkeypatch,
+        recon=recon,
+        load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon if rotation_mode == COLMAP_ROTATION_MODE_AUTO else (_ for _ in ()).throw(AssertionError("expected aligned reconstruction")),
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
+        create_textures=lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")),
+        finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"], kwargs["training_image_color_init"], kwargs["target_alpha_threshold"])),
     )
-    monkeypatch.setattr(
-        session,
-        "build_training_frames_from_root",
-        lambda recon, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
-    )
-    monkeypatch.setattr(
-        session,
-        "_finish_import_colmap_dataset",
-        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"], kwargs["training_image_color_init"], kwargs["target_alpha_threshold"])),
-    )
-    monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")))
 
     session.import_colmap_dataset(
         viewer,
@@ -2678,56 +2642,17 @@ def test_import_colmap_dataset_can_skip_aligned_reconstruction(monkeypatch) -> N
     raw_recon = object()
     frames = [SimpleNamespace(width=32, height=32, image_id=1)]
     calls: list[object] = []
-    viewer = SimpleNamespace(
-        s=SimpleNamespace(
-            renderer=SimpleNamespace(
-                clear_scene_resources=lambda: calls.append(("clear_renderer", None)),
-                set_debug_grad_norm_buffer=lambda buffer: calls.append(("clear_grad_debug", buffer)),
-                set_debug_splat_age_buffer=lambda buffer: calls.append(("clear_splat_age_debug", buffer)),
-            ),
-            trainer=None,
-            training_active=False,
-            training_elapsed_s=0.0,
-            training_resume_time=None,
-            training_renderer=None,
-            training_frames=[],
-            scene=None,
-            scene_path=None,
-            colmap_root=None,
-            colmap_recon=None,
-            colmap_import_progress=None,
-            applied_renderer_params_training=None,
-            applied_renderer_params_debug=None,
-            applied_training_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=False,
-            applied_renderer_params_main=None,
-            cached_training_setup_signature=None,
-            cached_training_setup=None,
-        ),
-        c=lambda key: SimpleNamespace(value=0),
-    )
+    viewer = _make_import_viewer(calls=calls)
 
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-    monkeypatch.setattr(
-        session,
-        "_load_aligned_colmap_reconstruction",
-        lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): raw_recon if rotation_mode == COLMAP_ROTATION_MODE_NONE else (_ for _ in ()).throw(AssertionError("expected raw reconstruction")),
+    _patch_import_runtime_resets(monkeypatch)
+    _patch_import_pipeline(
+        monkeypatch,
+        recon=raw_recon,
+        load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): raw_recon if rotation_mode == COLMAP_ROTATION_MODE_NONE else (_ for _ in ()).throw(AssertionError("expected raw reconstruction")),
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
+        create_textures=lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")),
+        finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"])),
     )
-    monkeypatch.setattr(
-        session,
-        "build_training_frames_from_root",
-        lambda recon, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
-    )
-    monkeypatch.setattr(
-        session,
-        "_finish_import_colmap_dataset",
-        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"])),
-    )
-    monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")))
 
     session.import_colmap_dataset(
         viewer,
@@ -2754,24 +2679,22 @@ def test_import_colmap_dataset_can_skip_aligned_reconstruction(monkeypatch) -> N
 def test_advance_colmap_import_prepare_uses_rotation_mode(monkeypatch) -> None:
     raw_recon = SimpleNamespace(images={})
     calls: list[object] = []
-    viewer = SimpleNamespace(
-        s=SimpleNamespace(
-            colmap_import_progress=ColmapImportProgress(
-                dataset_root=Path("dataset"),
-                colmap_root=Path("dataset"),
-                database_path=None,
-                images_root=Path("dataset/images"),
-                init_mode="pointcloud",
-                custom_ply_path=None,
-                image_downscale_mode="original",
-                image_downscale_max_size=2048,
-                image_downscale_scale=1.0,
-                nn_radius_scale_coef=0.5,
-                rotation_mode=COLMAP_ROTATION_MODE_CUSTOM,
-                custom_rotation_deg=(10.0, 20.0, 30.0),
-            )
-        ),
+    viewer = _make_import_viewer(
         init_params=lambda: SimpleNamespace(seed=0),
+        colmap_import_progress=ColmapImportProgress(
+            dataset_root=Path("dataset"),
+            colmap_root=Path("dataset"),
+            database_path=None,
+            images_root=Path("dataset/images"),
+            init_mode="pointcloud",
+            custom_ply_path=None,
+            image_downscale_mode="original",
+            image_downscale_max_size=2048,
+            image_downscale_scale=1.0,
+            nn_radius_scale_coef=0.5,
+            rotation_mode=COLMAP_ROTATION_MODE_CUSTOM,
+            custom_rotation_deg=(10.0, 20.0, 30.0),
+        ),
     )
 
     monkeypatch.setattr(
