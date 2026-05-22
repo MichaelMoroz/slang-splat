@@ -7,21 +7,22 @@ import numpy as np
 import pytest
 import slangpy as spy
 
-from src.scene._internal.colmap_types import ColmapImage, ColmapPoint3D, ColmapReconstruction
 from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer import presenter
 from src.viewer import ui as viewer_ui
-from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import session as viewer_session
 from src.viewer.state import ColmapImportProgress
 from tests.viewer_test_harness import (
+    _buffer_snapshot,
     _CaptureKernel,
     _DummyEncoder,
     _DummyRenderer,
+    _patch_vram_queries,
     _patch_render_frame,
     _render_context,
+    _resource_debug_snapshot,
     _section_dict,
-    _control,
+    _training_camera_colmap_viewer,
     _viewer,
 )
 
@@ -49,59 +50,19 @@ def test_refresh_menu_bar_device_vram_skips_live_heap_query(monkeypatch) -> None
 
 def test_training_camera_colmap_points_payload_clips_and_lists_other_views() -> None:
     render_limit = presenter._TRAINING_CAMERA_COLMAP_POINT_LIMIT
-    point_xy = np.stack(
-        (
-            np.arange(render_limit + 2, dtype=np.float32) % 64.0,
-            np.full((render_limit + 2,), 12.0, dtype=np.float32),
+    viewer = _training_camera_colmap_viewer(
+        observations=(
+            {
+                "image_id": 3,
+                "name": "frame.png",
+                "width": 64,
+                "height": 32,
+                "points2d_xy": np.column_stack((np.arange(render_limit + 2, dtype=np.float32) % 64.0, np.full((render_limit + 2,), 12.0, dtype=np.float32))),
+                "point_ids": np.full((render_limit + 2,), 101, dtype=np.int64),
+            },
+            {"image_id": 5, "name": "other.png", "width": 32, "height": 18, "points2d_xy": ((8.0, 9.0),), "point_ids": (101,)},
         ),
-        axis=1,
-    )
-    point_ids = np.full((render_limit + 2,), 101, dtype=np.int64)
-    recon = ColmapReconstruction(
-        root=Path("dataset"),
-        sparse_dir=Path("dataset/sparse/0"),
-        cameras={},
-        images={
-            3: ColmapImage(
-                image_id=3,
-                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
-                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
-                camera_id=7,
-                name="frame.png",
-                points2d_xy=point_xy,
-                points2d_point3d_ids=point_ids,
-            ),
-            5: ColmapImage(
-                image_id=5,
-                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
-                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
-                camera_id=7,
-                name="other.png",
-                points2d_xy=np.asarray(((8.0, 9.0),), dtype=np.float32),
-                points2d_point3d_ids=np.asarray((101,), dtype=np.int64),
-            ),
-        },
-        points3d={
-            101: ColmapPoint3D(
-                point_id=101,
-                xyz=np.asarray((0.0, 1.0, 2.0), dtype=np.float32),
-                rgb=np.asarray((1.0, 0.5, 0.25), dtype=np.float32),
-                error=0.125,
-                track_length=2,
-            )
-        },
-    )
-    viewer = SimpleNamespace()
-    viewer.ui = SimpleNamespace(controls={"loss_debug_frame": _control(0)})
-    viewer.c = lambda key: viewer.ui.controls[key]
-    viewer.s = SimpleNamespace(
-        training_frames=[
-            SimpleNamespace(image_id=3, width=64, height=32, image_path=Path("frame.png")),
-            SimpleNamespace(image_id=5, width=32, height=18, image_path=Path("other.png")),
-        ],
-        colmap_recon=recon,
-        training_camera_colmap_observation_index=None,
-        training_camera_colmap_observation_signature=None,
+        points=({"point_id": 101},),
     )
 
     payload = presenter._training_camera_colmap_points_payload(viewer)
@@ -120,43 +81,9 @@ def test_training_camera_colmap_points_payload_clips_and_lists_other_views() -> 
 
 
 def test_training_camera_colmap_points_payload_reuses_cached_frame_payload() -> None:
-    recon = ColmapReconstruction(
-        root=Path("dataset"),
-        sparse_dir=Path("dataset/sparse/0"),
-        cameras={},
-        images={
-            3: ColmapImage(
-                image_id=3,
-                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
-                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
-                camera_id=7,
-                name="frame.png",
-                points2d_xy=np.asarray(((4.0, 6.0),), dtype=np.float32),
-                points2d_point3d_ids=np.asarray((101,), dtype=np.int64),
-            ),
-        },
-        points3d={
-            101: ColmapPoint3D(
-                point_id=101,
-                xyz=np.asarray((0.0, 1.0, 2.0), dtype=np.float32),
-                rgb=np.asarray((1.0, 0.5, 0.25), dtype=np.float32),
-                error=0.125,
-                track_length=2,
-            )
-        },
-    )
-    viewer = SimpleNamespace()
-    viewer.ui = SimpleNamespace(controls={"loss_debug_frame": _control(0)})
-    viewer.c = lambda key: viewer.ui.controls[key]
-    viewer.s = SimpleNamespace(
-        training_frames=[SimpleNamespace(image_id=3, width=16, height=12, image_path=Path("frame.png"))],
-        colmap_recon=recon,
-        training_camera_colmap_observation_index=None,
-        training_camera_colmap_observation_signature=None,
-        training_camera_colmap_payload=None,
-        training_camera_colmap_payload_signature=None,
-        training_camera_colmap_payload_cache=None,
-        training_camera_colmap_payload_cache_signature=None,
+    viewer = _training_camera_colmap_viewer(
+        observations=({"image_id": 3, "name": "frame.png", "width": 16, "height": 12, "points2d_xy": ((4.0, 6.0),), "point_ids": (101,)},),
+        points=({"point_id": 101},),
     )
 
     payload_first = presenter._training_camera_colmap_points_payload(viewer)
@@ -167,62 +94,15 @@ def test_training_camera_colmap_points_payload_reuses_cached_frame_payload() -> 
 
 
 def test_training_camera_colmap_points_payload_reuses_cached_payload_after_frame_switch() -> None:
-    recon = ColmapReconstruction(
-        root=Path("dataset"),
-        sparse_dir=Path("dataset/sparse/0"),
-        cameras={},
-        images={
-            3: ColmapImage(
-                image_id=3,
-                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
-                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
-                camera_id=7,
-                name="frame.png",
-                points2d_xy=np.asarray(((4.0, 6.0),), dtype=np.float32),
-                points2d_point3d_ids=np.asarray((101,), dtype=np.int64),
-            ),
-            5: ColmapImage(
-                image_id=5,
-                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
-                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
-                camera_id=7,
-                name="other.png",
-                points2d_xy=np.asarray(((8.0, 9.0),), dtype=np.float32),
-                points2d_point3d_ids=np.asarray((202,), dtype=np.int64),
-            ),
-        },
-        points3d={
-            101: ColmapPoint3D(
-                point_id=101,
-                xyz=np.asarray((0.0, 1.0, 2.0), dtype=np.float32),
-                rgb=np.asarray((1.0, 0.5, 0.25), dtype=np.float32),
-                error=0.125,
-                track_length=2,
-            ),
-            202: ColmapPoint3D(
-                point_id=202,
-                xyz=np.asarray((2.0, 3.0, 4.0), dtype=np.float32),
-                rgb=np.asarray((0.5, 1.0, 0.25), dtype=np.float32),
-                error=0.25,
-                track_length=3,
-            ),
-        },
-    )
-    viewer = SimpleNamespace()
-    viewer.ui = SimpleNamespace(controls={"loss_debug_frame": _control(0)})
-    viewer.c = lambda key: viewer.ui.controls[key]
-    viewer.s = SimpleNamespace(
-        training_frames=[
-            SimpleNamespace(image_id=3, width=16, height=12, image_path=Path("frame.png")),
-            SimpleNamespace(image_id=5, width=20, height=10, image_path=Path("other.png")),
-        ],
-        colmap_recon=recon,
-        training_camera_colmap_observation_index=None,
-        training_camera_colmap_observation_signature=None,
-        training_camera_colmap_payload=None,
-        training_camera_colmap_payload_signature=None,
-        training_camera_colmap_payload_cache=None,
-        training_camera_colmap_payload_cache_signature=None,
+    viewer = _training_camera_colmap_viewer(
+        observations=(
+            {"image_id": 3, "name": "frame.png", "width": 16, "height": 12, "points2d_xy": ((4.0, 6.0),), "point_ids": (101,)},
+            {"image_id": 5, "name": "other.png", "width": 20, "height": 10, "points2d_xy": ((8.0, 9.0),), "point_ids": (202,)},
+        ),
+        points=(
+            {"point_id": 101},
+            {"point_id": 202, "xyz": (2.0, 3.0, 4.0), "rgb": (0.5, 1.0, 0.25), "error": 0.25, "track_length": 3},
+        ),
     )
 
     payload_first = presenter._training_camera_colmap_points_payload(viewer)
@@ -575,7 +455,7 @@ def test_python_frame_capture_summary_uses_recent_frame_times_and_process_vram(m
     viewer.toolkit = SimpleNamespace(tk=viewer_ui.ToolkitState())
     viewer.toolkit.tk.frame_time_history.extend([1.0 / 60.0, 1.0 / 58.0])
     viewer.s.fps_smooth = 57.5
-    snapshot = ResourceDebugSnapshot(rows=(), total_consumption=64, buffer_count=1, buffer_total=64, buffer_mean=64.0, buffer_median=64.0, texture_count=0, texture_total=0, process_vram=96, process_vram_delta=32, process_vram_source="nvidia-smi")
+    snapshot = _buffer_snapshot(64, process_vram=96, process_vram_delta=32, process_vram_source="nvidia-smi")
     calls: list[bool] = []
 
     monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda _viewer, include_process_vram=False: calls.append(bool(include_process_vram)) or snapshot)
@@ -592,22 +472,8 @@ def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -
     viewer = _viewer(loss_debug=False)
     calls: list[bool] = []
 
-    def collect(_viewer_obj, *, include_process_vram: bool = False):
-        calls.append(bool(include_process_vram))
-        return ResourceDebugSnapshot(
-            rows=(),
-            total_consumption=128,
-            buffer_count=1,
-            buffer_total=128,
-            buffer_mean=128.0,
-            buffer_median=128.0,
-            texture_count=0,
-            texture_total=0,
-        )
-
-    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", collect)
-    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device, *, allow_heap_query=True: (None, ""))
-    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (None, ""))
+    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda _viewer_obj, *, include_process_vram=False: calls.append(bool(include_process_vram)) or _buffer_snapshot(128))
+    _patch_vram_queries(monkeypatch)
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
@@ -621,17 +487,10 @@ def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -
 def test_update_ui_text_throttles_resource_debug_snapshot(monkeypatch) -> None:
     viewer = _viewer(loss_debug=False)
     viewer.ui._values.update({"show_resource_debug": True, "_resource_debug_snapshot": None, "_resource_debug_next_update": 0.0})
-    snapshots = [
-        ResourceDebugSnapshot(rows=(), total_consumption=64, buffer_count=1, buffer_total=64, buffer_mean=64.0, buffer_median=64.0, texture_count=0, texture_total=0),
-        ResourceDebugSnapshot(rows=(), total_consumption=96, buffer_count=1, buffer_total=96, buffer_mean=96.0, buffer_median=96.0, texture_count=0, texture_total=0),
-    ]
+    snapshots = [_buffer_snapshot(64), _buffer_snapshot(96)]
     calls: list[bool] = []
 
-    def collect(_viewer_obj, *, include_process_vram: bool = False):
-        calls.append(bool(include_process_vram))
-        return snapshots[min(len(calls) - 1, len(snapshots) - 1)]
-
-    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", collect)
+    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda _viewer_obj, *, include_process_vram=False: calls.append(bool(include_process_vram)) or snapshots[min(len(calls) - 1, len(snapshots) - 1)])
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
     presenter.update_ui_text(viewer, 1.0 / 60.0)
@@ -647,23 +506,13 @@ def test_update_ui_text_throttles_resource_debug_snapshot(monkeypatch) -> None:
 
 def test_update_ui_text_refreshes_menu_bar_device_vram(monkeypatch) -> None:
     viewer = _viewer(loss_debug=False)
-    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device, *, allow_heap_query=True: (3 * 1024**3, "Windows GPU Adapter Memory"))
-    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (24 * 1024**3, "DXGI Adapter Desc"))
+    _patch_vram_queries(monkeypatch, used=3 * 1024**3, used_source="Windows GPU Adapter Memory", capacity=24 * 1024**3, capacity_source="DXGI Adapter Desc")
     monkeypatch.setattr(
         presenter,
         "collect_resource_debug_snapshot",
-        lambda _viewer, include_process_vram=False: ResourceDebugSnapshot(
-            rows=(
-                ResourceDebugRow("Texture", "viewer.dataset_texture", "viewer.trainer.frame_targets_native[0]", 256 * 1024**2, "rgba8", "srv", 1),
-                ResourceDebugRow("Buffer", "renderer.buf", "viewer.main_renderer.buf", 512 * 1024**2, "buf", "rw", 2),
-            ),
-            total_consumption=768 * 1024**2,
-            buffer_count=1,
-            buffer_total=512 * 1024**2,
-            buffer_mean=float(512 * 1024**2),
-            buffer_median=float(512 * 1024**2),
-            texture_count=1,
-            texture_total=256 * 1024**2,
+        lambda _viewer, include_process_vram=False: _resource_debug_snapshot(
+            ("Texture", "viewer.dataset_texture", "viewer.trainer.frame_targets_native[0]", 256 * 1024**2, "rgba8", "srv", 1),
+            ("Buffer", "renderer.buf", "viewer.main_renderer.buf", 512 * 1024**2, "buf", "rw", 2),
         ),
     )
 
@@ -680,24 +529,14 @@ def test_update_ui_text_refreshes_menu_bar_device_vram(monkeypatch) -> None:
 
 def test_update_ui_text_reuses_resource_debug_snapshot_for_menu_bar_dataset_vram(monkeypatch) -> None:
     viewer = _viewer(loss_debug=False)
-    snapshot = ResourceDebugSnapshot(
-        rows=(
-            ResourceDebugRow("Texture", "viewer.dataset_texture_bc7", "viewer.state.colmap_import_textures[0]", 256, "bc7", "srv", 1),
-            ResourceDebugRow("Buffer", "renderer.buf", "viewer.main_renderer.buf", 768, "buf", "rw", 2),
-        ),
-        total_consumption=1024,
-        buffer_count=1,
-        buffer_total=768,
-        buffer_mean=768.0,
-        buffer_median=768.0,
-        texture_count=0,
-        texture_total=0,
+    snapshot = _resource_debug_snapshot(
+        ("Texture", "viewer.dataset_texture_bc7", "viewer.state.colmap_import_textures[0]", 256, "bc7", "srv", 1),
+        ("Buffer", "renderer.buf", "viewer.main_renderer.buf", 768, "buf", "rw", 2),
     )
     viewer.ui._values["show_resource_debug"] = True
     viewer.ui._values["_resource_debug_snapshot"] = snapshot
     viewer.ui._values["_resource_debug_next_update"] = viewer.s.last_time + 60.0
-    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device, *, allow_heap_query=True: (None, ""))
-    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (None, ""))
+    _patch_vram_queries(monkeypatch)
     monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not recollect snapshot")))
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)

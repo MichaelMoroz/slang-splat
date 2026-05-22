@@ -12,9 +12,10 @@ from PIL import Image
 
 from src.app.shared import build_training_params
 from src.app.training_controls import training_control_defaults
-from src.scene._internal.colmap_types import ColmapFrame
+from src.scene._internal.colmap_types import ColmapFrame, ColmapImage, ColmapPoint3D, ColmapReconstruction
 from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer import presenter
+from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import session as viewer_session
 from src.viewer.state import COLMAP_ROTATION_MODE_AUTO
 
@@ -412,6 +413,85 @@ def _patch_advance_import_pipeline(monkeypatch, *, recon, load_reconstruction=No
 
 def _training_hparams(**overrides):
     return replace(_DEFAULT_TRAINING_PARAMS.training, **overrides)
+
+
+def _training_camera_colmap_viewer(*, observations, points, loss_debug_frame=0, state_overrides=None):
+    recon = ColmapReconstruction(
+        root=Path("dataset"),
+        sparse_dir=Path("dataset/sparse/0"),
+        cameras={},
+        images={
+            int(spec["image_id"]): ColmapImage(
+                image_id=int(spec["image_id"]),
+                q_wxyz=np.asarray(spec.get("q_wxyz", (1.0, 0.0, 0.0, 0.0)), dtype=np.float32),
+                t_xyz=np.asarray(spec.get("t_xyz", (0.0, 0.0, 0.0)), dtype=np.float32),
+                camera_id=int(spec.get("camera_id", 7)),
+                name=str(spec["name"]),
+                points2d_xy=np.asarray(spec["points2d_xy"], dtype=np.float32).reshape((-1, 2)),
+                points2d_point3d_ids=np.asarray(spec["point_ids"], dtype=np.int64),
+            )
+            for spec in observations
+        },
+        points3d={
+            int(spec["point_id"]): ColmapPoint3D(
+                point_id=int(spec["point_id"]),
+                xyz=np.asarray(spec.get("xyz", (0.0, 1.0, 2.0)), dtype=np.float32),
+                rgb=np.asarray(spec.get("rgb", (1.0, 0.5, 0.25)), dtype=np.float32),
+                error=float(spec.get("error", 0.125)),
+                track_length=int(spec.get("track_length", 2)),
+            )
+            for spec in points
+        },
+    )
+    state = {
+        "training_frames": [
+            SimpleNamespace(image_id=int(spec["image_id"]), width=int(spec["width"]), height=int(spec["height"]), image_path=Path(spec["name"]))
+            for spec in observations
+        ],
+        "colmap_recon": recon,
+        "training_camera_colmap_observation_index": None,
+        "training_camera_colmap_observation_signature": None,
+        "training_camera_colmap_payload": None,
+        "training_camera_colmap_payload_signature": None,
+        "training_camera_colmap_payload_cache": None,
+        "training_camera_colmap_payload_cache_signature": None,
+    }
+    if state_overrides:
+        state.update(state_overrides)
+    viewer = SimpleNamespace()
+    viewer.ui = SimpleNamespace(controls={"loss_debug_frame": _control(loss_debug_frame)})
+    viewer.c = lambda key: viewer.ui.controls[key]
+    viewer.s = SimpleNamespace(**state)
+    return viewer
+
+
+def _resource_debug_snapshot(*rows, total_consumption=None, process_vram=None, process_vram_delta=None, process_vram_source=""):
+    debug_rows = tuple(ResourceDebugRow(*row) if not isinstance(row, ResourceDebugRow) else row for row in rows)
+    buffer_sizes = sorted(max(int(row.byte_size), 0) for row in debug_rows if row.kind == "Buffer")
+    texture_total = sum(max(int(row.byte_size), 0) for row in debug_rows if row.kind == "Texture")
+    total = sum(max(int(row.byte_size), 0) for row in debug_rows) if total_consumption is None else max(int(total_consumption), 0)
+    return ResourceDebugSnapshot(
+        rows=debug_rows,
+        total_consumption=total,
+        buffer_count=len(buffer_sizes),
+        buffer_total=sum(buffer_sizes),
+        buffer_mean=float(sum(buffer_sizes) / len(buffer_sizes)) if buffer_sizes else 0.0,
+        buffer_median=float(np.median(buffer_sizes)) if buffer_sizes else 0.0,
+        texture_count=sum(1 for row in debug_rows if row.kind == "Texture"),
+        texture_total=texture_total,
+        process_vram=process_vram,
+        process_vram_delta=process_vram_delta,
+        process_vram_source=process_vram_source,
+    )
+
+
+def _buffer_snapshot(byte_size, *, process_vram=None, process_vram_delta=None, process_vram_source=""):
+    return _resource_debug_snapshot(("Buffer", "renderer.buf", "viewer.main_renderer.buf", byte_size, "buf", "rw", 1), process_vram=process_vram, process_vram_delta=process_vram_delta, process_vram_source=process_vram_source)
+
+
+def _patch_vram_queries(monkeypatch, *, used=None, used_source="", capacity=None, capacity_source=""):
+    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device, *, allow_heap_query=True: (used, used_source))
+    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (capacity, capacity_source))
 
 
 def _viewer_controls(loss_debug):
