@@ -773,9 +773,7 @@ def _enabled_init_source_names(import_cfg: object) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _initial_training_scene_step(viewer: object, training_hparams: object, *, preserved_step: int = 0) -> int:
-    if int(preserved_step) > 0:
-        return max(int(preserved_step), 0)
+def _initial_training_scene_step(viewer: object, training_hparams: object) -> int:
     import_cfg = getattr(viewer.s, "colmap_import", None)
     if _enabled_init_source_names(import_cfg) != (_COLMAP_IMPORT_CUSTOM_PLY,):
         return 0
@@ -1129,6 +1127,8 @@ def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = Fa
 
 
 def _reset_gaussian_reinitialize_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
+    viewer.s.training_elapsed_s = 0.0
+    viewer.s.training_resume_time = None
     _release_training_runtime(viewer, preserve_frame_targets=bool(preserve_frame_targets))
     _apply_state_defaults(viewer.s, _TRAINING_RUNTIME_TRACKING_DEFAULTS)
     _reset_training_visual_state(viewer)
@@ -1445,6 +1445,11 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
     )
 
 
+def rebind_debug_buffers(viewer: object) -> None:
+    for attr in ("training_renderer", "renderer", "debug_renderer"):
+        _apply_debug_buffers(viewer, getattr(viewer.s, attr, None))
+
+
 @dataclass(frozen=True, slots=True)
 class _RendererRoleSpec:
     attr: str
@@ -1522,8 +1527,7 @@ def _finalize_renderer_replacement(
         trainer = getattr(viewer.s, "trainer", None)
         if trainer is not None:
             trainer.rebind_renderer(renderer)
-        for shared_role in (_TRAINING_RENDERER_ROLE, _MAIN_RENDERER_ROLE, _DEBUG_RENDERER_ROLE):
-            _apply_debug_buffers(viewer, getattr(viewer.s, shared_role.attr, None))
+        rebind_debug_buffers(viewer)
         if reset_loss_debug:
             _reset_loss_debug(viewer)
     else:
@@ -3107,11 +3111,6 @@ def initialize_training_scene(
 ) -> None:
     if viewer.s.colmap_recon is None and viewer.s.colmap_root is None:
         return
-    preserved_training_step = 0
-    if preserve_session_state:
-        trainer = getattr(viewer.s, "trainer", None)
-        if trainer is not None and hasattr(trainer, "state"):
-            preserved_training_step = max(int(getattr(trainer.state, "step", 0)), 0)
     _reset_dataset_metrics_state(viewer)
     reuse_existing_frame_targets = bool(preserve_session_state and frame_targets_native is not None)
     if preserve_session_state:
@@ -3123,7 +3122,7 @@ def initialize_training_scene(
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
-    initial_training_step = _initial_training_scene_step(viewer, params.training, preserved_step=preserved_training_step)
+    initial_training_step = _initial_training_scene_step(viewer, params.training)
     resolutions = []
     for frame in viewer.s.training_frames:
         try:
@@ -3175,10 +3174,11 @@ def initialize_training_scene(
     clear_debug_scene_resources = getattr(viewer.s.debug_renderer, "clear_scene_resources", None)
     if callable(clear_debug_scene_resources):
         clear_debug_scene_resources()
-    _apply_debug_buffers(viewer, renderer)
-    _apply_debug_buffers(viewer, viewer.s.renderer)
-    _apply_debug_buffers(viewer, viewer.s.debug_renderer)
-    if not preserve_session_state:
+    rebind_debug_buffers(viewer)
+    if preserve_session_state:
+        viewer.s.training_elapsed_s = 0.0
+        viewer.s.training_resume_time = float(time.perf_counter()) if bool(getattr(viewer.s, "training_active", False)) else None
+    else:
         viewer.s.training_active = False
         viewer.s.training_elapsed_s = 0.0
         viewer.s.training_resume_time = None

@@ -9,6 +9,7 @@ import slangpy as spy
 
 from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer import presenter
+from src.viewer import presenter_state
 from src.viewer import ui as viewer_ui
 from src.viewer import session as viewer_session
 from src.viewer.state import ColmapImportProgress
@@ -219,6 +220,43 @@ def test_render_frame_training_batch_cases(monkeypatch, case: str) -> None:
     assert calls == (["apply", "import", "train_resize", "main", "ui"] if case == "runtime_resize" else ["apply", "main", "ui"])
 
 
+def test_render_frame_rebind_debug_buffers_after_training_batch(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    render_context = _render_context()
+    calls: list[str] = []
+
+    monkeypatch.setattr(presenter, "_run_training_batch", lambda viewer_obj: calls.append("train") or setattr(viewer_obj.s, "last_training_batch_steps", 3))
+    monkeypatch.setattr(presenter.session, "rebind_debug_buffers", lambda viewer_obj: calls.append("rebind"))
+    _patch_render_frame(monkeypatch, calls, advance_colmap_import=lambda viewer_obj: calls.append("import"))
+
+    presenter.render_frame(viewer, render_context)
+
+    assert calls == ["apply", "import", "train", "rebind", "main", "ui"]
+
+
+def test_render_frame_rebind_debug_buffers_after_runtime_resize(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    render_context = _render_context()
+    calls: list[str] = []
+
+    def _apply_live_params(viewer_obj) -> None:
+        viewer_obj.s.pending_training_runtime_resize = True
+        calls.append("apply")
+
+    monkeypatch.setattr(presenter.session, "rebind_debug_buffers", lambda viewer_obj: calls.append("rebind"))
+    _patch_render_frame(
+        monkeypatch,
+        calls,
+        apply_live_params=_apply_live_params,
+        advance_colmap_import=lambda viewer_obj: calls.append("import"),
+        ensure_training_runtime_resolution=lambda viewer_obj: calls.append("train_resize") or True,
+    )
+
+    presenter.render_frame(viewer, render_context)
+
+    assert calls == ["apply", "import", "train_resize", "rebind", "main", "ui"]
+
+
 @pytest.mark.parametrize(
     "case,ui_updates,expected_calls",
     (
@@ -269,14 +307,17 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
     schedule_sections = _section_dict(viewer.ui._values["_training_schedule_sections"])
     refinement = _section_dict(viewer.ui._values["_training_refinement_sections"])["Refinement"]
+    training, step = presenter_state._schedule_runtime(viewer)
+    expected_target_now_pct = presenter_state.resolve_refinement_active_target_splat_ratio(training, step) * 100.0
+    expected_target_pct = presenter_state.resolve_refinement_target_splat_ratio(training, step) * 100.0
 
     assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "640x360"), ("factor", 1))),)
     assert viewer.ui._values["_training_downscale_sections"] == (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),)
     assert viewer.t("training_schedule").text == "LR Schedule: 2.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@12,225 -> 7.00e-04@30,058 -> 4.00e-04@100,000 | current=5.00e-03"
     assert schedule_sections[""] == {"step": 0, "stage": "Stage 0", "sh": "SH0"}
     assert schedule_sections["Learning Rates"] == pytest.approx({"base": 0.002, "pos": 0.25, "scale": 5.0, "rot": 1.0, "dc": 5.0, "opacity": 5.0, "sh": 0.1})
-    assert schedule_sections["Other"] == pytest.approx({"colorspace": 0.6, "dither": 0.01, "target%": 10.0, "prune_floor%": 20.0, "opacity_reg": 1.0, "push": 0.005, "noise": 0.0})
-    assert refinement == pytest.approx({"every": 200, "target_now%": 0.0, "target%": 10.0, "after": 1000, "prune_now%": 20.0, "prune_floor%": 20.0, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": 0.05, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": 1500000})
+    assert schedule_sections["Other"] == pytest.approx({"colorspace": 0.6, "dither": 0.01, "target%": expected_target_pct, "prune_floor%": 20.0, "opacity_reg": 1.0, "push": 0.005, "noise": 0.0})
+    assert refinement == pytest.approx({"every": 200, "target_now%": expected_target_now_pct, "target%": expected_target_pct, "after": 1000, "prune_now%": 20.0, "prune_floor%": 20.0, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": 0.05, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": 1500000})
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_camera_struct_sections"] == (
         ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
@@ -553,10 +594,12 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
     schedule_sections = _section_dict(viewer.ui._values["_training_schedule_sections"])
+    training, step = presenter_state._schedule_runtime(viewer)
+    expected_target_pct = presenter_state.resolve_refinement_target_splat_ratio(training, step) * 100.0
 
     assert schedule_sections[""] == {"step": 0, "stage": "Stage 0", "sh": "SH0"}
     assert schedule_sections["Learning Rates"] == pytest.approx({"base": 0.005, "pos": 1.0, "scale": 5.0, "rot": 1.0, "dc": 5.0, "opacity": 5.0, "sh": 0.05})
-    assert schedule_sections["Other"] == pytest.approx({"colorspace": 1.0, "dither": 0.5, "target%": 10.0, "prune_floor%": 10.0, "opacity_reg": 3.0, "push": 0.001, "noise": 500000.0})
+    assert schedule_sections["Other"] == pytest.approx({"colorspace": 1.0, "dither": 0.5, "target%": expected_target_pct, "prune_floor%": 10.0, "opacity_reg": 3.0, "push": 0.001, "noise": 500000.0})
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):
@@ -797,6 +840,25 @@ def test_render_debug_source_cases(monkeypatch, case: str, loss_debug_view: int,
     np.testing.assert_allclose(render_call["sort_camera_position"], np.asarray([1.0, 2.0, 3.0], dtype=np.float32))
     assert render_call["sort_camera_dither_sigma"] == 0.125
     assert render_call["sort_camera_dither_seed"] == 555
+
+
+def test_render_debug_source_rebind_debug_buffers_after_resolution_change(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    overlay_renderer = _DummyRenderer()
+    events: list[str] = []
+    original_set_resolution = overlay_renderer.set_render_resolution
+
+    def _set_resolution(width, height):
+        events.append("resize")
+        return original_set_resolution(width, height)
+
+    overlay_renderer.set_render_resolution = _set_resolution
+    viewer.s.training_renderer = overlay_renderer
+    monkeypatch.setattr(presenter.session, "rebind_debug_buffers", lambda viewer_obj: events.append("rebind"))
+
+    presenter._render_debug_source(viewer, _DummyEncoder(), 0, 0)
+
+    assert events[:2] == ["resize", "rebind"]
 
 
 @pytest.mark.parametrize("case", ("downscaled", "sampled_native", "full_res", "full_res_linear", "tonemap_off"))
@@ -1108,6 +1170,30 @@ def test_render_main_view_wraps_viewport_present_in_main_view_group(monkeypatch)
         ("pop", None),
         ("pop", None),
     ]
+
+
+def test_render_main_view_rebind_debug_buffers_after_shared_training_resize(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    encoder = _DummyEncoder()
+    events: list[str] = []
+    original_set_resolution = viewer.s.training_renderer.set_render_resolution
+
+    def _set_resolution(width, height):
+        events.append("resize")
+        return original_set_resolution(width, height)
+
+    viewer.s.training_renderer.set_render_resolution = _set_resolution
+    monkeypatch.setattr(presenter.session, "rebind_debug_buffers", lambda viewer_obj: events.append("rebind"))
+    monkeypatch.setattr(
+        presenter,
+        "_dispatch_viewport_present",
+        lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: "present_tex",
+    )
+
+    result = presenter._render_main_view(viewer, encoder)
+
+    assert result == "present_tex"
+    assert events[:2] == ["resize", "rebind"]
 
 
 def test_dispatch_viewport_present_zero_stays_zero_and_output_is_finite(device) -> None:

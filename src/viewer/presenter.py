@@ -1008,6 +1008,7 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
     set_resolution = getattr(debug_renderer, "set_render_resolution", None)
     if callable(set_resolution):
         set_resolution(debug_width, debug_height)
+        session.rebind_debug_buffers(viewer)
     session._apply_renderer_role_params(
         viewer,
         debug_renderer,
@@ -1170,6 +1171,7 @@ def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Textur
             set_resolution = getattr(active_renderer, "set_render_resolution", None)
             if callable(set_resolution):
                 set_resolution(target_width, target_height)
+                session.rebind_debug_buffers(viewer)
         camera = viewer.camera()
         width, height = int(active_renderer.width), int(active_renderer.height)
         if _ppisp_preview_enabled(viewer):
@@ -1202,6 +1204,7 @@ def _render_frame_once(
             render_width, render_height = _viewport_target_size(viewer, iw, ih)
             viewer.update_camera(dt)
             runtime_reconfigured = False
+            debug_bindings_maybe_stale = False
             if bool(getattr(viewer.s, "pending_training_reinitialize", False)):
                 viewer.s.pending_training_reinitialize = False
                 session.reinitialize_training_scene(viewer)
@@ -1211,6 +1214,7 @@ def _render_frame_once(
             session.advance_dataset_metrics(viewer)
             if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
                 runtime_reconfigured = bool(session.ensure_training_runtime_resolution(viewer))
+                debug_bindings_maybe_stale = runtime_reconfigured
             if viewer.s.renderer is None:
                 session.recreate_renderer(viewer, render_width, render_height)
             elif (viewer.s.renderer.width, viewer.s.renderer.height) != (render_width, render_height):
@@ -1231,8 +1235,11 @@ def _render_frame_once(
                 viewer.s.last_training_batch_steps = 0
             else:
                 _run_training_batch(viewer)
+                debug_bindings_maybe_stale = debug_bindings_maybe_stale or bool(getattr(viewer.s, "training_active", False) and getattr(viewer.s, "trainer", None) is not None)
             if bool(getattr(viewer.s, "training_runtime_factor_changed", False)):
-                session.ensure_training_runtime_resolution(viewer)
+                debug_bindings_maybe_stale = bool(session.ensure_training_runtime_resolution(viewer)) or debug_bindings_maybe_stale
+            if debug_bindings_maybe_stale:
+                session.rebind_debug_buffers(viewer)
             viewer.s.training_runtime_factor_changed = False
             if _training_camera_debug_active(viewer) and viewer.s.trainer is not None and viewer.s.training_frames:
                 viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height, render_frame_index)

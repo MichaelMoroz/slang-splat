@@ -130,16 +130,19 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
     provider = object()
     new_trainer = _TonemapAwareTrainer(
         target_tonemap_provider=None,
+        state=SimpleNamespace(step=0, last_base_lr=None),
         refinement_buffers={"splat_age": "new-splat-age"},
         effective_train_downscale_factor=lambda step=0: 1,
         effective_train_render_factor=lambda step=0: 1,
     )
+    monkeypatch.setattr(session.time, "perf_counter", lambda: 21.0)
     viewer = _make_training_scene_viewer(
         calls=calls,
         ui_values={"photometric_apply_to_targets": True},
         training_frames=[SimpleNamespace(width=32, height=32), SimpleNamespace(width=32, height=32)],
         trainer=SimpleNamespace(
             _frame_targets_native=frame_targets,
+            state=SimpleNamespace(step=17),
             refinement_buffers={"splat_age": "old-splat-age"},
             release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets)),
         ),
@@ -183,9 +186,10 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
     assert "reset_loss_debug" not in calls
     assert not any(isinstance(call, tuple) and call[0] == "reset_camera" for call in calls)
     assert viewer.s.trainer is new_trainer
+    assert viewer.s.trainer.state.step == 0
     assert viewer.s.training_active is True
-    assert viewer.s.training_elapsed_s == 12.0
-    assert viewer.s.training_resume_time == 3.0
+    assert viewer.s.training_elapsed_s == 0.0
+    assert viewer.s.training_resume_time == 21.0
     assert viewer.s.photometric_trainer.provider is provider
     assert viewer.s.photometric_active is True
     assert viewer.s.photometric_elapsed_s == 4.0
@@ -200,6 +204,64 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
     assert debug_renderer.grad_buffer == "new-grad"
     assert debug_renderer.splat_age_buffer == "new-splat-age"
     assert training_renderer.copy_calls == []
+
+
+def test_reinitialize_training_scene_keeps_custom_ply_initial_step(monkeypatch) -> None:
+    calls: list[object] = []
+    captured: dict[str, object] = {}
+    applied_steps: list[int] = []
+    training_renderer = _DebugTrainingRenderer()
+    custom_ply_initial_step = 33
+    frame_targets = [object()]
+    new_trainer = _TonemapAwareTrainer(
+        target_tonemap_provider=None,
+        state=SimpleNamespace(step=0, last_base_lr=None),
+        training=SimpleNamespace(train_downscale_factor=0),
+        refinement_buffers={},
+        effective_train_downscale_factor=lambda step=0: 2,
+        effective_train_render_factor=lambda step=0: 1,
+        current_base_lr=lambda step=None: 0.125,
+        apply_renderer_training_hparams=lambda step=None: applied_steps.append(int(step)),
+    )
+    viewer = _make_training_scene_viewer(
+        calls=calls,
+        training_frames=[SimpleNamespace(width=32, height=32)],
+        trainer=SimpleNamespace(
+            _frame_targets_native=frame_targets,
+            state=SimpleNamespace(step=91),
+            refinement_buffers={},
+            release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets)),
+        ),
+        training_renderer=object(),
+        colmap_import=SimpleNamespace(
+            init_mode="pointcloud",
+            pointcloud_enabled=False,
+            diffused_enabled=False,
+            custom_ply_enabled=True,
+            custom_mesh_enabled=False,
+            custom_ply_path=Path("custom.ply"),
+            nn_radius_scale_coef=0.5,
+            diffused_point_count=100,
+        ),
+    )
+    monkeypatch.setattr(session, "resolve_stage_schedule_steps", lambda _training: (0, 0, 0, custom_ply_initial_step))
+
+    _patch_training_scene_bootstrap(
+        monkeypatch,
+        ensure_renderer=_assign_training_renderer(calls, training_renderer),
+        gaussian_trainer=_capturing_gaussian_trainer(captured, new_trainer),
+        reset_loss_debug=lambda viewer_obj: None,
+        sync_photometric_target_provider=lambda viewer_obj: None,
+        apply_training_image_color_init=lambda viewer_obj, trainer, enc: None,
+    )
+
+    session.reinitialize_training_scene(viewer)
+
+    assert captured["frame_targets_native"] == frame_targets
+    assert new_trainer.state.step == custom_ply_initial_step
+    assert new_trainer.state.last_base_lr == 0.125
+    assert new_trainer.training.train_downscale_factor == 2
+    assert applied_steps == [custom_ply_initial_step]
 
 
 def test_initialize_training_scene_does_not_preserve_old_native_targets_on_fresh_import(monkeypatch) -> None:
@@ -244,7 +306,7 @@ def test_reset_gaussian_reinitialize_runtime_resets_visual_state_only(monkeypatc
     viewer = SimpleNamespace(
         s=SimpleNamespace(
             trainer=SimpleNamespace(release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets))),
-            training_active=True,
+            training_active=False,
             training_elapsed_s=12.0,
             training_resume_time=3.0,
             applied_renderer_params_training="training",
@@ -266,9 +328,9 @@ def test_reset_gaussian_reinitialize_runtime_resets_visual_state_only(monkeypatc
     assert calls[1][0] == "visual"
     assert calls[2] == ("clear", ("training_renderer",))
     assert viewer.s.trainer is None
-    assert viewer.s.training_active is True
-    assert viewer.s.training_elapsed_s == 12.0
-    assert viewer.s.training_resume_time == 3.0
+    assert viewer.s.training_active is False
+    assert viewer.s.training_elapsed_s == 0.0
+    assert viewer.s.training_resume_time is None
     assert viewer.s.applied_renderer_params_training is None
     assert viewer.s.applied_training_signature is None
     assert viewer.s.applied_training_runtime_signature is None
