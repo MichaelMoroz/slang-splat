@@ -945,6 +945,35 @@ def test_debug_contribution_amount_equal_range_above_threshold_matches(device):
     assert max_abs_diff < 1e-6
 
 
+def test_debug_contribution_amount_colormap_clamps_to_range_endpoints(device):
+    scene = make_scene(24, seed=260)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_CONTRIBUTION_AMOUNT,
+        debug_contribution_range=(0.5, 1.0),
+    )
+
+    def render_with_contribution(value: float) -> np.ndarray:
+        renderer.upload_debug_splat_contribution(np.full((scene.count,), np.float32(value), dtype=np.float32))
+        out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+        assert out.image.shape == (64, 64, 4)
+        assert np.all(np.isfinite(out.image))
+        return out.image
+
+    at_lo = render_with_contribution(0.5)
+    below_lo = render_with_contribution(0.25)
+    at_hi = render_with_contribution(1.0)
+    above_hi = render_with_contribution(1.25)
+
+    assert float(np.max(np.abs(below_lo - at_lo))) < 1e-6
+    assert float(np.max(np.abs(above_hi - at_hi))) < 1e-6
+
+
 def test_debug_current_frame_splat_contribution_render_smoke(device):
     scene = make_scene(24, seed=60)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

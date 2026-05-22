@@ -547,7 +547,7 @@ float raster_depth_output(float3 state)
 
 float3 jet_colormap(float value)
 {
-    float x = value;
+    float x = saturate(value);
     float r = saturate(1.5 - abs(4.0 * x - 3.0));
     float g = saturate(1.5 - abs(4.0 * x - 2.0));
     float b = saturate(1.5 - abs(4.0 * x - 1.0));
