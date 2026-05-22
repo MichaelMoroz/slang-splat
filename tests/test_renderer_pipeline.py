@@ -982,6 +982,46 @@ def test_debug_refinement_distribution_render_smoke(device):
     assert float(np.max(channel_spread)) > 1e-4
 
 
+def test_debug_refinement_distribution_negative_exponents_change_render(device):
+    scene = make_scene(24, seed=160)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_REFINEMENT_DISTRIBUTION,
+        debug_refinement_distribution_range=(1.0, 4.0),
+    )
+    variances = np.linspace(0.25, 1.0, scene.count, dtype=np.float32)
+    viewed_fraction = np.linspace(0.25, 1.0, scene.count, dtype=np.float32)
+    stats = np.zeros((scene.count, 2), dtype=np.float32)
+    stats[:, 0] = variances
+    renderer.upload_debug_grad_stats(stats)
+    renderer.upload_debug_splat_contribution(np.ones((scene.count,), dtype=np.float32))
+    renderer.upload_debug_splat_viewed_fraction(viewed_fraction)
+    renderer.debug_refinement_min_viewed_fraction = 0.0
+
+    renderer.debug_refinement_grad_variance_weight_exponent = 0.0
+    renderer.debug_refinement_contribution_weight_exponent = 0.0
+    baseline = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+
+    renderer.debug_refinement_grad_variance_weight_exponent = -1.0
+    renderer.debug_refinement_contribution_weight_exponent = 0.0
+    negative_variance = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+
+    renderer.debug_refinement_grad_variance_weight_exponent = 0.0
+    renderer.debug_refinement_contribution_weight_exponent = -1.0
+    negative_viewed_fraction = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+
+    assert np.all(np.isfinite(baseline.image))
+    assert np.all(np.isfinite(negative_variance.image))
+    assert np.all(np.isfinite(negative_viewed_fraction.image))
+    assert float(np.max(np.abs(negative_variance.image - baseline.image))) > 1e-3
+    assert float(np.max(np.abs(negative_viewed_fraction.image - baseline.image))) > 1e-3
+
+
 def test_debug_adam_momentum_render_smoke(device):
     scene = make_scene(24, seed=67)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

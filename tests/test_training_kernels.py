@@ -2778,6 +2778,37 @@ def test_refinement_distribution_histograms_use_viewed_fraction_and_variance(dev
     np.testing.assert_allclose(ranges.max_values, np.log10(np.array([4.0, 0.75, 1.0], dtype=np.float32)), rtol=0.0, atol=1e-6)
 
 
+def test_refinement_distribution_ranges_preserve_negative_viewed_fraction_exponent(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=3, seed=278)
+    frame = _make_frame(tmp_path, image_name="refinement_negative_exponent_target.png", image_id=278)
+    renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_grad_variance_weight_exponent=0.0, refinement_contribution_weight_exponent=0.0, refinement_viewed_fraction_zero_threshold=0.0),
+        seed=123,
+    )
+    _write_refinement_distribution_inputs(
+        trainer,
+        np.ones((scene.count,), dtype=np.float32),
+        np.ones((scene.count,), dtype=np.float32),
+        viewed_fractions=np.array([0.5, 1.0, 0.25], dtype=np.float32),
+    )
+
+    trainer.training.refinement_contribution_weight_exponent = 0.0
+    zero_ranges = trainer.compute_refinement_distribution_ranges(scene.count)
+    trainer.training.refinement_contribution_weight_exponent = -1.0
+    negative_ranges = trainer.compute_refinement_distribution_ranges(scene.count)
+
+    np.testing.assert_allclose(zero_ranges.min_values[2], np.float32(0.0), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(zero_ranges.max_values[2], np.float32(0.0), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(negative_ranges.min_values[2], np.float32(0.0), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(negative_ranges.max_values[2], np.log10(np.float32(4.0)), rtol=0.0, atol=1e-6)
+    assert float(negative_ranges.max_values[2]) > float(zero_ranges.max_values[2])
+
+
 def test_refinement_distribution_averages_variance_over_nonzero_contributing_cameras(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=171)
     frame = _make_frame(tmp_path, image_name="refinement_count_target.png", image_id=171)

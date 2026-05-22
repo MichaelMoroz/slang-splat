@@ -137,7 +137,7 @@ float refinement_metric_value(uint paramId, uint splatId)
     float sampleCount = float(g_SplatContributionInfo[splatId].y);
     float variance = sampleCount > 0.0 ? g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE] / sampleCount : 0.0;
     variance = isfinite(variance) ? max(variance, 0.0) : 0.0;
-    float distribution = pow(variance, max(g_RefinementGradientVarianceWeightExponent, 0.0)) * pow(viewedFraction, max(g_RefinementContributionWeightExponent, 0.0));
+    float distribution = pow(variance, g_RefinementGradientVarianceWeightExponent) * pow(viewedFraction, g_RefinementContributionWeightExponent);
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;
 }
 
