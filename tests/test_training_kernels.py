@@ -2638,7 +2638,7 @@ def test_visible_average_contribution_update_uses_area_and_view_count_exponents_
     )
     current_values = [0, int(200.0 * SPLAT_CONTRIBUTION_FIXED_SCALE), int(400.0 * SPLAT_CONTRIBUTION_FIXED_SCALE)]
     _write_contribution_info(trainer, [10.0, 20.0, 30.0], current=current_values, current_max=current_values[-1])
-    _write_contribution_ema_state(trainer, [10.0, 20.0, 30.0], [1.0, 1.0, 1.0])
+    _write_contribution_ema_state(trainer, [10.0, 20.0, 30.0], [0.5, 1.0, 1.0])
     visible_area = np.ones((renderer._work_splat_capacity,), dtype=np.float32)
     visible_area[: scene.count] = np.array([1.0, 2.0, 4.0], dtype=np.float32)
     renderer.work_buffers["splat_visible_area_px"].copy_from_numpy(visible_area)
@@ -2656,7 +2656,7 @@ def test_visible_average_contribution_update_uses_area_and_view_count_exponents_
     np.testing.assert_allclose(
         _average_contribution_from_info(info),
         np.array([
-            10.0,
+            20.0,
             20.0 * ema_decay + 100.0 * ema_blend,
             30.0 * ema_decay + 100.0 * ema_blend,
         ], dtype=np.float32),
@@ -2673,8 +2673,35 @@ def test_visible_average_contribution_update_uses_area_and_view_count_exponents_
         rtol=0.0,
         atol=1e-5,
     )
-    np.testing.assert_allclose(_read_viewed_fraction_history(trainer, scene.count), np.array([ema_decay, 1.0, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_viewed_fraction_history(trainer, scene.count), np.array([0.5 * ema_decay, 1.0, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
     assert int(info[0, 3]) == current_values[-1]
+
+
+def test_visible_average_contribution_view_count_exponent_scales_stored_contribution(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=184)
+    frame = _make_frame(tmp_path, image_name="visible_avg_count_scale_target.png", image_id=184)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_contribution_area_exponent=0.0, refinement_contribution_view_count_exponent=1.0, refinement_ema_pose_count_decay=1.0),
+        seed=123,
+    )
+
+    _write_contribution_info(trainer, [0.0, 0.0])
+    _write_contribution_ema_state(trainer, [8.0, 8.0], [0.25, 1.0])
+
+    enc = device.create_command_encoder()
+    trainer._dispatch("update_visible_average_contribution", enc, spy.uint3(scene.count, 1, 1), trainer._refinement_vars())
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    info = _read_contribution_info(trainer, scene.count)
+    np.testing.assert_allclose(_average_contribution_from_info(info), np.array([32.0, 8.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_contribution_history(trainer, scene.count), np.array([8.0, 8.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_read_viewed_fraction_history(trainer, scene.count), np.array([0.25, 1.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_clear_current_contribution_preserves_visible_average(device, tmp_path: Path) -> None:
@@ -3083,7 +3110,7 @@ def test_refinement_sampling_skips_splats_below_min_contribution(device, tmp_pat
     _write_refinement_distribution_inputs(
         trainer,
         np.ones((scene.count,), dtype=np.float32),
-        np.array([200.0, 49.0], dtype=np.float32),
+        np.array([200.0, 24.0], dtype=np.float32),
         viewed_fractions=np.array([1.0, 0.5], dtype=np.float32),
     )
 
@@ -3297,7 +3324,7 @@ def test_refinement_rewrite_preserves_unsplit_contribution_ema_below_view_thresh
     )
     contribution_info = _read_contribution_info(trainer, trainer.scene.count)
     np.testing.assert_array_equal(contribution_info[:, 1], np.array([0], dtype=np.uint32))
-    np.testing.assert_allclose(_average_contribution_from_info(contribution_info), np.array([200.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_average_contribution_from_info(contribution_info), np.array([400.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_sampling_uses_configured_viewed_fraction_zero_threshold(device, tmp_path: Path) -> None:
@@ -3374,7 +3401,7 @@ def test_refinement_rewrite_preserves_unsplit_contribution_history(device, tmp_p
         _average_contribution_from_info(contribution_info),
         np.array([100.0], dtype=np.float32),
         rtol=0.0,
-        atol=1e-6,
+        atol=1e-5,
     )
     np.testing.assert_array_equal(contribution_info[:, 1], np.array([0], dtype=np.uint32))
     assert trainer.observed_contribution_pixel_count == 0

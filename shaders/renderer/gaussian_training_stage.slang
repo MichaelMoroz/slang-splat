@@ -291,9 +291,17 @@ float refinement_contribution_count_scale(float count)
     return (isfinite(scale) && scale > SMALL_VALUE) ? scale : 1.0;
 }
 
+float effective_refinement_contribution(float contributionEma, float viewedFractionEma)
+{
+    float contribution = sanitize_refinement_contribution(contributionEma);
+    float countScale = refinement_contribution_count_scale(viewedFractionEma);
+    float normalizedContribution = contribution / countScale;
+    return (isfinite(normalizedContribution) && normalizedContribution > 0.0) ? normalizedContribution : 0.0;
+}
+
 float splat_refinement_contribution_raw(uint splatId)
 {
-    return sanitize_refinement_contribution(splat_contribution_ema_raw(splatId));
+    return effective_refinement_contribution(splat_contribution_ema_raw(splatId), splat_viewed_fraction_ema_raw(splatId));
 }
 
 float splat_refinement_distribution_signal_raw(uint splatId)
@@ -1189,7 +1197,7 @@ void csUpdateVisibleAverageContribution(uint3 dispatchThreadID : SV_DispatchThre
         contributionEma = isfinite(contributionEma) ? max(contributionEma, 0.0) : 0.0;
         viewedFractionEma = isfinite(viewedFractionEma) ? max(viewedFractionEma, 0.0) : 0.0;
         if (current > 0u) info.y += 1u;
-        info.z = asuint(sanitize_refinement_contribution(contributionEma));
+        info.z = asuint(effective_refinement_contribution(contributionEma, viewedFractionEma));
         g_SplatContributionHistory[splatId] = contributionEma;
         g_SplatViewedFractionHistory[splatId] = viewedFractionEma;
         g_SplatContributionInfo[splatId] = info;
