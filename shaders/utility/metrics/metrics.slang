@@ -32,6 +32,7 @@ uniform uint g_SplatPackedParamCount;
 uniform StructuredBuffer<float> g_Tensor;
 uniform StructuredBuffer<int> g_FixedIntBuffer;
 uniform StructuredBuffer<uint4> g_SplatContributionInfo;
+uniform StructuredBuffer<float> g_SplatViewedFractionHistory;
 uniform StructuredBuffer<float> g_GradientStats;
 uniform uint g_ParamCount;
 uniform uint g_ItemCount;
@@ -43,6 +44,7 @@ uniform float g_ValueInvBinSize;
 uniform float g_DecodeScale;
 uniform float g_RefinementGradientVarianceWeightExponent;
 uniform float g_RefinementContributionWeightExponent;
+uniform float g_RefinementMinViewedFraction;
 uniform StructuredBuffer<float2> g_ParamHistogramBounds;
 uniform RWStructuredBuffer<uint> g_Histogram;
 uniform RWStructuredBuffer<uint2> g_ParamRanges;
@@ -129,10 +131,13 @@ float refinement_metric_value(uint paramId, uint splatId)
     contribution = isfinite(contribution) ? max(contribution, 0.0) : 0.0;
     if (paramId == REFINEMENT_METRIC_CONTRIBUTION) return contribution;
     if (paramId != REFINEMENT_METRIC_DISTRIBUTION) return 0.0;
+    float viewedFraction = g_SplatViewedFractionHistory[splatId];
+    viewedFraction = isfinite(viewedFraction) ? max(viewedFraction, 0.0) : 0.0;
+    if (!(viewedFraction > max(g_RefinementMinViewedFraction, 0.0))) viewedFraction = 0.0;
     float sampleCount = float(g_SplatContributionInfo[splatId].y);
     float variance = sampleCount > 0.0 ? g_GradientStats[splatId * DEBUG_GRAD_STATS_STRIDE] / sampleCount : 0.0;
     variance = isfinite(variance) ? max(variance, 0.0) : 0.0;
-    float distribution = pow(variance, max(g_RefinementGradientVarianceWeightExponent, 0.0)) * pow(contribution, max(g_RefinementContributionWeightExponent, 0.0));
+    float distribution = pow(variance, max(g_RefinementGradientVarianceWeightExponent, 0.0)) * pow(viewedFraction, max(g_RefinementContributionWeightExponent, 0.0));
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;
 }
 

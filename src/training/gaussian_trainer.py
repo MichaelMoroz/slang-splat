@@ -559,6 +559,7 @@ class GaussianTrainer:
         target_renderer.sh_band = resolve_sh_band(self.training, resolved_step)
         target_renderer.debug_refinement_grad_variance_weight_exponent = float(self.training.refinement_grad_variance_weight_exponent)
         target_renderer.debug_refinement_contribution_weight_exponent = float(self.training.refinement_contribution_weight_exponent)
+        target_renderer.debug_refinement_min_viewed_fraction = float(self.training.refinement_viewed_fraction_zero_threshold) / float(max(len(self.frames), 1))
 
     def _apply_renderer_training_hparams(self, step: int | None = None) -> None:
         self.apply_renderer_training_hparams(step)
@@ -1683,6 +1684,7 @@ class GaussianTrainer:
         count = self._refinement_histogram_inputs(splat_count)
         return self.metrics.compute_refinement_distribution_histograms(
             self._refinement_buffers["splat_contribution"],
+            self._refinement_buffers["splat_viewed_fraction_history"],
             self._refinement_buffers["gradient_stats"],
             count,
             bin_count=bin_count,
@@ -1690,6 +1692,7 @@ class GaussianTrainer:
             max_log10=max_log10,
             grad_variance_exponent=float(self.training.refinement_grad_variance_weight_exponent),
             contribution_exponent=float(self.training.refinement_contribution_weight_exponent),
+            min_viewed_fraction=float(self.training.refinement_viewed_fraction_zero_threshold) / float(max(len(self.frames), 1)),
             param_min_values=param_min_values,
             param_max_values=param_max_values,
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
@@ -1700,10 +1703,12 @@ class GaussianTrainer:
         count = self._refinement_histogram_inputs(splat_count)
         return self.metrics.compute_refinement_distribution_ranges(
             self._refinement_buffers["splat_contribution"],
+            self._refinement_buffers["splat_viewed_fraction_history"],
             self._refinement_buffers["gradient_stats"],
             count,
             grad_variance_exponent=float(self.training.refinement_grad_variance_weight_exponent),
             contribution_exponent=float(self.training.refinement_contribution_weight_exponent),
+            min_viewed_fraction=float(self.training.refinement_viewed_fraction_zero_threshold) / float(max(len(self.frames), 1)),
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
             param_groups=self.REFINEMENT_HISTOGRAM_GROUPS,
         )

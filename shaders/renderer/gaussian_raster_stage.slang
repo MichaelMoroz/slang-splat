@@ -482,6 +482,13 @@ float splat_viewed_fraction_ema(uint splatId)
     return isfinite(viewedFraction) ? max(viewedFraction, 0.0) : 0.0;
 }
 
+float raster_refinement_distribution_viewed_fraction(uint splatId)
+{
+    float viewedFraction = splat_viewed_fraction_ema(splatId);
+    if (!(viewedFraction > max(g_Raster.debugRefinementMinViewedFraction, 0.0))) return 0.0;
+    return viewedFraction;
+}
+
 float splat_nonzero_contributing_camera_count(uint splatId)
 {
     return float(g_SplatContributionInfo[splatId].y);
@@ -551,7 +558,7 @@ float raster_grad_variance(uint splatId)
 float raster_refinement_distribution(uint splatId)
 {
     float varianceWeight = pow(raster_grad_variance(splatId), max(g_Raster.debugRefinementGradientVarianceWeightExponent, 0.0));
-    float contribution = splat_average_contribution(splatId) * max(g_Raster.debugContributionScale, 0.0);
+    float contribution = raster_refinement_distribution_viewed_fraction(splatId);
     float contributionWeight = pow(max(contribution, 0.0), max(g_Raster.debugRefinementContributionWeightExponent, 0.0));
     float distribution = varianceWeight * contributionWeight;
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;

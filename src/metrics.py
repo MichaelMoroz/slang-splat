@@ -269,24 +269,28 @@ class Metrics:
         self,
         encoder: spy.CommandEncoder,
         splat_contribution: spy.Buffer,
+        splat_viewed_fraction_history: spy.Buffer,
         gradient_stats: spy.Buffer,
         splat_count: int,
         param_count: int,
         bin_count: int,
         grad_variance_exponent: float,
         contribution_exponent: float,
+        min_viewed_fraction: float,
     ) -> None:
         dispatch(
             kernel=self._k_refinement_distribution_hist,
             thread_count=thread_count_2d(splat_count, param_count),
             vars={
                 "g_SplatContributionInfo": splat_contribution,
+                "g_SplatViewedFractionHistory": splat_viewed_fraction_history,
                 "g_GradientStats": gradient_stats,
                 "g_ItemCount": int(splat_count),
                 "g_ParamCount": int(param_count),
                 "g_BinCount": int(bin_count),
                 "g_RefinementGradientVarianceWeightExponent": float(grad_variance_exponent),
                 "g_RefinementContributionWeightExponent": float(contribution_exponent),
+                "g_RefinementMinViewedFraction": float(max(min_viewed_fraction, 0.0)),
                 "g_ParamHistogramBounds": self._histogram_bounds_buffer,
                 "g_Histogram": self._histogram_buffer,
             },
@@ -334,22 +338,26 @@ class Metrics:
         self,
         encoder: spy.CommandEncoder,
         splat_contribution: spy.Buffer,
+        splat_viewed_fraction_history: spy.Buffer,
         gradient_stats: spy.Buffer,
         splat_count: int,
         param_count: int,
         grad_variance_exponent: float,
         contribution_exponent: float,
+        min_viewed_fraction: float,
     ) -> None:
         dispatch(
             kernel=self._k_refinement_distribution_range,
             thread_count=thread_count_2d(splat_count, param_count),
             vars={
                 "g_SplatContributionInfo": splat_contribution,
+                "g_SplatViewedFractionHistory": splat_viewed_fraction_history,
                 "g_GradientStats": gradient_stats,
                 "g_ItemCount": int(splat_count),
                 "g_ParamCount": int(param_count),
                 "g_RefinementGradientVarianceWeightExponent": float(grad_variance_exponent),
                 "g_RefinementContributionWeightExponent": float(contribution_exponent),
+                "g_RefinementMinViewedFraction": float(max(min_viewed_fraction, 0.0)),
                 "g_ParamRanges": self._range_buffer,
             },
             command_encoder=encoder,
@@ -509,6 +517,7 @@ class Metrics:
     def compute_refinement_distribution_histograms(
         self,
         splat_contribution: spy.Buffer,
+        splat_viewed_fraction_history: spy.Buffer,
         gradient_stats: spy.Buffer,
         splat_count: int,
         *,
@@ -517,6 +526,7 @@ class Metrics:
         max_log10: float = 1.0,
         grad_variance_exponent: float,
         contribution_exponent: float,
+        min_viewed_fraction: float,
         param_min_values: np.ndarray | None = None,
         param_max_values: np.ndarray | None = None,
         param_labels: tuple[str, ...] | list[str] = (),
@@ -544,7 +554,7 @@ class Metrics:
         encoder = self.device.create_command_encoder()
         self._clear_uint_buffer(encoder, self._histogram_buffer, max(params * bins, 1))
         if params > 0 and splats > 0:
-            self._dispatch_refinement_distribution_histogram(encoder, splat_contribution, gradient_stats, splats, params, bins, grad_variance_exponent, contribution_exponent)
+            self._dispatch_refinement_distribution_histogram(encoder, splat_contribution, splat_viewed_fraction_history, gradient_stats, splats, params, bins, grad_variance_exponent, contribution_exponent, min_viewed_fraction)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         return self._read_param_histograms(params, bins, lo, hi, labels, groups, (PARAM_HISTOGRAM_SCALE_LOG10,) * params, bin_edges_by_param)
@@ -607,11 +617,13 @@ class Metrics:
     def compute_refinement_distribution_ranges(
         self,
         splat_contribution: spy.Buffer,
+        splat_viewed_fraction_history: spy.Buffer,
         gradient_stats: spy.Buffer,
         splat_count: int,
         *,
         grad_variance_exponent: float,
         contribution_exponent: float,
+        min_viewed_fraction: float,
         param_labels: tuple[str, ...] | list[str] = (),
         param_groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
     ) -> ParamTensorRanges:
@@ -626,7 +638,7 @@ class Metrics:
         if params > 0:
             self._init_param_tensor_ranges(encoder, params)
             if splats > 0:
-                self._dispatch_refinement_distribution_ranges(encoder, splat_contribution, gradient_stats, splats, params, grad_variance_exponent, contribution_exponent)
+                self._dispatch_refinement_distribution_ranges(encoder, splat_contribution, splat_viewed_fraction_history, gradient_stats, splats, params, grad_variance_exponent, contribution_exponent, min_viewed_fraction)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         return self._read_param_ranges(params, labels, groups, (PARAM_HISTOGRAM_SCALE_LOG10,) * params)

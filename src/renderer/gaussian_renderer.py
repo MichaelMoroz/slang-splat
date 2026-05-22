@@ -367,6 +367,7 @@ class GaussianRenderer:
                 "debugGradVarianceStepInvSampleCount": 1.0 / float(pixel_count),
                 "debugRefinementGradientVarianceWeightExponent": float(max(self.debug_refinement_grad_variance_weight_exponent, 0.0)),
                 "debugRefinementContributionWeightExponent": float(max(self.debug_refinement_contribution_weight_exponent, 0.0)),
+                "debugRefinementMinViewedFraction": float(max(self.debug_refinement_min_viewed_fraction, 0.0)),
                 "debugAdamMomentumRange": spy.float2(*self.debug_adam_momentum_range),
                 "debugDepthMeanRange": spy.float2(*self.debug_depth_mean_range),
                 "debugDepthStdRange": spy.float2(*self.debug_depth_std_range),
@@ -836,6 +837,7 @@ class GaussianRenderer:
         self.debug_sh_coeff_index = min(max(int(debug_sh_coeff_index), 0), SUPPORTED_SH_COEFF_COUNT - 1)
         self.debug_refinement_grad_variance_weight_exponent = self._DEFAULT_DEBUG_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT
         self.debug_refinement_contribution_weight_exponent = self._DEFAULT_DEBUG_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT
+        self.debug_refinement_min_viewed_fraction = 0.0
         self._set_render_resolution_geometry(self.width, self.height)
         self._create_shaders()
         self._sorter = GPURadixSort(self.device)
@@ -1497,7 +1499,7 @@ class GaussianRenderer:
             vars.update(self._debug_splat_age_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_CONTRIBUTION_AMOUNT, self.DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_contribution_var())
-        if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_VIEWED_FRACTION_EMA:
+        if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_VIEWED_FRACTION_EMA, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_viewed_fraction_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())

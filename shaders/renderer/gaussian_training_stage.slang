@@ -263,11 +263,15 @@ float refinement_min_viewed_fraction()
     return max(g_RefinementViewedFractionZeroThreshold, 0.0) / max(float(g_RefinementCameraCount), 1.0);
 }
 
-float effective_refinement_contribution(float contributionEma, float viewedFractionEma)
+float sanitize_refinement_contribution(float contributionEma)
+{
+    return isfinite(contributionEma) ? max(contributionEma, 0.0) : 0.0;
+}
+
+float refinement_distribution_viewed_fraction_signal(float viewedFractionEma)
 {
     if (!(viewedFractionEma > refinement_min_viewed_fraction())) return 0.0;
-    float contribution = contributionEma / max(viewedFractionEma, SMALL_VALUE);
-    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+    return isfinite(viewedFractionEma) ? max(viewedFractionEma, 0.0) : 0.0;
 }
 
 float refinement_contribution_area_scale(uint splatId)
@@ -289,7 +293,12 @@ float refinement_contribution_count_scale(float count)
 
 float splat_refinement_contribution_raw(uint splatId)
 {
-    return effective_refinement_contribution(splat_contribution_ema_raw(splatId), splat_viewed_fraction_ema_raw(splatId));
+    return sanitize_refinement_contribution(splat_contribution_ema_raw(splatId));
+}
+
+float splat_refinement_distribution_signal_raw(uint splatId)
+{
+    return refinement_distribution_viewed_fraction_signal(splat_viewed_fraction_ema_raw(splatId));
 }
 
 bool should_cull_refinement_splat(uint splatId, float alpha)
@@ -511,7 +520,7 @@ float refinement_sampling_distribution(uint splatId)
         float variance = g_GradientStats[refinement_gradient_stat_index(splatId, 0u)] / float(g_SplatContributionInfo[splatId].y);
         varianceWeight = pow(isfinite(variance) ? max(variance, 0.0) : 0.0, g_RefinementGradientVarianceWeightExponent);
     }
-    float contributionWeight = pow(splat_refinement_contribution_raw(splatId), g_RefinementContributionWeightExponent);
+    float contributionWeight = pow(splat_refinement_distribution_signal_raw(splatId), g_RefinementContributionWeightExponent);
     float distribution = varianceWeight * contributionWeight;
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;
 }
@@ -1180,7 +1189,7 @@ void csUpdateVisibleAverageContribution(uint3 dispatchThreadID : SV_DispatchThre
         contributionEma = isfinite(contributionEma) ? max(contributionEma, 0.0) : 0.0;
         viewedFractionEma = isfinite(viewedFractionEma) ? max(viewedFractionEma, 0.0) : 0.0;
         if (current > 0u) info.y += 1u;
-        info.z = asuint(effective_refinement_contribution(contributionEma, viewedFractionEma));
+        info.z = asuint(sanitize_refinement_contribution(contributionEma));
         g_SplatContributionHistory[splatId] = contributionEma;
         g_SplatViewedFractionHistory[splatId] = viewedFractionEma;
         g_SplatContributionInfo[splatId] = info;

@@ -2702,6 +2702,7 @@ def _write_refinement_distribution_inputs(
     contributions: np.ndarray | None = None,
     current_contributions: np.ndarray | None = None,
     contribution_counts: np.ndarray | None = None,
+    viewed_fractions: np.ndarray | None = None,
 ) -> None:
     variances = np.ascontiguousarray(variances, dtype=np.float32).reshape(-1)
     if contributions is None:
@@ -2719,10 +2720,15 @@ def _write_refinement_distribution_inputs(
     stats[:, 0] = np.maximum(variances, 0.0) * counts.astype(np.float32)
     trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
     contribution_values = np.maximum(contribution_values, 0.0).astype(np.float32, copy=False)
+    viewed_values = (
+        np.where(contribution_values > 0.0, 1.0, 0.0).astype(np.float32)
+        if viewed_fractions is None
+        else np.maximum(np.ascontiguousarray(viewed_fractions, dtype=np.float32).reshape(-1), 0.0)
+    )
     _write_contribution_ema_state(
         trainer,
         contribution_values,
-        np.where(contribution_values > 0.0, 1.0, 0.0).astype(np.float32),
+        viewed_values,
     )
     packed = _packed_contribution_info(
         contribution_values,
@@ -2733,7 +2739,7 @@ def _write_refinement_distribution_inputs(
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(packed)
 
 
-def test_refinement_distribution_histograms_use_contribution_and_variance(device, tmp_path: Path) -> None:
+def test_refinement_distribution_histograms_use_viewed_fraction_and_variance(device, tmp_path: Path) -> None:
     scene = _make_scene(count=3, seed=77)
     frame = _make_frame(tmp_path, image_name="refinement_hist_target.png", image_id=77)
     renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=16)
@@ -2742,7 +2748,7 @@ def test_refinement_distribution_histograms_use_contribution_and_variance(device
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_grad_variance_weight_exponent=1.0, refinement_contribution_weight_exponent=1.0),
+        training_hparams=TrainingHyperParams(refinement_grad_variance_weight_exponent=1.0, refinement_contribution_weight_exponent=1.0, refinement_viewed_fraction_zero_threshold=0.0),
         seed=123,
     )
     _write_refinement_distribution_inputs(
@@ -2750,6 +2756,7 @@ def test_refinement_distribution_histograms_use_contribution_and_variance(device
         np.array([0.5, 1.0, 2.0], dtype=np.float32),
         np.array([0.25, 0.5, 0.75], dtype=np.float32),
         np.array([1.0, 2.0, 4.0], dtype=np.float32),
+        viewed_fractions=np.array([0.5, 1.0, 0.25], dtype=np.float32),
     )
 
     ranges = trainer.compute_refinement_distribution_ranges(scene.count)
@@ -2767,8 +2774,8 @@ def test_refinement_distribution_histograms_use_contribution_and_variance(device
     np.testing.assert_array_equal(hist.counts[0], np.array([1, 0, 1, 1], dtype=np.int64))
     np.testing.assert_array_equal(hist.counts[1], np.array([1, 0, 1, 1], dtype=np.int64))
     np.testing.assert_array_equal(hist.counts[2], np.array([1, 0, 1, 1], dtype=np.int64))
-    np.testing.assert_allclose(ranges.min_values, np.log10(np.array([1.0, 0.25, 0.125], dtype=np.float32)), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(ranges.max_values, np.log10(np.array([4.0, 0.75, 1.5], dtype=np.float32)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.min_values, np.log10(np.array([1.0, 0.25, 0.25], dtype=np.float32)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values, np.log10(np.array([4.0, 0.75, 1.0], dtype=np.float32)), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_distribution_averages_variance_over_nonzero_contributing_cameras(device, tmp_path: Path) -> None:
@@ -2877,7 +2884,7 @@ def test_refinement_sampling_exponent_controls_variance_spikiness(device, tmp_pa
     assert 3.0 < ratio < 5.5
 
 
-def test_refinement_sampling_exponent_controls_contribution_spikiness(device, tmp_path: Path) -> None:
+def test_refinement_sampling_exponent_controls_viewed_fraction_spikiness(device, tmp_path: Path) -> None:
     scene = _make_scene(count=2, seed=198)
     scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
     frame = _make_frame(tmp_path, image_name="contribution_exponent_target.png", image_id=198)
@@ -2887,11 +2894,16 @@ def test_refinement_sampling_exponent_controls_contribution_spikiness(device, tm
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=_target_refinement_hparams(scene.count, 10, refinement_grad_variance_weight_exponent=0.0, refinement_contribution_weight_exponent=2.0, refinement_min_contribution=50),
+        training_hparams=_target_refinement_hparams(scene.count, 10, refinement_grad_variance_weight_exponent=0.0, refinement_contribution_weight_exponent=2.0, refinement_min_contribution=50, refinement_viewed_fraction_zero_threshold=0.0),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
-    _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32), np.array([100.0, 200.0], dtype=np.float32))
+    _write_refinement_distribution_inputs(
+        trainer,
+        np.ones((scene.count,), dtype=np.float32),
+        np.array([200.0, 200.0], dtype=np.float32),
+        viewed_fractions=np.array([0.5, 1.0], dtype=np.float32),
+    )
 
     selections = np.zeros((scene.count,), dtype=np.int32)
     for seed in range(64):
@@ -3037,7 +3049,12 @@ def test_refinement_sampling_skips_splats_below_min_contribution(device, tmp_pat
         training_hparams=_target_refinement_hparams(scene.count, 8, refinement_min_contribution=50),
         seed=123,
     )
-    _write_refinement_distribution_inputs(trainer, np.ones((scene.count,), dtype=np.float32), np.array([200.0, 49.0], dtype=np.float32))
+    _write_refinement_distribution_inputs(
+        trainer,
+        np.ones((scene.count,), dtype=np.float32),
+        np.array([200.0, 49.0], dtype=np.float32),
+        viewed_fractions=np.array([1.0, 0.5], dtype=np.float32),
+    )
 
     clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
 
@@ -3214,7 +3231,7 @@ def test_refinement_rewrite_halves_unsplit_splat_age(device, tmp_path: Path) -> 
     np.testing.assert_allclose(splat_age, np.array([0.5], dtype=np.float32), rtol=0.0, atol=1e-7)
 
 
-def test_refinement_rewrite_preserves_unsplit_ema_state_and_zeroes_effective_contribution_below_view_threshold(device, tmp_path: Path) -> None:
+def test_refinement_rewrite_preserves_unsplit_contribution_ema_below_view_threshold(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=93)
     scene.opacities[:] = np.array([0.6], dtype=np.float32)
     frame = _make_frame(tmp_path, image_name="refinement_ema_target.png", image_id=115)
@@ -3249,31 +3266,43 @@ def test_refinement_rewrite_preserves_unsplit_ema_state_and_zeroes_effective_con
     )
     contribution_info = _read_contribution_info(trainer, trainer.scene.count)
     np.testing.assert_array_equal(contribution_info[:, 1], np.array([0], dtype=np.uint32))
-    np.testing.assert_allclose(_average_contribution_from_info(contribution_info), np.array([0.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_average_contribution_from_info(contribution_info), np.array([200.0], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
-def test_refinement_rewrite_uses_configured_viewed_fraction_zero_threshold(device, tmp_path: Path) -> None:
-    scene = _make_scene(count=1, seed=94)
-    scene.opacities[:] = np.array([0.6], dtype=np.float32)
+def test_refinement_sampling_uses_configured_viewed_fraction_zero_threshold(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=94)
+    scene.opacities[:] = np.array([0.9, 0.9], dtype=np.float32)
     frame = _make_frame(tmp_path, image_name="refinement_viewed_fraction_threshold_target.png", image_id=116)
     renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
-    observed_pixels = renderer.width * renderer.height
     trainer = GaussianTrainer(
         device=device,
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=0, refinement_viewed_fraction_zero_threshold=0.4),
+        training_hparams=_target_refinement_hparams(
+            scene.count,
+            8,
+            refinement_grad_variance_weight_exponent=0.0,
+            refinement_contribution_weight_exponent=1.0,
+            refinement_min_contribution=0,
+            refinement_viewed_fraction_zero_threshold=0.4,
+        ),
         seed=123,
     )
 
-    trainer._observed_contribution_pixel_count = observed_pixels
-    _write_contribution_info(trainer, [0.0])
-    _write_contribution_ema_state(trainer, [200.0], [0.5])
-    trainer._run_refinement(clone_counts_override=np.array([0], dtype=np.uint32))
+    _write_contribution_info(trainer, [200.0, 200.0])
+    _write_refinement_distribution_inputs(
+        trainer,
+        np.ones((scene.count,), dtype=np.float32),
+        np.array([200.0, 200.0], dtype=np.float32),
+        viewed_fractions=np.array([0.5, 0.3], dtype=np.float32),
+    )
 
-    contribution_info = _read_contribution_info(trainer, trainer.scene.count)
-    np.testing.assert_allclose(_average_contribution_from_info(contribution_info), np.array([400.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    clone_counts, survivor_mask = trainer._sample_refinement_clone_counts()
+
+    np.testing.assert_array_equal(survivor_mask, np.array([True, True]))
+    assert clone_counts[0] == trainer.refinement_clone_budget()
+    assert clone_counts[1] == 0
 
 
 def test_refinement_rewrite_preserves_unsplit_contribution_history(device, tmp_path: Path) -> None:

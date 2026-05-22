@@ -968,16 +968,13 @@ def test_debug_refinement_distribution_render_smoke(device):
         list_capacity_multiplier=32,
         debug_mode=GaussianRenderer.DEBUG_MODE_REFINEMENT_DISTRIBUTION,
     )
-    observed_pixels = renderer.width * renderer.height
-    samples = np.geomspace(1e-8, 1e-2, scene.count, dtype=np.float32)
     stats = np.zeros((scene.count, 2), dtype=np.float32)
-    stats[:, 0] = samples + samples * 3.0
-    stats[:, 1] = samples * samples + (samples * 3.0) * (samples * 3.0)
+    stats[:, 0] = np.ones((scene.count,), dtype=np.float32)
+    renderer.upload_debug_splat_viewed_fraction(np.linspace(0.0, 1.0, scene.count, dtype=np.float32))
     renderer.upload_debug_grad_stats(stats)
-    renderer.set_debug_contribution_observed_pixel_count(observed_pixels)
-    renderer.upload_debug_splat_contribution(np.geomspace(0.001, 1.0, scene.count, dtype=np.float32))
-    renderer.debug_refinement_grad_variance_weight_exponent = 0.1
-    renderer.debug_refinement_contribution_weight_exponent = 0.1
+    renderer.upload_debug_splat_contribution(np.ones((scene.count,), dtype=np.float32))
+    renderer.debug_refinement_grad_variance_weight_exponent = 0.0
+    renderer.debug_refinement_contribution_weight_exponent = 1.0
     out = renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert out.image.shape == (64, 64, 4)
     assert np.all(np.isfinite(out.image))

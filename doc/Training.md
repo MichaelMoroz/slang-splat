@@ -228,7 +228,7 @@ Current behavior:
 - completed refinement passes decay the contribution threshold,
 - each refinement pass can additionally prune the exact lowest contribution fraction of otherwise surviving splats by building a GPU candidate mask, radix-sorting contribution/id pairs, and marking the lowest-ranked survivors before the topology rewrite,
 - clone-budget growth stays off until `refinement_growth_start_step`, then ramps on by `refinement_growth_ratio`,
-- clone resampling weights combine gradient variance and contribution,
+- clone resampling weights combine gradient variance and viewed-fraction EMA, with the viewed-fraction term zeroed below the configured viewed-fraction threshold,
 - split-family samples are generated from centered Fibonacci samples on the dominant local plane,
 - child scales shrink by the family-size rule before `refinement_clone_scale_mul` is applied,
 - packed ADAM moments are migrated with the rewritten topology so unrelated splats keep optimizer history.

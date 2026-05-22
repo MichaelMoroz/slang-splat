@@ -237,6 +237,7 @@ struct RasterParams
     float debugGradVarianceStepInvSampleCount;
     float debugRefinementGradientVarianceWeightExponent;
     float debugRefinementContributionWeightExponent;
+    float debugRefinementMinViewedFraction;
     float2 debugAdamMomentumRange;
     float2 debugDepthMeanRange;
     float2 debugDepthStdRange;
