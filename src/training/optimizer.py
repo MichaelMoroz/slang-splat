@@ -8,7 +8,7 @@ import math
 
 from ..utility import RO_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, defer_resource_release, dispatch, load_compute_kernels, thread_count_1d
 from ..renderer import Camera, GaussianRenderer
-from .schedule import resolve_color_lr_mul, resolve_learning_rate_scale, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_lr_mul
+from .schedule import resolve_color_lr_mul, resolve_learning_rate_scale, resolve_max_opacity, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_lr_mul
 
 
 def _nonzero_denominator(value: float) -> float:
@@ -74,7 +74,7 @@ class GaussianOptimizer:
     def _float_bits(values: Any) -> np.ndarray:
         return np.asarray(values, dtype=np.float32).view(np.uint32)
 
-    def _param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0) -> np.ndarray:
+    def _param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0, max_opacity: float | None = None) -> np.ndarray:
         count = int(self.renderer.packed_trainable_param_count)
         settings = np.zeros((count, self._PARAM_SETTINGS_U32_WIDTH), dtype=np.uint32)
         position_ids = np.asarray(self.renderer.PARAM_POSITION_IDS, dtype=np.intp)
@@ -91,6 +91,7 @@ class GaussianOptimizer:
         stored_sh_coeff_count = int(self.renderer.stored_sh_coeff_count)
         higher_sh_component_count = (stored_sh_coeff_count - 1) * 3 if stored_sh_coeff_count > 1 else 0
         sh1_weight = 0.0 if training_hparams is None or higher_sh_component_count <= 0 else float(training_hparams.sh1_reg_weight) / float(higher_sh_component_count)
+        resolved_max_opacity = float(self.stability.max_opacity if max_opacity is None else max_opacity)
 
         lrs = np.full((count,), float(self.adam.opacity_lr), dtype=np.float32)
         lrs[position_ids] = float(self.adam.position_lr)
@@ -111,7 +112,7 @@ class GaussianOptimizer:
         value_mins[position_ids] = -float(self.stability.position_abs_max)
         value_maxs[position_ids] = float(self.stability.position_abs_max)
         value_mins[raw_opacity_id] = self._raw_opacity_from_alpha(float(self.stability.min_opacity))
-        value_maxs[raw_opacity_id] = self._raw_opacity_from_alpha(float(self.stability.max_opacity))
+        value_maxs[raw_opacity_id] = self._raw_opacity_from_alpha(resolved_max_opacity)
 
         settings[:, 0] = self._float_bits(lrs * scale * param_scales)
         settings[:, 1] = self._float_bits(float(self.stability.grad_component_clip))
@@ -124,10 +125,10 @@ class GaussianOptimizer:
             settings[higher_sh_ids, 6] = self._float_bits(sh1_weight)
         return settings
 
-    def _upload_param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0) -> None:
+    def _upload_param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0, max_opacity: float | None = None) -> None:
         self._ensure_static_buffers()
         resolved_scales = lr_mul_scales or (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
-        self._buffers["param_settings"].copy_from_numpy(self._param_settings(lr_scale, resolved_scales, training_hparams=training_hparams, scale_reg_reference=scale_reg_reference))
+        self._buffers["param_settings"].copy_from_numpy(self._param_settings(lr_scale, resolved_scales, training_hparams=training_hparams, scale_reg_reference=scale_reg_reference, max_opacity=max_opacity))
 
     def update_hyperparams(self, adam_hparams: Any, stability_hparams: Any) -> None:
         self.adam = adam_hparams
@@ -141,6 +142,7 @@ class GaussianOptimizer:
     def update_step(self, step_index: int, training_hparams: Any, scale_reg_reference: float) -> None:
         lr_scale = resolve_learning_rate_scale(training_hparams, int(step_index))
         color_lr_mul_scale = resolve_color_lr_mul(training_hparams, int(step_index)) / _nonzero_denominator(float(getattr(training_hparams, "lr_color_mul", 1.0)))
+        max_opacity = resolve_max_opacity(training_hparams, int(step_index))
         self._upload_param_settings(
             lr_scale,
             (
@@ -153,6 +155,7 @@ class GaussianOptimizer:
             ),
             training_hparams=training_hparams,
             scale_reg_reference=scale_reg_reference,
+            max_opacity=max_opacity,
         )
 
     @property

@@ -11,7 +11,7 @@ from ..renderer.render_params import RendererParams
 from ..utility import clamp_float, clamp_int
 from ..scene import GaussianInitHyperParams, GaussianScene
 from ..training.alpha_modes import resolve_target_alpha_mode
-from ..training.defaults import DEFAULT_REFINEMENT_CLONE_SCALE_MUL, DEFAULT_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_SPLIT_BETA, TRAINING_BUILD_ARG_DEFAULTS
+from ..training.defaults import DEFAULT_MAX_OPACITY_STAGE0, DEFAULT_MAX_OPACITY_STAGE1, DEFAULT_MAX_OPACITY_STAGE2, DEFAULT_MAX_OPACITY_STAGE3, DEFAULT_MAX_OPACITY_STAGE4, DEFAULT_REFINEMENT_CLONE_SCALE_MUL, DEFAULT_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT, DEFAULT_REFINEMENT_SPLIT_BETA, TRAINING_BUILD_ARG_DEFAULTS
 from ..training import AdamHyperParams, DEFAULT_DEBUG_CONTRIBUTION_RANGE, DEFAULT_REFINEMENT_MIN_CONTRIBUTION, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TRAIN_SUBSAMPLE_MAX_FACTOR, TrainingHyperParams, resolve_training_profile
 
 EPS = 1e-8
@@ -149,6 +149,11 @@ def build_training_params(
     max_anisotropy: float = TRAINING_BUILD_ARG_DEFAULTS["max_anisotropy"],
     min_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["min_opacity"],
     max_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["max_opacity"],
+    max_opacity_stage0: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage0", DEFAULT_MAX_OPACITY_STAGE0)),
+    max_opacity_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage1", DEFAULT_MAX_OPACITY_STAGE1)),
+    max_opacity_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage2", DEFAULT_MAX_OPACITY_STAGE2)),
+    max_opacity_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage3", DEFAULT_MAX_OPACITY_STAGE3)),
+    max_opacity_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage4", DEFAULT_MAX_OPACITY_STAGE4)),
     position_abs_max: float = TRAINING_BUILD_ARG_DEFAULTS["position_abs_max"],
     camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"],
     scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"],
@@ -325,6 +330,12 @@ def build_training_params(
         scale_l2_weight=float(scale_l2_weight),
         scale_abs_reg_weight=float(scale_abs_reg_weight),
         sh1_reg_weight=float(sh1_reg_weight),
+        max_opacity=float(max_opacity),
+        max_opacity_stage0=float(max_opacity_stage0),
+        max_opacity_stage1=float(max_opacity_stage1),
+        max_opacity_stage2=float(max_opacity_stage2),
+        max_opacity_stage3=float(max_opacity_stage3),
+        max_opacity_stage4=float(max_opacity_stage4),
         opacity_reg_weight=float(opacity_reg_weight),
         opacity_reg_weight_stage1=float(opacity_reg_weight_stage1),
         opacity_reg_weight_stage2=float(opacity_reg_weight_stage2),

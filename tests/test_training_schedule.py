@@ -1,6 +1,6 @@
 from src.app.shared import build_training_params
 from src.training.gaussian_trainer import TrainingHyperParams
-from src.training.schedule import resolve_sh_band
+from src.training.schedule import resolve_max_opacity, resolve_sh_band
 
 
 def test_resolve_sh_band_respects_global_cap_across_schedule() -> None:
@@ -41,3 +41,37 @@ def test_training_params_threads_global_sh_cap() -> None:
 
     assert params.training.max_sh_band == 2
     assert resolve_sh_band(params.training, 0) == 2
+
+
+def test_resolve_max_opacity_uses_staged_schedule() -> None:
+    params = TrainingHyperParams(
+        max_opacity=0.23,
+        max_opacity_stage0=0.5,
+        max_opacity_stage1=0.8,
+        max_opacity_stage2=1.0,
+        max_opacity_stage3=1.0,
+        max_opacity_stage4=1.0,
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=20,
+        lr_schedule_stage2_step=60,
+        lr_schedule_stage3_step=80,
+    )
+
+    assert resolve_max_opacity(params, 0) == 0.5
+    assert resolve_max_opacity(params, 20) == 0.8
+    assert resolve_max_opacity(params, 60) == 1.0
+    assert resolve_max_opacity(params, 80) == 1.0
+    assert resolve_max_opacity(params, 100) == 1.0
+    assert abs(resolve_max_opacity(params, 10) - 0.65) < 1e-6
+
+    disabled = TrainingHyperParams(
+        lr_schedule_enabled=False,
+        max_opacity=0.23,
+        max_opacity_stage0=0.5,
+        max_opacity_stage1=0.8,
+        max_opacity_stage2=1.0,
+        max_opacity_stage3=1.0,
+        max_opacity_stage4=1.0,
+    )
+
+    assert resolve_max_opacity(disabled, 100) == 0.23

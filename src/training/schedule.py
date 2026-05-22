@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_LR_STAGE3_STEP, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
+from .defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_LR_STAGE3_STEP, DEFAULT_MAX_OPACITY_STAGE0, DEFAULT_MAX_OPACITY_STAGE1, DEFAULT_MAX_OPACITY_STAGE2, DEFAULT_MAX_OPACITY_STAGE3, DEFAULT_MAX_OPACITY_STAGE4, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
 
 _SCHEDULE_REFERENCE_STEPS = DEFAULT_LR_SCHEDULE_STEPS
 _DEFAULT_MAX_SH_BAND = 3
@@ -298,6 +298,23 @@ def resolve_opacity_reg_weight(training_hparams: Any, step: int) -> float:
             _coerce_float(getattr(training_hparams, "opacity_reg_weight_stage2", start), start),
             _coerce_float(getattr(training_hparams, "opacity_reg_weight_stage3", start), start),
             _coerce_float(getattr(training_hparams, "opacity_reg_weight_stage4", getattr(training_hparams, "opacity_reg_weight_stage3", start)), start),
+        ),
+    )
+
+
+def resolve_max_opacity(training_hparams: Any, step: int) -> float:
+    fallback = _coerce_float(getattr(training_hparams, "max_opacity", 1.0), 1.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return fallback
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        _coerce_float(getattr(training_hparams, "max_opacity_stage0", DEFAULT_MAX_OPACITY_STAGE0), DEFAULT_MAX_OPACITY_STAGE0),
+        (
+            _coerce_float(getattr(training_hparams, "max_opacity_stage1", DEFAULT_MAX_OPACITY_STAGE1), DEFAULT_MAX_OPACITY_STAGE1),
+            _coerce_float(getattr(training_hparams, "max_opacity_stage2", DEFAULT_MAX_OPACITY_STAGE2), DEFAULT_MAX_OPACITY_STAGE2),
+            _coerce_float(getattr(training_hparams, "max_opacity_stage3", DEFAULT_MAX_OPACITY_STAGE3), DEFAULT_MAX_OPACITY_STAGE3),
+            _coerce_float(getattr(training_hparams, "max_opacity_stage4", DEFAULT_MAX_OPACITY_STAGE4), DEFAULT_MAX_OPACITY_STAGE4),
         ),
     )
 

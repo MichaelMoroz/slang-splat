@@ -172,6 +172,26 @@ def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
     assert clamped.training.refinement_clone_scale_mul == -2.0
 
 
+def test_build_training_params_preserves_max_opacity_schedule() -> None:
+    params = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        max_opacity=0.93,
+        max_opacity_stage0=0.51,
+        max_opacity_stage1=0.61,
+        max_opacity_stage2=0.71,
+        max_opacity_stage3=0.81,
+        max_opacity_stage4=0.91,
+    )
+
+    assert params.stability.max_opacity == 0.93
+    assert params.training.max_opacity == 0.93
+    assert params.training.max_opacity_stage0 == 0.51
+    assert params.training.max_opacity_stage1 == 0.61
+    assert params.training.max_opacity_stage2 == 0.71
+    assert params.training.max_opacity_stage3 == 0.81
+    assert params.training.max_opacity_stage4 == 0.91
+
+
 def test_build_training_params_exposes_compact_refinement_controls() -> None:
     params = build_training_params(background=(1.0, 1.0, 1.0), refinement_use_compact_split=True, refinement_solve_opacity=True, refinement_split_beta=0.31, refinement_grad_variance_weight_exponent=2.5, refinement_contribution_weight_exponent=3.5, refinement_contribution_area_exponent=1.5, refinement_contribution_view_count_exponent=2.5)
     clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_split_beta=5.0, refinement_grad_variance_weight_exponent=99.0, refinement_contribution_weight_exponent=99.0, refinement_contribution_area_exponent=99.0, refinement_contribution_view_count_exponent=99.0)

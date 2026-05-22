@@ -7,6 +7,11 @@ from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
 from ..training import TRAIN_SUBSAMPLE_MAX_FACTOR
 from ..training.defaults import (
     DEFAULT_LR_SCHEDULE_STEPS,
+    DEFAULT_MAX_OPACITY_STAGE0,
+    DEFAULT_MAX_OPACITY_STAGE1,
+    DEFAULT_MAX_OPACITY_STAGE2,
+    DEFAULT_MAX_OPACITY_STAGE3,
+    DEFAULT_MAX_OPACITY_STAGE4,
     DEFAULT_REFINEMENT_CLONE_SCALE_MUL,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION,
@@ -47,6 +52,16 @@ class TrainingCliArgDef:
 
 
 def _default(name: str) -> object:
+    if name == "max_opacity_stage0":
+        return float(TRAINING_BUILD_ARG_DEFAULTS.get(name, DEFAULT_MAX_OPACITY_STAGE0))
+    if name == "max_opacity_stage1":
+        return float(TRAINING_BUILD_ARG_DEFAULTS.get(name, DEFAULT_MAX_OPACITY_STAGE1))
+    if name == "max_opacity_stage2":
+        return float(TRAINING_BUILD_ARG_DEFAULTS.get(name, DEFAULT_MAX_OPACITY_STAGE2))
+    if name == "max_opacity_stage3":
+        return float(TRAINING_BUILD_ARG_DEFAULTS.get(name, DEFAULT_MAX_OPACITY_STAGE3))
+    if name == "max_opacity_stage4":
+        return float(TRAINING_BUILD_ARG_DEFAULTS.get(name, DEFAULT_MAX_OPACITY_STAGE4))
     if name == "refinement_grad_variance_weight_exponent":
         return TRAINING_BUILD_ARG_DEFAULTS.get(name, 0.1)
     if name == "refinement_contribution_weight_exponent":
@@ -164,6 +179,7 @@ _SCHEDULE_STAGE_TEMPLATE = {
     "colorspace_mod": {"kind": "input_float", "label": "Colorspace Mod"},
     "ssim_weight": {"kind": "input_float", "label": "DSSIM Weight"},
     "max_visible_angle_deg": {"kind": "input_float", "label": "Max Visible Angle"},
+    "max_opacity": {"kind": "input_float", "label": "Max Opacity"},
     "min_pixel_clamp": {"kind": "input_float", "label": "Min Pixel Clamp"},
     "sort_dither": {"kind": "input_float", "label": "Sort Dither"},
     "splat_target": {"kind": "input_float", "label": "Target Max Splats"},
@@ -186,6 +202,7 @@ _SCHEDULE_STAGE_CONFIGS = {
         ("colorspace_mod", "colorspace_mod", ("colorspace_mod",), {"value": _default("colorspace_mod"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("ssim_weight", "ssim_weight", ("ssim_weight",), {"value": _default("ssim_weight"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("max_visible_angle_deg", "max_visible_angle_deg", ("max_visible_angle_deg",), {"value": _default("max_visible_angle_deg"), "step": 1e-2, "step_fast": 1e-1, "format": "%.6f"}),
+        ("max_opacity", "max_opacity_stage0", ("max_opacity_stage0",), {"value": _default("max_opacity_stage0"), "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ("min_pixel_clamp", "refinement_min_screen_radius_px", ("refinement_min_screen_radius_px",), {"value": _default("refinement_min_screen_radius_px"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("sort_dither", "sorting_order_dithering", ("sorting_order_dithering",), {"value": _default("sorting_order_dithering"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("splat_target", "refinement_target_splat_ratio", ("refinement_target_splat_ratio",), {"value": _default("refinement_target_splat_ratio"), "step": 1e-2, "step_fast": 5e-2, "format": "%.4f"}),
@@ -207,6 +224,7 @@ _SCHEDULE_STAGE_CONFIGS = {
         ("colorspace_mod", "colorspace_mod_stage1", ("colorspace_mod_stage1",), {"value": _default("colorspace_mod_stage1"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("ssim_weight", "ssim_weight_stage1", ("ssim_weight_stage1",), {"value": _default("ssim_weight_stage1"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("max_visible_angle_deg", "max_visible_angle_deg_stage1", ("max_visible_angle_deg_stage1",), {"value": _default("max_visible_angle_deg_stage1"), "step": 1e-2, "step_fast": 1e-1, "format": "%.6f"}),
+        ("max_opacity", "max_opacity_stage1", ("max_opacity_stage1",), {"value": _default("max_opacity_stage1"), "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ("min_pixel_clamp", "refinement_min_screen_radius_px_stage1", ("refinement_min_screen_radius_px_stage1",), {"value": _default("refinement_min_screen_radius_px_stage1"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("sort_dither", "sorting_order_dithering_stage1", ("sorting_order_dithering_stage1",), {"value": _default("sorting_order_dithering_stage1"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("splat_target", "refinement_target_splat_ratio_stage1", ("refinement_target_splat_ratio_stage1",), {"value": _default("refinement_target_splat_ratio_stage1"), "step": 1e-2, "step_fast": 5e-2, "format": "%.4f"}),
@@ -228,6 +246,7 @@ _SCHEDULE_STAGE_CONFIGS = {
         ("colorspace_mod", "colorspace_mod_stage2", ("colorspace_mod_stage2",), {"value": _default("colorspace_mod_stage2"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("ssim_weight", "ssim_weight_stage2", ("ssim_weight_stage2",), {"value": _default("ssim_weight_stage2"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("max_visible_angle_deg", "max_visible_angle_deg_stage2", ("max_visible_angle_deg_stage2",), {"value": _default("max_visible_angle_deg_stage2"), "step": 1e-2, "step_fast": 1e-1, "format": "%.6f"}),
+        ("max_opacity", "max_opacity_stage2", ("max_opacity_stage2",), {"value": _default("max_opacity_stage2"), "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ("min_pixel_clamp", "refinement_min_screen_radius_px_stage2", ("refinement_min_screen_radius_px_stage2",), {"value": _default("refinement_min_screen_radius_px_stage2"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("sort_dither", "sorting_order_dithering_stage2", ("sorting_order_dithering_stage2",), {"value": _default("sorting_order_dithering_stage2"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("splat_target", "refinement_target_splat_ratio_stage2", ("refinement_target_splat_ratio_stage2",), {"value": _default("refinement_target_splat_ratio_stage2"), "step": 1e-2, "step_fast": 5e-2, "format": "%.4f"}),
@@ -249,6 +268,7 @@ _SCHEDULE_STAGE_CONFIGS = {
         ("colorspace_mod", "colorspace_mod_stage3", ("colorspace_mod_stage3",), {"value": _default("colorspace_mod_stage3"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("ssim_weight", "ssim_weight_stage3", ("ssim_weight_stage3",), {"value": _default("ssim_weight_stage3"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("max_visible_angle_deg", "max_visible_angle_deg_stage3", ("max_visible_angle_deg_stage3",), {"value": _default("max_visible_angle_deg_stage3"), "step": 1e-2, "step_fast": 1e-1, "format": "%.6f"}),
+        ("max_opacity", "max_opacity_stage3", ("max_opacity_stage3",), {"value": _default("max_opacity_stage3"), "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ("min_pixel_clamp", "refinement_min_screen_radius_px_stage3", ("refinement_min_screen_radius_px_stage3",), {"value": _default("refinement_min_screen_radius_px_stage3"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("sort_dither", "sorting_order_dithering_stage3", ("sorting_order_dithering_stage3",), {"value": _default("sorting_order_dithering_stage3"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("splat_target", "refinement_target_splat_ratio_stage3", ("refinement_target_splat_ratio_stage3",), {"value": _default("refinement_target_splat_ratio_stage3"), "step": 1e-2, "step_fast": 5e-2, "format": "%.4f"}),
@@ -270,6 +290,7 @@ _SCHEDULE_STAGE_CONFIGS = {
         ("colorspace_mod", "colorspace_mod_stage4", ("colorspace_mod_stage4",), {"value": _default("colorspace_mod_stage4"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("ssim_weight", "ssim_weight_stage4", ("ssim_weight_stage4",), {"value": _default("ssim_weight_stage4"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
         ("max_visible_angle_deg", "max_visible_angle_deg_stage4", ("max_visible_angle_deg_stage4",), {"value": _default("max_visible_angle_deg_stage4"), "step": 1e-2, "step_fast": 1e-1, "format": "%.6f"}),
+        ("max_opacity", "max_opacity_stage4", ("max_opacity_stage4",), {"value": _default("max_opacity_stage4"), "step": 1e-4, "step_fast": 1e-3, "format": "%.6f"}),
         ("min_pixel_clamp", "refinement_min_screen_radius_px_stage4", ("refinement_min_screen_radius_px_stage4",), {"value": _default("refinement_min_screen_radius_px_stage4"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("sort_dither", "sorting_order_dithering_stage4", ("sorting_order_dithering_stage4",), {"value": _default("sorting_order_dithering_stage4"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
         ("splat_target", "refinement_target_splat_ratio_stage4", ("refinement_target_splat_ratio_stage4",), {"value": _default("refinement_target_splat_ratio_stage4"), "step": 1e-2, "step_fast": 5e-2, "format": "%.4f"}),
@@ -378,6 +399,11 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--max-update", dest="max_update", build_arg="max_update", type=float, default=_default("max_update")),
     _cli_arg("--min-opacity", dest="min_opacity", build_arg="min_opacity", type=float, default=_default("min_opacity")),
     _cli_arg("--max-opacity", dest="max_opacity", build_arg="max_opacity", type=float, default=_default("max_opacity")),
+    _cli_arg("--max-opacity-stage0", dest="max_opacity_stage0", build_arg="max_opacity_stage0", type=float, default=_default("max_opacity_stage0")),
+    _cli_arg("--max-opacity-stage1", dest="max_opacity_stage1", build_arg="max_opacity_stage1", type=float, default=_default("max_opacity_stage1")),
+    _cli_arg("--max-opacity-stage2", dest="max_opacity_stage2", build_arg="max_opacity_stage2", type=float, default=_default("max_opacity_stage2")),
+    _cli_arg("--max-opacity-stage3", dest="max_opacity_stage3", build_arg="max_opacity_stage3", type=float, default=_default("max_opacity_stage3")),
+    _cli_arg("--max-opacity-stage4", dest="max_opacity_stage4", build_arg="max_opacity_stage4", type=float, default=_default("max_opacity_stage4")),
     _cli_arg("--position-abs-max", dest="position_abs_max", build_arg="position_abs_max", type=float, default=_default("position_abs_max")),
     _cli_arg("--loss-grad-clip", dest="loss_grad_clip", type=float, default=_default("grad_clip")),
     _cli_arg("--camera-min-dist", dest="camera_min_dist", build_arg="camera_min_dist", type=float, default=_default("camera_min_dist")),
