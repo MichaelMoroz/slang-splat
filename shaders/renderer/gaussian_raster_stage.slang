@@ -567,7 +567,7 @@ float raster_refinement_distribution(uint splatId)
 float2 raster_refinement_distribution_range()
 {
     float valueMin = min(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y);
-    float valueMax = max(max(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y), valueMin + DEBUG_CONTRIBUTION_AMOUNT_FLOOR);
+    float valueMax = max(g_Raster.debugRefinementDistributionRange.x, g_Raster.debugRefinementDistributionRange.y);
     return float2(valueMin, valueMax);
 }
 

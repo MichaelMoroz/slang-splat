@@ -29,7 +29,6 @@ static const uint DEBUG_MODE_REFINEMENT_DISTRIBUTION = 19u;
 static const uint DEBUG_MODE_VIEWED_FRACTION_EMA = 20u;
 static const uint DEBUG_GRAD_STATS_STRIDE = 2u;
 static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
-static const float DEBUG_CONTRIBUTION_AMOUNT_FLOOR = 1e-6;
 static const uint DEBUG_SH_COEFF_COUNT = SH_COEFF_COUNT;
 static const float SH_C0 = 0.28209479177387814;
 static const float SH_C1 = 0.4886025119029199;
@@ -488,7 +487,10 @@ float3 local_point_to_world(float3 pLocal, float3 worldPos, float3 invScale, flo
 
 float debug_normalize_range(float value, float2 range)
 {
-    return (value - range.x) / max(range.y - range.x, SMALL_VALUE);
+    float lo = min(range.x, range.y);
+    float hi = max(range.x, range.y);
+    if (hi <= lo) return value > hi ? 1.0 : 0.0;
+    return (value - lo) / (hi - lo);
 }
 
 float debug_normalize_log_range(float value, float valueFloor, float valueCeil)

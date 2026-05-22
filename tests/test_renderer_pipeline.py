@@ -919,6 +919,32 @@ def test_debug_contribution_amount_render_smoke(device):
     assert float(np.max(channel_spread)) > 1e-4
 
 
+def test_debug_contribution_amount_equal_range_above_threshold_matches(device):
+    scene = make_scene(24, seed=159)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_CONTRIBUTION_AMOUNT,
+        debug_contribution_range=(1.0, 1.0),
+    )
+
+    def render_with_contribution(value: float):
+        renderer.upload_debug_splat_contribution(np.full((scene.count,), np.float32(value), dtype=np.float32))
+        return renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+
+    near_hi = render_with_contribution(1.0000005)
+    above_hi = render_with_contribution(1.000002)
+
+    assert np.all(np.isfinite(near_hi.image))
+    assert np.all(np.isfinite(above_hi.image))
+    max_abs_diff = float(np.max(np.abs(near_hi.image - above_hi.image)))
+    assert max_abs_diff < 1e-6
+
+
 def test_debug_current_frame_splat_contribution_render_smoke(device):
     scene = make_scene(24, seed=60)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
@@ -980,6 +1006,39 @@ def test_debug_refinement_distribution_render_smoke(device):
     assert np.all(np.isfinite(out.image))
     channel_spread = np.max(out.image[..., :3], axis=-1) - np.min(out.image[..., :3], axis=-1)
     assert float(np.max(channel_spread)) > 1e-4
+
+
+def test_debug_refinement_distribution_equal_range_above_threshold_matches(device):
+    scene = make_scene(24, seed=161)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=1.6,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_REFINEMENT_DISTRIBUTION,
+        debug_refinement_distribution_range=(1.0, 1.0),
+    )
+    stats = np.zeros((scene.count, 2), dtype=np.float32)
+    stats[:, 0] = 1.0
+    renderer.upload_debug_grad_stats(stats)
+    renderer.upload_debug_splat_contribution(np.ones((scene.count,), dtype=np.float32))
+    renderer.debug_refinement_min_viewed_fraction = 0.0
+    renderer.debug_refinement_grad_variance_weight_exponent = 1.0
+    renderer.debug_refinement_contribution_weight_exponent = 1.0
+
+    def render_with_viewed_fraction(value: float):
+        renderer.upload_debug_splat_viewed_fraction(np.full((scene.count,), np.float32(value), dtype=np.float32))
+        return renderer.render(scene, camera, background=np.array([0.0, 0.0, 0.0], dtype=np.float32))
+
+    near_hi = render_with_viewed_fraction(1.0000005)
+    above_hi = render_with_viewed_fraction(1.000002)
+
+    assert np.all(np.isfinite(near_hi.image))
+    assert np.all(np.isfinite(above_hi.image))
+    max_abs_diff = float(np.max(np.abs(near_hi.image - above_hi.image)))
+    assert max_abs_diff < 1e-6
 
 
 def test_debug_refinement_distribution_negative_exponents_change_render(device):
