@@ -998,35 +998,6 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
     return payload
 
 
-def _apply_training_debug_renderer_hparams(viewer: object, debug_renderer: object, step: int) -> None:
-    trainer = viewer.s.trainer
-    if hasattr(trainer, "apply_renderer_training_hparams"):
-        trainer.apply_renderer_training_hparams(step, renderer=debug_renderer)
-    else:
-        debug_renderer.sh_band = resolve_sh_band(trainer.training, step)
-
-
-def _apply_main_view_renderer_hparams(viewer: object, renderer: object) -> None:
-    trainer = getattr(getattr(viewer, "s", None), "trainer", None)
-    training_params_getter = getattr(viewer, "training_params", None)
-    training_params = training_params_getter().training if callable(training_params_getter) else getattr(trainer, "training", SimpleNamespace())
-    active_sh_band = resolve_sh_band(trainer.training, trainer.state.step) if trainer is not None and hasattr(trainer, "training") and hasattr(trainer, "state") else int(getattr(training_params, "sh_band", 3 if bool(getattr(training_params, "use_sh", False)) else 0))
-    viewport_sh_band = min(max(int(getattr(getattr(viewer, "ui", None), "_values", {}).get("_viewport_sh_band", active_sh_band)), 0), 3)
-    if trainer is not None:
-        renderer.max_sh_band = int(getattr(getattr(trainer, "training", None), "max_sh_band", getattr(renderer, "max_sh_band", 3)))
-    renderer.sh_band = viewport_sh_band
-    renderer.debug_refinement_grad_variance_weight_exponent = float(getattr(training_params, "refinement_grad_variance_weight_exponent", getattr(renderer, "debug_refinement_grad_variance_weight_exponent", 0.0)))
-    renderer.debug_refinement_contribution_weight_exponent = float(getattr(training_params, "refinement_contribution_weight_exponent", getattr(renderer, "debug_refinement_contribution_weight_exponent", 0.0)))
-    renderer_params_getter = getattr(viewer, "renderer_params", None)
-    if callable(renderer_params_getter):
-        params = renderer_params_getter(True)
-        runtime_kwargs = params.renderer_kwargs()
-        if params.debug_mode is None:
-            runtime_kwargs["debug_mode"] = "normal"
-        for key, value in runtime_kwargs.items():
-            setattr(renderer, key, value)
-
-
 def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, render_frame_index: int) -> tuple[spy.Texture, dict[str, int | bool | float], int, int, dict[str, object] | None]:
     step = _training_debug_step(viewer)
     debug_width, debug_height = _training_debug_resolution(viewer, frame_idx, step)
@@ -1037,7 +1008,13 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
     set_resolution = getattr(debug_renderer, "set_render_resolution", None)
     if callable(set_resolution):
         set_resolution(debug_width, debug_height)
-    _apply_training_debug_renderer_hparams(viewer, debug_renderer, step)
+    session._apply_renderer_role_params(
+        viewer,
+        debug_renderer,
+        session._TRAINING_RENDERER_ROLE,
+        step=step,
+        use_trainer_hparams=True,
+    )
     sample_vars = _training_debug_sample_vars(viewer, frame_idx, step, render_frame_index)
     sort_dither = viewer.s.trainer.sorting_dither(frame_idx, step, frame_camera) if hasattr(viewer.s.trainer, "sorting_dither") else None
     training = viewer.s.trainer.training
@@ -1187,7 +1164,7 @@ def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Textur
         active_renderer = viewer.s.training_renderer if viewer.s.trainer is not None and viewer.s.training_renderer is not None else viewer.s.renderer
         active_renderer = require_not_none(active_renderer, "Main renderer is unavailable.")
         if active_renderer is viewer.s.training_renderer:
-            _apply_main_view_renderer_hparams(viewer, active_renderer)
+            session._apply_renderer_role_params(viewer, active_renderer, session._MAIN_RENDERER_ROLE)
             target_width = int(getattr(viewer.s.renderer, "width", active_renderer.width)) if getattr(viewer.s, "renderer", None) is not None else int(active_renderer.width)
             target_height = int(getattr(viewer.s.renderer, "height", active_renderer.height)) if getattr(viewer.s, "renderer", None) is not None else int(active_renderer.height)
             set_resolution = getattr(active_renderer, "set_render_resolution", None)

@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-import time
 
 import numpy as np
 import pytest
 import slangpy as spy
 
-from src.app.shared import build_training_params
-from src.app.training_controls import training_control_defaults
 from src.scene._internal.colmap_types import ColmapImage, ColmapPoint3D, ColmapReconstruction
 from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer import presenter
@@ -18,188 +14,16 @@ from src.viewer import ui as viewer_ui
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import session as viewer_session
 from src.viewer.state import ColmapImportProgress
-
-
-_TRAINING_CONTROL_DEFAULTS = training_control_defaults()
-_DEFAULT_TRAINING_PARAMS = build_training_params(background=(1.0, 1.0, 1.0))
-
-
-def _training_hparams(**overrides):
-    return replace(_DEFAULT_TRAINING_PARAMS.training, **overrides)
-
-
-def _viewer_controls(loss_debug: bool) -> dict[str, SimpleNamespace]:
-    values = {
-        **_TRAINING_CONTROL_DEFAULTS,
-        "debug_mode": 0 if loss_debug else 1,
-        "loss_debug_frame": 0,
-        "loss_debug_view": 0,
-        "loss_debug_abs_scale": 1.0,
-        "images_subdir": 0,
-        "training_steps_per_frame": 3,
-        "train_auto_start_downscale": 1,
-        "train_downscale_factor": 1,
-        "train_subsample_factor": 0,
-    }
-    return {key: _control(value) for key, value in values.items()}
-
-
-class _DummyEncoder:
-    def __init__(self) -> None:
-        self.clear_calls: list[tuple[object, list[float]]] = []
-        self.groups: list[tuple[str, object]] = []
-
-    def clear_texture_float(self, texture: object, clear_value: list[float]) -> None:
-        self.clear_calls.append((texture, clear_value))
-
-    def push_debug_group(self, label: str, _color: object) -> None:
-        self.groups.append(("push", label))
-
-    def pop_debug_group(self) -> None:
-        self.groups.append(("pop", None))
-
-    def finish(self) -> str:
-        return "finished"
-
-
-class _DummyRenderer:
-    def __init__(self, width: int = 640, height: int = 360) -> None:
-        self.width = width
-        self.height = height
-        self.sh_band = 0
-        self.debug_mode = "normal"
-        self.max_sh_band = 3
-        self.training_forward_calls: list[dict[str, object]] = []
-        self.render_calls: list[dict[str, object]] = []
-        self.render_linear_calls: list[dict[str, object]] = []
-        self.render_ppisp_calls: list[dict[str, object]] = []
-        self.resolution_calls: list[tuple[int, int]] = []
-
-    def set_render_resolution(self, width: int, height: int) -> bool:
-        self.width = int(width)
-        self.height = int(height)
-        self.resolution_calls.append((self.width, self.height))
-        return True
-
-    def render_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
-        self.render_calls.append({"camera": camera, "background": background, "read_stats": read_stats, "command_encoder": command_encoder})
-        return "main_render_tex", {"generated_entries": 1, "written_entries": 2, "overflow": False}
-
-    def render_linear_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
-        self.render_linear_calls.append({"camera": camera, "background": background, "read_stats": read_stats, "command_encoder": command_encoder})
-        return "main_linear_tex", {"generated_entries": 3, "written_entries": 4, "overflow": False}
-
-    def render_ppisp_to_texture(self, camera: object, ppisp_tonemap: dict[str, object], background: object, read_stats: bool, command_encoder: object) -> tuple[object, dict[str, int | bool | float]]:
-        self.render_ppisp_calls.append({"camera": camera, "ppisp_tonemap": ppisp_tonemap, "background": background, "read_stats": read_stats, "command_encoder": command_encoder})
-        return "main_ppisp_tex", {"generated_entries": 5, "written_entries": 6, "overflow": False}
-
-    def render_training_forward_to_texture(self, camera: object, background: object, read_stats: bool, command_encoder: object, **kwargs) -> tuple[object, dict[str, int | bool | float]]:
-        self.training_forward_calls.append({"camera": camera, "background": background, "read_stats": read_stats, "command_encoder": command_encoder, **kwargs})
-        return "training_preview_tex", {"generated_entries": 1, "written_entries": 2, "overflow": False}
-
-
-class _DummyTrainer:
-    def __init__(self) -> None:
-        self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_ssim=1.0, avg_ssim=1.0, last_psnr=float("inf"), avg_psnr=float("inf"), avg_density_loss=0.0, last_frame_index=0, last_instability="")
-        self.scene = SimpleNamespace(count=4)
-        self.native_target_is_linear = False
-        self.training = _training_hparams(train_auto_start_downscale=1, train_subsample_factor=1)
-        self.step_calls = 0
-        self.step_batch_calls: list[int] = []
-        self.training_resolution_calls: list[tuple[int, int]] = []
-        self.sample_vars_calls: list[tuple[int, int, int | None]] = []
-        self.background_seed_calls: list[int | None] = []
-        self.hparam_calls: list[tuple[int | None, object]] = []
-        self.sort_calls: list[tuple[int, int, object]] = []
-        self.target_calls: list[tuple[int, bool, bool]] = []
-        self.subsample_factor = 1
-        self.target_tonemap_provider = None
-        self.refinement_buffers = {
-            "clone_counts": "clone_counts",
-            "splat_contribution": "splat_contribution",
-        }
-
-    def step(self) -> None:
-        self.step_calls += 1
-
-    def step_batch(self, steps: int) -> int:
-        self.step_batch_calls.append(int(steps))
-        self.step_calls += int(steps)
-        return int(steps)
-
-    def make_frame_camera(self, frame_index: int, width: int, height: int) -> tuple[int, int, int]:
-        return (frame_index, width, height)
-
-    def effective_train_downscale_factor(self) -> int:
-        return 1
-
-    def effective_train_subsample_factor(self, frame_index: int = 0, step: int | None = None) -> int:
-        return int(self.subsample_factor)
-
-    def effective_train_render_factor(self) -> int:
-        return 1
-
-    def training_resolution(self, frame_index: int = 0, step: int | None = None) -> tuple[int, int]:
-        self.training_resolution_calls.append((int(frame_index), int(step or 0)))
-        return (320, 180)
-
-    def frame_size(self, frame_index: int) -> tuple[int, int]:
-        return (640, 360)
-
-    def current_base_lr(self) -> float:
-        return 0.005
-
-    def get_frame_target_texture(self, frame_index: int, native_resolution: bool = True, encoder: object | None = None, step: int | None = None, apply_target_tonemap: bool = True) -> str:
-        self.target_calls.append((int(frame_index), bool(native_resolution), bool(apply_target_tonemap)))
-        return f"target_tex_{frame_index}_{native_resolution}"
-
-    def target_texture_is_linear(self, target_texture: object | None = None) -> bool:
-        if target_texture is None:
-            return False
-        texture_name = str(target_texture)
-        if texture_name.endswith("_False"):
-            return True
-        return self.native_target_is_linear and texture_name.endswith("_True")
-
-    def training_background(self) -> np.ndarray:
-        return np.asarray([0.25, 0.5, 0.75], dtype=np.float32)
-
-    def training_background_seed(self, seed_index: int | None = None) -> int:
-        self.background_seed_calls.append(None if seed_index is None else int(seed_index))
-        return 1000 + int(seed_index or 0)
-
-    def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None) -> dict[str, object]:
-        self.sample_vars_calls.append((int(frame_index), int(step or 0), None if sample_seed_step is None else int(sample_seed_step)))
-        return {
-            "g_TrainingSubsample": {
-                "enabled": np.uint32(1 if self.subsample_factor > 1 else 0),
-                "factor": np.uint32(2),
-                "nativeWidth": np.uint32(640),
-                "nativeHeight": np.uint32(360),
-                "frameIndex": np.uint32(frame_index),
-                "stepIndex": np.uint32(0 if sample_seed_step is None else sample_seed_step),
-            }
-        }
-
-    def apply_renderer_training_hparams(self, step: int | None = None, renderer: object | None = None) -> None:
-        self.hparam_calls.append((None if step is None else int(step), renderer))
-        if renderer is not None:
-            renderer.sh_band = 2
-
-    def sorting_dither(self, frame_index: int, step: int, camera: object) -> SimpleNamespace:
-        self.sort_calls.append((int(frame_index), int(step), camera))
-        return SimpleNamespace(position=np.asarray([1.0, 2.0, 3.0], dtype=np.float32), sigma=0.125, seed=555)
-
-    def renderer_training_workspace(self) -> dict[str, object]:
-        return {"workspace": True}
-
-    def frame_metrics_snapshot(self) -> dict[str, np.ndarray]:
-        return {
-            "loss": np.asarray([0.25], dtype=np.float64),
-            "mse": np.asarray([0.125], dtype=np.float64),
-            "psnr": np.asarray([32.5], dtype=np.float64),
-            "visited": np.asarray([True], dtype=bool),
-        }
+from tests.viewer_test_harness import (
+    _CaptureKernel,
+    _DummyEncoder,
+    _DummyRenderer,
+    _patch_render_frame,
+    _render_context,
+    _section_dict,
+    _control,
+    _viewer,
+)
 
 
 def test_refresh_menu_bar_device_vram_skips_live_heap_query(monkeypatch) -> None:
@@ -221,131 +45,6 @@ def test_refresh_menu_bar_device_vram_skips_live_heap_query(monkeypatch) -> None
     assert calls == [("device", False)]
     assert viewer.ui._values["_menu_bar_device_vram_bytes"] == 123
     assert viewer.ui._values["_menu_bar_device_vram_total_bytes"] == 456
-
-
-class _CaptureKernel:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def dispatch(self, *, thread_count: object, vars: dict[str, object], command_encoder: object) -> None:
-        self.calls.append({"thread_count": thread_count, "vars": vars, "command_encoder": command_encoder})
-
-
-def _control(value: object) -> SimpleNamespace:
-    return SimpleNamespace(value=value)
-
-
-def _text() -> SimpleNamespace:
-    return SimpleNamespace(text="")
-
-
-def _section_dict(sections) -> dict[str, dict[str, object]]:
-    return {title: dict(rows) for title, rows in sections}
-
-
-def _render_context(width: int = 640, height: int = 360) -> SimpleNamespace:
-    return SimpleNamespace(surface_texture=SimpleNamespace(width=width, height=height), command_encoder=_DummyEncoder())
-
-
-def _patch_render_frame(
-    monkeypatch,
-    calls: list[object],
-    *,
-    apply_live_params=None,
-    ensure_training_runtime_resolution=None,
-    recreate_renderer=None,
-    maybe_reallocate_renderers=None,
-    advance_colmap_import=None,
-    render_debug_view=None,
-    render_main_view=None,
-    update_ui_text=None,
-    refresh_cached_raster_grad_histograms=None,
-) -> None:
-    monkeypatch.setattr(presenter.session, "apply_live_params", apply_live_params or (lambda viewer_obj: calls.append("apply")))
-    monkeypatch.setattr(
-        presenter.session,
-        "ensure_training_runtime_resolution",
-        ensure_training_runtime_resolution or (lambda viewer_obj: calls.append("train_resize")),
-    )
-    monkeypatch.setattr(
-        presenter.session,
-        "recreate_renderer",
-        recreate_renderer or (lambda viewer_obj, width, height: calls.append("resize")),
-    )
-    monkeypatch.setattr(presenter.session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter.session, "advance_photometric_initialization", lambda viewer_obj: None)
-    monkeypatch.setattr(presenter.session, "advance_dataset_metrics", lambda viewer_obj: None)
-    if maybe_reallocate_renderers is not None:
-        monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", maybe_reallocate_renderers)
-    if advance_colmap_import is not None:
-        monkeypatch.setattr(presenter.session, "advance_colmap_import", advance_colmap_import)
-    if refresh_cached_raster_grad_histograms is not None:
-        monkeypatch.setattr(
-            presenter.session,
-            "refresh_cached_raster_grad_histograms",
-            refresh_cached_raster_grad_histograms,
-        )
-    monkeypatch.setattr(
-        presenter,
-        "_render_debug_view",
-        render_debug_view or (lambda viewer_obj, encoder, width, height, render_frame_index: calls.append("debug") or "debug_tex"),
-    )
-    monkeypatch.setattr(
-        presenter,
-        "_render_main_view",
-        render_main_view or (lambda viewer_obj, encoder: calls.append("main") or "main_tex"),
-    )
-    monkeypatch.setattr(presenter, "update_ui_text", update_ui_text or (lambda viewer_obj, dt: calls.append("ui")))
-
-
-def _viewer(loss_debug: bool) -> SimpleNamespace:
-    trainer = _DummyTrainer()
-    controls = _viewer_controls(loss_debug)
-    texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_frame", "loss_debug_psnr", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
-    viewer = SimpleNamespace()
-    viewer.device = SimpleNamespace()
-    viewer.toolkit = SimpleNamespace(viewport_size=lambda: (640, 360))
-    viewer.loss_debug_view_options = (("rendered", "Rendered"), ("target", "Target"), ("abs_diff", "Abs Diff"), ("dssim", "DSSIM"), ("rendered_edges", "Rendered Edges"), ("target_edges", "Target Edges"))
-    ppisp_values = {spec.key: spec.default for spec in PPISP_FIELD_SPECS}
-    viewer.ui = SimpleNamespace(controls=controls, texts=texts, _values={**ppisp_values, "show_histograms": False, "_histogram_payload": None, "_histogram_range_payload": None, "show_training_cameras": bool(loss_debug), "show_training_views": False, "show_camera_overlays": False, "show_camera_labels": False, "training_camera_full_resolution": False, "training_camera_ppisp_tonemap": True}, _texts={key: value.text for key, value in texts.items()})
-    viewer.c = lambda key: viewer.ui.controls[key]
-    viewer.t = lambda key: viewer.ui.texts[key]
-    viewer.camera = lambda: "camera"
-    viewer.update_camera = lambda dt: None
-    viewer.s = SimpleNamespace(
-        fps_smooth=60.0,
-        last_time=time.perf_counter(),
-        last_interaction_time=0.0,
-        renderer=_DummyRenderer(),
-        debug_renderer=None,
-        scene=SimpleNamespace(count=4),
-        stats={},
-        scene_path=None,
-        colmap_root=Path("dataset"),
-        training_frames=[SimpleNamespace(image_id=5, camera_id=7, image_path=Path("frame.png"), width=640, height=360, fx=525.0, fy=520.0, cx=320.0, cy=180.0, k1=0.01, k2=-0.02, p1=0.001, p2=-0.002, k3=0.003, k4=-0.004, k5=0.005, k6=-0.006, make_camera=lambda near=0.1, far=120.0: SimpleNamespace(position=np.array([1.0, 2.0, 3.0], dtype=np.float32), target=np.array([1.5, 2.0, 4.0], dtype=np.float32), up=np.array([0.0, 1.0, 0.0], dtype=np.float32), near=near, far=far))],
-        trainer=trainer,
-        training_active=True,
-        training_renderer=_DummyRenderer(),
-        background=(0.0, 0.0, 0.0),
-        training_elapsed_s=0.0,
-        training_resume_time=None,
-        last_render_exception="",
-        last_error="",
-        last_training_batch_steps=0,
-        viewport_texture=None,
-        debug_target_texture=None,
-        debug_dssim_features_kernel=None,
-        debug_dssim_compose_kernel=None,
-        debug_dssim_blur=None,
-        debug_dssim_resolution=None,
-        debug_dssim_moments=None,
-        debug_dssim_blurred_moments=None,
-        debug_target_sample_kernel=None,
-        colmap_import_progress=None,
-        cached_raster_grad_ranges=None,
-        render_frame_index=0,
-    )
-    return viewer
 
 
 def test_training_camera_colmap_points_payload_clips_and_lists_other_views() -> None:
@@ -551,296 +250,136 @@ def test_update_ui_text_skips_training_camera_colmap_payload_when_overlay_inacti
     assert viewer.ui._values["_training_camera_colmap_points_payload"] is None
 
 
-def test_render_frame_uses_debug_branch_when_visual_loss_debug_enabled(monkeypatch):
-    viewer = _viewer(loss_debug=True)
+@pytest.mark.parametrize("case,loss_debug", (("debug", True), ("main", False), ("periodic", False)))
+def test_render_frame_branch_paths(monkeypatch, case: str, loss_debug: bool) -> None:
+    viewer = _viewer(loss_debug=loss_debug)
     render_context = _render_context()
     calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        render_debug_view=lambda viewer_obj, encoder, width, height, render_frame_index: calls.append(f"debug:{render_frame_index}") or "debug_tex",
-    )
-
+    patch_kwargs: dict[str, object] = {}
+    if case == "debug":
+        patch_kwargs["render_debug_view"] = lambda viewer_obj, encoder, width, height, render_frame_index: calls.append(f"debug:{render_frame_index}") or "debug_tex"
+        expected_calls, expected_texture = ["apply", "debug:0", "ui"], "debug_tex"
+    else:
+        expected_time = viewer.s.last_time
+        if case == "periodic":
+            viewer.s.last_periodic_renderer_reallocation_time = 0.0
+            expected_time = viewer_session._PERIODIC_RENDERER_REALLOCATION_INTERVAL_S + 1.0
+            monkeypatch.setattr(presenter.time, "perf_counter", lambda: expected_time)
+        patch_kwargs["maybe_reallocate_renderers"] = lambda viewer_obj, width, height, current_time: calls.append(f"periodic:{current_time:.1f}")
+        expected_calls, expected_texture = ["apply", f"periodic:{expected_time:.1f}", "main", "ui"], "main_tex"
+    _patch_render_frame(monkeypatch, calls, **patch_kwargs)
     presenter.render_frame(viewer, render_context)
-
     assert viewer.s.trainer.step_calls == 3
-    assert viewer.s.viewport_texture == "debug_tex"
+    assert viewer.s.viewport_texture == expected_texture
     assert viewer.s.render_frame_index == 1
-    assert calls == ["apply", "debug:0", "ui"]
+    assert calls == expected_calls
 
 
-def test_render_frame_uses_main_branch_when_visual_loss_debug_disabled(monkeypatch):
+@pytest.mark.parametrize("case", ("raster", "ppisp", "skip_ppisp", "shared_training"))
+def test_render_main_view_cases(monkeypatch, case: str) -> None:
     viewer = _viewer(loss_debug=False)
-    render_context = _render_context()
-    calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        maybe_reallocate_renderers=lambda viewer_obj, width, height, current_time: calls.append(f"periodic:{current_time:.1f}"),
-    )
-
-    presenter.render_frame(viewer, render_context)
-
-    assert viewer.s.trainer.step_calls == 3
-    assert viewer.s.viewport_texture == "main_tex"
-    assert calls == ["apply", f"periodic:{viewer.s.last_time:.1f}", "main", "ui"]
-
-
-def test_render_main_view_uses_existing_path_when_ppisp_disabled(monkeypatch) -> None:
-    viewer = _viewer(loss_debug=False)
-    viewer.s.trainer = None
-    viewer.s.training_renderer = None
     encoder = _DummyEncoder()
     calls: list[tuple[str, object]] = []
-
     monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: calls.append(("present", source_tex, source_is_linear)) or "present_tex")
-
+    if case != "shared_training":
+        viewer.s.trainer = None; viewer.s.training_renderer = None
+    if case == "ppisp":
+        viewer.ui._values["debug_mode"] = viewer_ui._DEBUG_MODE_VALUES.index(viewer_ui.PPISP_DEBUG_MODE)
+        viewer.ui._values["ppisp_exposure_ev"] = 1.25
+    elif case == "skip_ppisp":
+        viewer.s.renderer.debug_mode = "splat_age"
     assert presenter._render_main_view(viewer, encoder) == "present_tex"
-    assert viewer.s.renderer.render_calls[0]["camera"] == "camera"
-    assert viewer.s.renderer.render_linear_calls == []
-    assert viewer.s.renderer.render_ppisp_calls == []
-    assert viewer.s.stats["generated_entries"] == 1
-    assert calls == [("present", "main_render_tex", False)]
+    if case == "shared_training":
+        assert len(viewer.s.training_renderer.render_calls) == 1
+        assert viewer.s.training_renderer.render_calls[0]["camera"] == "camera"
+        assert viewer.s.training_renderer.resolution_calls == [(640, 360)]
+        assert viewer.s.renderer.render_calls == []
+        return
+    if case == "ppisp":
+        params = viewer.s.renderer.render_ppisp_calls[0]["ppisp_tonemap"]
+        assert viewer.s.renderer.render_calls == []
+        assert viewer.s.renderer.render_linear_calls == []
+        assert viewer.s.renderer.render_ppisp_calls[0]["camera"] == "camera"
+        assert params["exposureEv"] == 1.25
+        assert set(params) == {spec.attr for spec in PPISP_FIELD_SPECS}
+        assert isinstance(params["chromaOffsetR"], type(spy.float2(0.0, 0.0)))
+        assert isinstance(params["crfGamma"], type(spy.float3(0.0, 0.0, 0.0)))
+        assert viewer.s.stats["generated_entries"] == 5
+        assert calls == [("present", "main_ppisp_tex", False)]
+    elif case == "skip_ppisp":
+        assert len(viewer.s.renderer.render_calls) == 1
+        assert viewer.s.renderer.render_linear_calls == []
+        assert viewer.s.renderer.render_ppisp_calls == []
+    else:
+        assert viewer.s.renderer.render_calls[0]["camera"] == "camera"
+        assert viewer.s.renderer.render_linear_calls == []
+        assert viewer.s.renderer.render_ppisp_calls == []
+        assert viewer.s.stats["generated_entries"] == 1
+        assert calls == [("present", "main_render_tex", False)]
 
 
-def test_render_main_view_applies_ppisp_debug_mode_in_rasterizer(monkeypatch) -> None:
+@pytest.mark.parametrize("case", ("configured", "reduced", "runtime_resize"))
+def test_render_frame_training_batch_cases(monkeypatch, case: str) -> None:
     viewer = _viewer(loss_debug=False)
-    viewer.s.trainer = None
-    viewer.s.training_renderer = None
-    viewer.ui._values["debug_mode"] = viewer_ui._DEBUG_MODE_VALUES.index(viewer_ui.PPISP_DEBUG_MODE)
-    viewer.ui._values["ppisp_exposure_ev"] = 1.25
-    encoder = _DummyEncoder()
-    calls: list[tuple[str, object]] = []
-
-    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False: calls.append(("present", source_tex, source_is_linear)) or "present_tex")
-
-    assert presenter._render_main_view(viewer, encoder) == "present_tex"
-    assert viewer.s.renderer.render_calls == []
-    assert viewer.s.renderer.render_linear_calls == []
-    assert viewer.s.renderer.render_ppisp_calls[0]["camera"] == "camera"
-    params = viewer.s.renderer.render_ppisp_calls[0]["ppisp_tonemap"]
-    assert params["exposureEv"] == 1.25
-    assert set(params) == {spec.attr for spec in PPISP_FIELD_SPECS}
-    assert isinstance(params["chromaOffsetR"], type(spy.float2(0.0, 0.0)))
-    assert isinstance(params["crfGamma"], type(spy.float3(0.0, 0.0, 0.0)))
-    assert viewer.s.stats["generated_entries"] == 5
-    assert calls == [("present", "main_ppisp_tex", False)]
-
-
-def test_render_main_view_skips_ppisp_when_not_ppisp_debug_mode(monkeypatch) -> None:
-    viewer = _viewer(loss_debug=False)
-    viewer.s.trainer = None
-    viewer.s.training_renderer = None
-    viewer.s.renderer.debug_mode = "splat_age"
-
-    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda *args, **kwargs: "present_tex")
-
-    assert presenter._render_main_view(viewer, _DummyEncoder()) == "present_tex"
-    assert len(viewer.s.renderer.render_calls) == 1
-    assert viewer.s.renderer.render_linear_calls == []
-    assert viewer.s.renderer.render_ppisp_calls == []
-
-
-def test_render_main_view_uses_shared_training_renderer_when_training(monkeypatch) -> None:
-    viewer = _viewer(loss_debug=False)
-
-    monkeypatch.setattr(presenter, "_dispatch_viewport_present", lambda *args, **kwargs: "present_tex")
-
-    assert presenter._render_main_view(viewer, _DummyEncoder()) == "present_tex"
-    assert len(viewer.s.training_renderer.render_calls) == 1
-    assert viewer.s.training_renderer.render_calls[0]["camera"] == "camera"
-    assert viewer.s.training_renderer.resolution_calls == [(640, 360)]
-    assert viewer.s.renderer.render_calls == []
-
-
-def test_render_frame_checks_time_based_renderer_recycling(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    viewer.s.last_periodic_renderer_reallocation_time = 0.0
     render_context = _render_context()
     calls: list[str] = []
-    current_time = viewer_session._PERIODIC_RENDERER_REALLOCATION_INTERVAL_S + 1.0
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        maybe_reallocate_renderers=lambda viewer_obj, width, height, time_value: calls.append(f"periodic:{time_value:.1f}"),
-    )
-    monkeypatch.setattr(presenter.time, "perf_counter", lambda: current_time)
-
+    patch_kwargs: dict[str, object] = {}
+    if case == "reduced":
+        viewer.s.last_interaction_time = viewer.s.last_time
+    elif case == "runtime_resize":
+        patch_kwargs["apply_live_params"] = lambda viewer_obj: setattr(viewer_obj.s, "pending_training_runtime_resize", True) or calls.append("apply")
+        patch_kwargs["advance_colmap_import"] = lambda viewer_obj: calls.append("import")
+        patch_kwargs["ensure_training_runtime_resolution"] = lambda viewer_obj: calls.append("train_resize") or True
+    _patch_render_frame(monkeypatch, calls, **patch_kwargs)
     presenter.render_frame(viewer, render_context)
+    expected_steps = 0 if case == "runtime_resize" else (1 if case == "reduced" else 3)
+    assert viewer.s.trainer.step_calls == expected_steps
+    assert viewer.s.trainer.step_batch_calls == ([] if case == "runtime_resize" else [expected_steps])
+    assert viewer.s.last_training_batch_steps == expected_steps
+    assert calls == (["apply", "import", "train_resize", "main", "ui"] if case == "runtime_resize" else ["apply", "main", "ui"])
 
-    assert viewer.s.render_frame_index == 1
-    assert calls == ["apply", f"periodic:{current_time:.1f}", "main", "ui"]
 
-
-def test_render_frame_runs_configured_training_batch(monkeypatch):
+@pytest.mark.parametrize(
+    "case,ui_updates,expected_calls",
+    (
+        ("requested", {"_histograms_refresh_requested": True}, ["apply", "main", "hist", "ui"]),
+        ("hidden", {"show_histograms": True}, ["apply", "main", "ui"]),
+        ("realtime", {"show_histograms": True, "_histograms_update_realtime": True, "_histograms_realtime_next_refresh_time": 0.0}, ["apply", "main", "hist", "ui"]),
+        ("realtime_wait", {"show_histograms": True, "_histograms_update_realtime": True, "_histograms_realtime_next_refresh_time": float("inf")}, ["apply", "main", "ui"]),
+    ),
+)
+def test_render_frame_histogram_cases(monkeypatch, case: str, ui_updates: dict[str, object], expected_calls: list[str]) -> None:
     viewer = _viewer(loss_debug=False)
-    viewer.c("training_steps_per_frame").value = 3
     render_context = _render_context()
     calls: list[str] = []
-
-    _patch_render_frame(monkeypatch, calls)
-
+    viewer.ui._values.update(ui_updates)
+    refresh = (lambda viewer_obj, force=False: calls.append("hist")) if case != "realtime_wait" else (lambda viewer_obj: calls.append("hist"))
+    _patch_render_frame(monkeypatch, calls, refresh_cached_raster_grad_histograms=refresh)
     presenter.render_frame(viewer, render_context)
-
-    assert viewer.s.trainer.step_calls == 3
-    assert viewer.s.trainer.step_batch_calls == [3]
-    assert viewer.s.last_training_batch_steps == 3
-    assert calls == ["apply", "main", "ui"]
+    assert calls == expected_calls
 
 
-def test_render_frame_reduces_training_batch_while_recently_interacting(monkeypatch):
+@pytest.mark.parametrize("case,error", (("resize", "resize boom"), ("live_params", "live params boom"), ("import", "import boom")))
+def test_render_frame_failure_cases(monkeypatch, case: str, error: str) -> None:
     viewer = _viewer(loss_debug=False)
-    viewer.c("training_steps_per_frame").value = 3
-    viewer.s.last_interaction_time = viewer.s.last_time
     render_context = _render_context()
     calls: list[str] = []
-
-    _patch_render_frame(monkeypatch, calls)
-
+    patch_kwargs: dict[str, object] = {}
+    if case == "resize":
+        viewer.s.renderer.width = 320; viewer.s.renderer.height = 180
+        patch_kwargs["recreate_renderer"] = lambda viewer_obj, width, height: (_ for _ in ()).throw(RuntimeError(error))
+    elif case == "live_params":
+        patch_kwargs["apply_live_params"] = lambda viewer_obj: (_ for _ in ()).throw(RuntimeError(error))
+        patch_kwargs["advance_colmap_import"] = lambda viewer_obj: calls.append("import")
+    else:
+        patch_kwargs["advance_colmap_import"] = lambda viewer_obj: (_ for _ in ()).throw(RuntimeError(error))
+    _patch_render_frame(monkeypatch, calls, **patch_kwargs)
     presenter.render_frame(viewer, render_context)
-
-    assert viewer.s.trainer.step_calls == 1
-    assert viewer.s.trainer.step_batch_calls == [1]
-    assert viewer.s.last_training_batch_steps == 1
-    assert calls == ["apply", "main", "ui"]
-
-
-def test_render_frame_refreshes_histograms_when_requested(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    viewer.ui._values["_histograms_refresh_requested"] = True
-    render_context = _render_context()
-    calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        refresh_cached_raster_grad_histograms=lambda viewer_obj, force=False: calls.append("hist"),
-    )
-
-    presenter.render_frame(viewer, render_context)
-
-    assert calls == ["apply", "main", "hist", "ui"]
-
-
-def test_render_frame_skips_histogram_refresh_without_request(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    viewer.ui._values["show_histograms"] = True
-    render_context = _render_context()
-    calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        refresh_cached_raster_grad_histograms=lambda viewer_obj, force=False: calls.append("hist"),
-    )
-
-    presenter.render_frame(viewer, render_context)
-
-    assert calls == ["apply", "main", "ui"]
-
-
-def test_render_frame_refreshes_histograms_when_realtime_updates_are_enabled(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    viewer.ui._values["show_histograms"] = True
-    viewer.ui._values["_histograms_update_realtime"] = True
-    viewer.ui._values["_histograms_realtime_next_refresh_time"] = 0.0
-    render_context = _render_context()
-    calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        refresh_cached_raster_grad_histograms=lambda viewer_obj, force=False: calls.append("hist"),
-    )
-
-    presenter.render_frame(viewer, render_context)
-
-    assert calls == ["apply", "main", "hist", "ui"]
-
-
-def test_render_frame_skips_histogram_refresh_between_realtime_intervals(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    viewer.ui._values["show_histograms"] = True
-    viewer.ui._values["_histograms_update_realtime"] = True
-    viewer.ui._values["_histograms_realtime_next_refresh_time"] = float("inf")
-    render_context = _render_context()
-    calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        refresh_cached_raster_grad_histograms=lambda viewer_obj: calls.append("hist"),
-    )
-
-    presenter.render_frame(viewer, render_context)
-
-    assert calls == ["apply", "main", "ui"]
-
-
-def test_render_frame_handles_resize_failure_without_raising(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    viewer.s.renderer.width = 320
-    viewer.s.renderer.height = 180
-    render_context = _render_context()
-    calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        recreate_renderer=lambda viewer_obj, width, height: (_ for _ in ()).throw(RuntimeError("resize boom")),
-    )
-
-    presenter.render_frame(viewer, render_context)
-
     assert viewer.s.training_active is False
-    assert viewer.s.last_error == "resize boom"
-    assert viewer.s.last_render_exception == "resize boom"
+    assert viewer.s.last_error == error
+    assert viewer.s.last_render_exception == error
     assert render_context.command_encoder.clear_calls[-1] == (render_context.surface_texture, [0.0, 0.0, 0.0, 1.0])
-    assert calls == ["apply", "ui"]
-
-
-def test_render_frame_handles_live_param_failure_without_raising(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    render_context = _render_context()
-    calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        apply_live_params=lambda viewer_obj: (_ for _ in ()).throw(RuntimeError("live params boom")),
-        advance_colmap_import=lambda viewer_obj: calls.append("import"),
-    )
-
-    presenter.render_frame(viewer, render_context)
-
-    assert viewer.s.training_active is False
-    assert viewer.s.last_error == "live params boom"
-    assert viewer.s.last_render_exception == "live params boom"
-    assert render_context.command_encoder.clear_calls == [(render_context.surface_texture, [0.0, 0.0, 0.0, 1.0])]
-    assert calls == ["ui"]
-
-
-def test_render_frame_handles_import_failure_without_raising(monkeypatch):
-    viewer = _viewer(loss_debug=False)
-    render_context = _render_context()
-    calls: list[str] = []
-
-    _patch_render_frame(
-        monkeypatch,
-        calls,
-        advance_colmap_import=lambda viewer_obj: (_ for _ in ()).throw(RuntimeError("import boom")),
-    )
-
-    presenter.render_frame(viewer, render_context)
-
-    assert viewer.s.training_active is False
-    assert viewer.s.last_error == "import boom"
-    assert viewer.s.last_render_exception == "import boom"
-    assert render_context.command_encoder.clear_calls == [(render_context.surface_texture, [0.0, 0.0, 0.0, 1.0])]
-    assert calls == ["apply", "ui"]
+    assert calls == (["apply", "ui"] if case == "resize" else (["ui"] if case == "live_params" else ["apply", "ui"]))
 
 
 def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
@@ -1067,7 +606,7 @@ def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -
         )
 
     monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", collect)
-    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device: (None, ""))
+    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device, *, allow_heap_query=True: (None, ""))
     monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (None, ""))
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
@@ -1108,7 +647,7 @@ def test_update_ui_text_throttles_resource_debug_snapshot(monkeypatch) -> None:
 
 def test_update_ui_text_refreshes_menu_bar_device_vram(monkeypatch) -> None:
     viewer = _viewer(loss_debug=False)
-    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device: (3 * 1024**3, "Windows GPU Adapter Memory"))
+    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device, *, allow_heap_query=True: (3 * 1024**3, "Windows GPU Adapter Memory"))
     monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (24 * 1024**3, "DXGI Adapter Desc"))
     monkeypatch.setattr(
         presenter,
@@ -1157,7 +696,7 @@ def test_update_ui_text_reuses_resource_debug_snapshot_for_menu_bar_dataset_vram
     viewer.ui._values["show_resource_debug"] = True
     viewer.ui._values["_resource_debug_snapshot"] = snapshot
     viewer.ui._values["_resource_debug_next_update"] = viewer.s.last_time + 60.0
-    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device: (None, ""))
+    monkeypatch.setattr(presenter, "query_total_device_vram_used_cached", lambda _device, *, allow_heap_query=True: (None, ""))
     monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda _device: (None, ""))
     monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not recollect snapshot")))
 
@@ -1388,18 +927,21 @@ def test_update_ui_text_publishes_photometric_colmap_import_progress() -> None:
     assert viewer.t("colmap_import_current").text == "Loss: last=1.250000e-03 | ema=9.500000e-04"
 
 
-def test_render_debug_source_uses_shared_training_renderer_for_rendered_view(monkeypatch) -> None:
+@pytest.mark.parametrize("case,loss_debug_view,step,render_frame_index", (("rendered", 0, 17, 42), ("abs_diff", 2, 0, 7)))
+def test_render_debug_source_cases(monkeypatch, case: str, loss_debug_view: int, step: int, render_frame_index: int) -> None:
     viewer = _viewer(loss_debug=True)
-    viewer.c("loss_debug_view").value = 0
-    viewer.s.trainer.state.step = 17
     overlay_renderer = _DummyRenderer()
+    viewer.c("loss_debug_view").value = loss_debug_view
+    viewer.s.trainer.state.step = step
     viewer.s.training_renderer = overlay_renderer
-
-    source_tex, stats, width, height, sample_vars = presenter._render_debug_source(viewer, _DummyEncoder(), 0, 42)
-
+    source_tex, stats, width, height, sample_vars = presenter._render_debug_source(viewer, _DummyEncoder(), 0, render_frame_index)
     assert source_tex == "training_preview_tex"
-    assert width == 320
-    assert height == 180
+    assert width == 320 and height == 180
+    assert overlay_renderer.resolution_calls == [(320, 180)]
+    if case == "abs_diff":
+        assert stats["written_entries"] == 2
+        return
+    render_call = overlay_renderer.training_forward_calls[0]
     assert stats["generated_entries"] == 1
     assert viewer.s.trainer.training_resolution_calls == [(0, 17)]
     assert viewer.s.trainer.sample_vars_calls == [(0, 17, 42)]
@@ -1407,109 +949,53 @@ def test_render_debug_source_uses_shared_training_renderer_for_rendered_view(mon
     assert viewer.s.trainer.hparam_calls == [(17, overlay_renderer)]
     assert viewer.s.trainer.sort_calls == [(0, 17, (0, 320, 180))]
     assert sample_vars["g_TrainingSubsample"]["stepIndex"] == np.uint32(42)
-    render_call = overlay_renderer.training_forward_calls[0]
     assert render_call["camera"] == (0, 320, 180)
     assert render_call["training_native_camera"] == (0, 640, 360)
     assert render_call["training_background_seed"] == 1042
     assert render_call["clone_counts_buffer"] == "clone_counts"
     assert render_call["splat_contribution_buffer"] == "splat_contribution"
     assert render_call["training_workspace"] == {"workspace": True}
-    assert overlay_renderer.resolution_calls == [(320, 180)]
     np.testing.assert_allclose(render_call["sort_camera_position"], np.asarray([1.0, 2.0, 3.0], dtype=np.float32))
     assert render_call["sort_camera_dither_sigma"] == 0.125
     assert render_call["sort_camera_dither_seed"] == 555
 
 
-def test_render_debug_source_uses_shared_training_renderer_for_abs_diff(monkeypatch) -> None:
+@pytest.mark.parametrize("case", ("downscaled", "sampled_native", "full_res", "full_res_linear", "tonemap_off"))
+def test_render_debug_target_cases(monkeypatch, case: str) -> None:
     viewer = _viewer(loss_debug=True)
-    viewer.c("loss_debug_view").value = 2
-    overlay_renderer = _DummyRenderer()
-    viewer.s.training_renderer = overlay_renderer
-
-    source_tex, stats, width, height, _ = presenter._render_debug_source(viewer, _DummyEncoder(), 0, 7)
-
-    assert source_tex == "training_preview_tex"
-    assert width == 320
-    assert height == 180
-    assert stats["written_entries"] == 2
-    assert overlay_renderer.resolution_calls == [(320, 180)]
-
-
-def test_render_debug_target_uses_downscaled_target_without_subsampling() -> None:
-    viewer = _viewer(loss_debug=True)
-    encoder = _DummyEncoder()
-    sample_vars = {"g_TrainingSubsample": {"enabled": np.uint32(0), "factor": np.uint32(1)}}
-
-    target, is_linear = presenter._render_debug_target(viewer, encoder, 0, 320, 180, 5, sample_vars)
-
-    assert target == "target_tex_0_False"
-    assert is_linear is True
-    assert viewer.s.trainer.target_calls == [(0, False, True)]
-
-
-def test_render_debug_target_samples_native_target_with_render_frame_seed(monkeypatch) -> None:
-    viewer = _viewer(loss_debug=True)
-    viewer.s.trainer.subsample_factor = 2
-    viewer.s.debug_target_sample_kernel = _CaptureKernel()
-    output = SimpleNamespace(width=320, height=180)
-    sample_vars = viewer.s.trainer.training_sample_vars(0, 9, sample_seed_step=77)
-
-    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
-
-    target, is_linear = presenter._render_debug_target(viewer, _DummyEncoder(), 0, 320, 180, 9, sample_vars)
-
-    assert target is output
-    assert is_linear is False
-    assert viewer.s.trainer.target_calls == [(0, True, True)]
-    vars = viewer.s.debug_target_sample_kernel.calls[0]["vars"]
-    assert vars["g_SourceTarget"] == "target_tex_0_True"
-    assert vars["g_DownscaledTarget"] is output
-    assert vars["g_TargetWidth"] == 320
-    assert vars["g_TargetHeight"] == 180
-    assert vars["g_TrainingSubsample"]["stepIndex"] == np.uint32(77)
-
-
-def test_render_debug_target_uses_native_target_when_full_resolution_enabled() -> None:
-    viewer = _viewer(loss_debug=True)
-    viewer.ui._values["training_camera_full_resolution"] = True
-    viewer.s.trainer.subsample_factor = 2
-
-    target, is_linear = presenter._render_debug_target(viewer, _DummyEncoder(), 0, 640, 360, 9, None)
-
-    assert target == "target_tex_0_True"
-    assert is_linear is False
-    assert viewer.s.trainer.target_calls == [(0, True, True)]
-
-
-def test_render_debug_target_reports_linear_native_target_when_trainer_marks_it_linear() -> None:
-    viewer = _viewer(loss_debug=True)
-    viewer.ui._values["training_camera_full_resolution"] = True
-    viewer.s.trainer.native_target_is_linear = True
-
-    target, is_linear = presenter._render_debug_target(viewer, _DummyEncoder(), 0, 640, 360, 9, None)
-
-    assert target == "target_tex_0_True"
-    assert is_linear is True
-    assert viewer.s.trainer.target_calls == [(0, True, True)]
-
-
-def test_render_debug_target_bypasses_target_tonemap_when_view_toggle_disabled(monkeypatch) -> None:
-    viewer = _viewer(loss_debug=True)
-    viewer.ui._values["training_camera_ppisp_tonemap"] = False
-    viewer.s.debug_target_sample_kernel = _CaptureKernel()
-    output = SimpleNamespace(width=320, height=180)
-    sample_vars = viewer.s.trainer.training_sample_vars(0, 9, sample_seed_step=77)
-
-    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
-
-    target, is_linear = presenter._render_debug_target(viewer, _DummyEncoder(), 0, 320, 180, 9, sample_vars)
-
-    assert target is output
-    assert is_linear is False
-    assert viewer.s.trainer.target_calls == [(0, True, False)]
-    vars = viewer.s.debug_target_sample_kernel.calls[0]["vars"]
-    assert vars["g_SourceTarget"] == "target_tex_0_True"
-    assert vars["g_DownscaledTarget"] is output
+    width, height, step, sample_vars = 320, 180, 9, None
+    if case in {"sampled_native", "tonemap_off"}:
+        viewer.s.debug_target_sample_kernel = _CaptureKernel()
+        output = SimpleNamespace(width=320, height=180)
+        sample_vars = viewer.s.trainer.training_sample_vars(0, step, sample_seed_step=77)
+        monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+    if case == "downscaled":
+        sample_vars = {"g_TrainingSubsample": {"enabled": np.uint32(0), "factor": np.uint32(1)}}; step = 5
+    elif case == "sampled_native":
+        viewer.s.trainer.subsample_factor = 2
+    elif case == "full_res":
+        viewer.ui._values["training_camera_full_resolution"] = True; viewer.s.trainer.subsample_factor = 2; width, height = 640, 360
+    elif case == "full_res_linear":
+        viewer.ui._values["training_camera_full_resolution"] = True; viewer.s.trainer.native_target_is_linear = True; width, height = 640, 360
+    elif case == "tonemap_off":
+        viewer.ui._values["training_camera_ppisp_tonemap"] = False
+    target, is_linear = presenter._render_debug_target(viewer, _DummyEncoder(), 0, width, height, step, sample_vars)
+    if case == "downscaled":
+        assert (target, is_linear, viewer.s.trainer.target_calls) == ("target_tex_0_False", True, [(0, False, True)])
+    elif case == "sampled_native":
+        vars = viewer.s.debug_target_sample_kernel.calls[0]["vars"]
+        assert target is output and is_linear is False and viewer.s.trainer.target_calls == [(0, True, True)]
+        assert vars["g_SourceTarget"] == "target_tex_0_True" and vars["g_DownscaledTarget"] is output
+        assert vars["g_TargetWidth"] == 320 and vars["g_TargetHeight"] == 180
+        assert vars["g_TrainingSubsample"]["stepIndex"] == np.uint32(77)
+    elif case == "full_res":
+        assert (target, is_linear, viewer.s.trainer.target_calls) == ("target_tex_0_True", False, [(0, True, True)])
+    elif case == "full_res_linear":
+        assert (target, is_linear, viewer.s.trainer.target_calls) == ("target_tex_0_True", True, [(0, True, True)])
+    else:
+        vars = viewer.s.debug_target_sample_kernel.calls[0]["vars"]
+        assert target is output and is_linear is False and viewer.s.trainer.target_calls == [(0, True, False)]
+        assert vars["g_SourceTarget"] == "target_tex_0_True" and vars["g_DownscaledTarget"] is output
 
 
 def test_dispatch_debug_abs_diff_uses_runtime_ui_scale(monkeypatch) -> None:

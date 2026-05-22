@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import time
 import urllib.request
@@ -1444,8 +1445,62 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
     )
 
 
-def _renderer_size(renderer: GaussianRenderer, attr: str) -> tuple[int, int]:
-    if attr == "training_renderer":
+@dataclass(frozen=True, slots=True)
+class _RendererRoleSpec:
+    attr: str
+    allow_debug_overlays: bool
+    applied_params_attr: str | None
+    sh_band_policy: str
+    uses_capacity_size: bool = False
+    apply_training_max_sh_band: bool = False
+    rebind_shared_debug_buffers: bool = False
+
+
+@dataclass(slots=True)
+class _RendererRoleRuntimeState:
+    training_params: object
+    active_sh_band: int
+    viewport_sh_band: int
+    resolved_params: object | None = None
+
+
+_RENDERER_ROLE_VIEWPORT = "viewport"
+_RENDERER_ROLE_TRAINING = "training"
+_MAIN_RENDERER_ROLE = _RendererRoleSpec(
+    attr="renderer",
+    allow_debug_overlays=True,
+    applied_params_attr="applied_renderer_params_main",
+    sh_band_policy=_RENDERER_ROLE_VIEWPORT,
+    apply_training_max_sh_band=True,
+)
+_TRAINING_RENDERER_ROLE = _RendererRoleSpec(
+    attr="training_renderer",
+    allow_debug_overlays=False,
+    applied_params_attr="applied_renderer_params_training",
+    sh_band_policy=_RENDERER_ROLE_TRAINING,
+    uses_capacity_size=True,
+    rebind_shared_debug_buffers=True,
+)
+_DEBUG_RENDERER_ROLE = _RendererRoleSpec(
+    attr="debug_renderer",
+    allow_debug_overlays=True,
+    applied_params_attr="applied_renderer_params_debug",
+    sh_band_policy=_RENDERER_ROLE_VIEWPORT,
+    apply_training_max_sh_band=True,
+)
+_RENDERER_ROLES = (_MAIN_RENDERER_ROLE, _TRAINING_RENDERER_ROLE, _DEBUG_RENDERER_ROLE)
+_RENDERER_ROLE_BY_ATTR = {role.attr: role for role in _RENDERER_ROLES}
+
+
+def _renderer_role(attr_or_role: str | _RendererRoleSpec) -> _RendererRoleSpec:
+    if isinstance(attr_or_role, _RendererRoleSpec):
+        return attr_or_role
+    return _RENDERER_ROLE_BY_ATTR[attr_or_role]
+
+
+def _renderer_size(renderer: GaussianRenderer, attr_or_role: str | _RendererRoleSpec) -> tuple[int, int]:
+    role = _renderer_role(attr_or_role)
+    if role.uses_capacity_size:
         return (
             int(getattr(renderer, "_render_capacity_width", renderer.width)),
             int(getattr(renderer, "_render_capacity_height", renderer.height)),
@@ -1455,19 +1510,20 @@ def _renderer_size(renderer: GaussianRenderer, attr: str) -> tuple[int, int]:
 
 def _finalize_renderer_replacement(
     viewer: object,
-    attr: str,
+    attr_or_role: str | _RendererRoleSpec,
     renderer: GaussianRenderer,
     previous_renderer: GaussianRenderer | None,
     *,
     reset_loss_debug: bool = False,
 ) -> GaussianRenderer:
-    setattr(viewer.s, attr, renderer)
-    if attr == "training_renderer":
+    role = _renderer_role(attr_or_role)
+    setattr(viewer.s, role.attr, renderer)
+    if role.rebind_shared_debug_buffers:
         trainer = getattr(viewer.s, "trainer", None)
         if trainer is not None:
             trainer.rebind_renderer(renderer)
-        for renderer_attr in ("training_renderer", "renderer", "debug_renderer"):
-            _apply_debug_buffers(viewer, getattr(viewer.s, renderer_attr, None))
+        for shared_role in (_TRAINING_RENDERER_ROLE, _MAIN_RENDERER_ROLE, _DEBUG_RENDERER_ROLE):
+            _apply_debug_buffers(viewer, getattr(viewer.s, shared_role.attr, None))
         if reset_loss_debug:
             _reset_loss_debug(viewer)
     else:
@@ -1481,21 +1537,23 @@ def _finalize_renderer_replacement(
 
 
 def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_debug_overlays: bool, *, force_recreate: bool = False) -> GaussianRenderer:
+    role = _renderer_role(attr)
     size = (int(width), int(height))
-    previous_renderer = getattr(viewer.s, attr)
-    if previous_renderer is not None and _renderer_size(previous_renderer, attr) == size and not force_recreate:
+    previous_renderer = getattr(viewer.s, role.attr, None)
+    if previous_renderer is not None and _renderer_size(previous_renderer, role) == size and not force_recreate:
         return previous_renderer
     renderer = _create_renderer(viewer, size[0], size[1], allow_debug_overlays)
     if isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
-    return _finalize_renderer_replacement(viewer, attr, renderer, previous_renderer)
+    return _finalize_renderer_replacement(viewer, role, renderer, previous_renderer)
 
 
 def _replace_training_renderer(viewer: object, width: int, height: int, *, reset_loss_debug: bool = True) -> GaussianRenderer:
-    previous_renderer = getattr(viewer.s, "training_renderer", None)
+    role = _TRAINING_RENDERER_ROLE
+    previous_renderer = getattr(viewer.s, role.attr, None)
     if previous_renderer is None:
         raise RuntimeError("Training renderer is unavailable.")
-    renderer = _create_renderer(viewer, int(width), int(height), allow_debug_overlays=False)
+    renderer = _create_renderer(viewer, int(width), int(height), role.allow_debug_overlays)
     enc = viewer.device.create_command_encoder()
     previous_renderer.copy_scene_state_to(enc, renderer)
     copy_prepass_capacity_state_to = getattr(previous_renderer, "copy_prepass_capacity_state_to", None)
@@ -1504,7 +1562,7 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     viewer.device.submit_command_buffer(enc.finish())
     return _finalize_renderer_replacement(
         viewer,
-        "training_renderer",
+        role,
         renderer,
         previous_renderer,
         reset_loss_debug=reset_loss_debug,
@@ -1527,19 +1585,27 @@ def maybe_reallocate_renderers(viewer: object, render_width: int, render_height:
         return False
     recycled = False
     loss_debug_reset = False
-    if getattr(viewer.s, "renderer", None) is not None:
+    main_renderer = getattr(viewer.s, _MAIN_RENDERER_ROLE.attr, None)
+    if main_renderer is not None:
         recreate_renderer(viewer, int(render_width), int(render_height))
         recycled = True
         loss_debug_reset = True
-    debug_renderer = getattr(viewer.s, "debug_renderer", None)
+    debug_renderer = getattr(viewer.s, _DEBUG_RENDERER_ROLE.attr, None)
     if debug_renderer is not None:
-        ensure_renderer(viewer, "debug_renderer", int(debug_renderer.width), int(debug_renderer.height), allow_debug_overlays=True, force_recreate=True)
+        ensure_renderer(
+            viewer,
+            _DEBUG_RENDERER_ROLE.attr,
+            int(debug_renderer.width),
+            int(debug_renderer.height),
+            _DEBUG_RENDERER_ROLE.allow_debug_overlays,
+            force_recreate=True,
+        )
         recycled = True
-    if getattr(viewer.s, "trainer", None) is not None and getattr(viewer.s, "training_renderer", None) is not None:
-        training_renderer = viewer.s.training_renderer
+    training_renderer = getattr(viewer.s, _TRAINING_RENDERER_ROLE.attr, None)
+    if getattr(viewer.s, "trainer", None) is not None and training_renderer is not None:
         _replace_training_renderer(
             viewer,
-            *_renderer_size(training_renderer, "training_renderer"),
+            *_renderer_size(training_renderer, _TRAINING_RENDERER_ROLE),
             reset_loss_debug=not loss_debug_reset,
         )
         recycled = True
@@ -1594,8 +1660,111 @@ def _training_runtime_signature(params: object) -> tuple[object, ...]:
 
 
 def recreate_renderer(viewer: object, width: int, height: int) -> None:
-    ensure_renderer(viewer, "renderer", width, height, allow_debug_overlays=True, force_recreate=True)
+    ensure_renderer(viewer, _MAIN_RENDERER_ROLE.attr, width, height, _MAIN_RENDERER_ROLE.allow_debug_overlays, force_recreate=True)
     _reset_loss_debug(viewer)
+
+
+def _build_renderer_role_runtime_state(viewer: object) -> _RendererRoleRuntimeState:
+    trainer = getattr(viewer.s, "trainer", None)
+    training_params_getter = getattr(viewer, "training_params", None)
+    training_params = training_params_getter().training if callable(training_params_getter) else getattr(trainer, "training", SimpleNamespace())
+    active_sh_band = resolve_sh_band(trainer.training, trainer.state.step) if trainer is not None and hasattr(trainer, "training") and hasattr(trainer, "state") else int(getattr(training_params, "sh_band", 3 if bool(getattr(training_params, "use_sh", False)) else 0))
+    viewport_sh_band = min(max(int(viewer.ui._values.get("_viewport_sh_band", active_sh_band)), 0), 3) if hasattr(viewer, "ui") else active_sh_band
+    return _RendererRoleRuntimeState(training_params=training_params, active_sh_band=int(active_sh_band), viewport_sh_band=int(viewport_sh_band))
+
+
+def _ensure_renderer_role_resolved_params(viewer: object, runtime_state: _RendererRoleRuntimeState) -> object | None:
+    if (
+        runtime_state.resolved_params is None
+        and getattr(viewer.s, "trainer", None) is not None
+        and callable(getattr(viewer, "init_params", None))
+        and callable(getattr(viewer, "training_params", None))
+    ):
+        _, runtime_state.resolved_params, _, _ = resolve_effective_training_setup(viewer)
+    return runtime_state.resolved_params
+
+
+def _set_renderer_debug_refinement_weights(renderer: object, training_params: object) -> None:
+    for renderer_attr, training_attr in (
+        ("debug_refinement_grad_variance_weight_exponent", "refinement_grad_variance_weight_exponent"),
+        ("debug_refinement_contribution_weight_exponent", "refinement_contribution_weight_exponent"),
+    ):
+        setattr(
+            renderer,
+            renderer_attr,
+            float(getattr(training_params, training_attr, getattr(renderer, renderer_attr, 0.0))),
+        )
+
+
+def _apply_training_renderer_role_hparams(
+    viewer: object,
+    renderer: object,
+    runtime_state: _RendererRoleRuntimeState,
+    *,
+    step: int | None = None,
+    use_trainer_hparams: bool = False,
+) -> None:
+    trainer = getattr(viewer.s, "trainer", None)
+    if use_trainer_hparams and trainer is not None and hasattr(trainer, "apply_renderer_training_hparams"):
+        trainer.apply_renderer_training_hparams(step, renderer=renderer)
+        return
+    training_params = getattr(trainer, "training", runtime_state.training_params) if use_trainer_hparams and trainer is not None else runtime_state.training_params
+    if step is None and not use_trainer_hparams:
+        renderer.sh_band = int(runtime_state.active_sh_band)
+    else:
+        resolved_step = int(step) if step is not None else int(getattr(getattr(trainer, "state", None), "step", 0))
+        renderer.sh_band = resolve_sh_band(training_params, resolved_step)
+    _set_renderer_debug_refinement_weights(renderer, training_params)
+
+
+def _apply_renderer_role_params(
+    viewer: object,
+    renderer: object | None,
+    role_attr: str | _RendererRoleSpec,
+    *,
+    remember_state: bool = False,
+    use_trainer_hparams: bool = False,
+    step: int | None = None,
+    runtime_state: _RendererRoleRuntimeState | None = None,
+) -> _RendererRoleRuntimeState | None:
+    role = _renderer_role(role_attr)
+    if renderer is None:
+        if remember_state and role.applied_params_attr is not None:
+            setattr(viewer.s, role.applied_params_attr, None)
+        return runtime_state
+    resolved_runtime_state = _build_renderer_role_runtime_state(viewer) if runtime_state is None else runtime_state
+    if role.apply_training_max_sh_band:
+        resolved_params = _ensure_renderer_role_resolved_params(viewer, resolved_runtime_state)
+        if resolved_params is not None:
+            renderer.max_sh_band = int(getattr(resolved_params.training, "max_sh_band", 3))
+        elif getattr(viewer.s, "trainer", None) is not None:
+            renderer.max_sh_band = int(getattr(getattr(viewer.s.trainer, "training", None), "max_sh_band", getattr(renderer, "max_sh_band", 3)))
+    if role.sh_band_policy == _RENDERER_ROLE_TRAINING:
+        _apply_training_renderer_role_hparams(
+            viewer,
+            renderer,
+            resolved_runtime_state,
+            step=step,
+            use_trainer_hparams=use_trainer_hparams,
+        )
+    else:
+        renderer.sh_band = int(resolved_runtime_state.viewport_sh_band)
+        _set_renderer_debug_refinement_weights(renderer, resolved_runtime_state.training_params)
+    renderer_params_getter = getattr(viewer, "renderer_params", None)
+    if not callable(renderer_params_getter):
+        return resolved_runtime_state
+    params = renderer_params_getter(role.allow_debug_overlays)
+    signature = _renderer_params_signature(params)
+    if remember_state and role.applied_params_attr is not None and getattr(viewer.s, role.applied_params_attr, None) == signature:
+        return resolved_runtime_state
+    runtime_kwargs = params.renderer_kwargs()
+    if params.debug_mode is None:
+        runtime_kwargs["debug_mode"] = GaussianRenderer.DEBUG_MODE_NORMAL
+    for key, value in runtime_kwargs.items():
+        setattr(renderer, key, value)
+    if remember_state and role.applied_params_attr is not None:
+        setattr(viewer.s, role.applied_params_attr, signature)
+    return resolved_runtime_state
 
 
 def ensure_training_runtime_resolution(viewer: object) -> bool:
