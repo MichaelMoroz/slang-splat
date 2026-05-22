@@ -310,14 +310,17 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     training, step = presenter_state._schedule_runtime(viewer)
     expected_target_now_pct = presenter_state.resolve_refinement_active_target_splat_ratio(training, step) * 100.0
     expected_target_pct = presenter_state.resolve_refinement_target_splat_ratio(training, step) * 100.0
+    expected_prune_floor_pct = presenter_state.resolve_refinement_prune_lowest_contribution_ratio(training, step) * 100.0
+    expected_prune_now_pct = expected_prune_floor_pct
+    expected_opacity_reg = presenter_state.resolve_opacity_reg_weight(training, step)
 
-    assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "640x360"), ("factor", 1))),)
+    assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "320x180"), ("factor", 1))),)
     assert viewer.ui._values["_training_downscale_sections"] == (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),)
     assert viewer.t("training_schedule").text == "LR Schedule: 2.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@12,225 -> 7.00e-04@30,058 -> 4.00e-04@100,000 | current=5.00e-03"
     assert schedule_sections[""] == {"step": 0, "stage": "Stage 0", "sh": "SH0"}
     assert schedule_sections["Learning Rates"] == pytest.approx({"base": 0.002, "pos": 0.25, "scale": 5.0, "rot": 1.0, "dc": 5.0, "opacity": 5.0, "sh": 0.1})
-    assert schedule_sections["Other"] == pytest.approx({"colorspace": 0.6, "dither": 0.01, "target%": expected_target_pct, "prune_floor%": 20.0, "opacity_reg": 1.0, "push": 0.005, "noise": 0.0})
-    assert refinement == pytest.approx({"every": 200, "target_now%": expected_target_now_pct, "target%": expected_target_pct, "after": 1000, "prune_now%": 20.0, "prune_floor%": 20.0, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": 0.05, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": 1500000})
+    assert schedule_sections["Other"] == pytest.approx({"colorspace": 0.6, "dither": 0.01, "target%": expected_target_pct, "prune_floor%": expected_prune_floor_pct, "opacity_reg": expected_opacity_reg, "push": 0.005, "noise": 0.0})
+    assert refinement == pytest.approx({"every": 200, "target_now%": expected_target_now_pct, "target%": expected_target_pct, "after": 1000, "prune_now%": expected_prune_now_pct, "prune_floor%": expected_prune_floor_pct, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": 0.05, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": 1500000})
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_camera_struct_sections"] == (
         ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
@@ -345,6 +348,30 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
             "is_last": True,
         },
     )
+
+
+def test_update_ui_text_uses_active_trainer_training_resolution_for_train_res() -> None:
+    viewer = _viewer(loss_debug=False)
+    first_frame = viewer.s.training_frames[0]
+    viewer.s.training_frames = [
+        first_frame,
+        SimpleNamespace(**{**vars(first_frame), "image_id": 6, "camera_id": 8, "image_path": Path("frame_b.png"), "width": 960, "height": 540}),
+    ]
+    viewer.s.training_renderer.width = 1024
+    viewer.s.training_renderer.height = 768
+    viewer.s.trainer.state.last_frame_index = 1
+    viewer.s.trainer.state.step = 17
+
+    def _training_resolution(frame_index: int = 0, step: int | None = None) -> tuple[int, int]:
+        viewer.s.trainer.training_resolution_calls.append((int(frame_index), int(0 if step is None else step)))
+        return (480, 270) if int(frame_index) == 1 else (320, 180)
+
+    viewer.s.trainer.training_resolution = _training_resolution
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "480x270"), ("factor", 1))),)
+    assert (1, 17) in viewer.s.trainer.training_resolution_calls
 
 
 def test_update_ui_text_appends_pose_ppisp_values_when_provider_exists() -> None:
@@ -751,7 +778,7 @@ def test_update_ui_text_uses_permutation_averages() -> None:
     assert viewer.t("training_density").text == "Density Avg: 6.500000e-03"
     assert viewer.t("training_psnr").text == "PSNR Avg: 26.750 dB"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
-    assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "640x360"), ("factor", 1))),)
+    assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "320x180"), ("factor", 1))),)
 
 
 def test_update_ui_text_populates_colmap_import_progress_fields() -> None:

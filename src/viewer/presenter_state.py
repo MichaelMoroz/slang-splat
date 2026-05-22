@@ -990,11 +990,51 @@ def _preview_train_render_factor(viewer: object) -> int:
     return _preview_train_downscale_factor(viewer) * _preview_train_subsample_factor(viewer)
 
 
+def _active_training_frame_index(viewer: object, trainer: object) -> int:
+    frames = getattr(viewer.s, "training_frames", None)
+    if not frames:
+        frames = getattr(trainer, "frames", ())
+    frame_count = len(frames) if frames is not None else 0
+    if frame_count <= 0:
+        return 0
+    state = getattr(trainer, "state", None)
+    try:
+        frame_index = int(getattr(state, "last_frame_index", 0))
+    except Exception:
+        return 0
+    return frame_index if 0 <= frame_index < frame_count else 0
+
+
+def _trainer_training_resolution(viewer: object, trainer: object) -> tuple[int, int] | None:
+    training_resolution = getattr(trainer, "training_resolution", None)
+    if not callable(training_resolution):
+        return None
+    frame_index = _active_training_frame_index(viewer, trainer)
+    step = getattr(getattr(trainer, "state", None), "step", None)
+    call_specs = [((frame_index,), {})]
+    if step is not None:
+        call_specs.insert(0, ((frame_index, int(step)), {}))
+    call_specs.append(((), {}))
+    for args, kwargs in call_specs:
+        try:
+            width, height = training_resolution(*args, **kwargs)
+            return max(int(width), 1), max(int(height), 1)
+        except TypeError:
+            continue
+        except Exception:
+            return None
+    return None
+
+
 def _training_resolution_sections(viewer: object) -> tuple:
     if viewer.s.training_renderer is not None and viewer.s.trainer is not None:
         factor = max(int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor()), 1)
-        width = int(viewer.s.training_renderer.width)
-        height = int(viewer.s.training_renderer.height)
+        resolution = _trainer_training_resolution(viewer, viewer.s.trainer)
+        if resolution is None:
+            width = max(int(viewer.s.training_renderer.width), 1)
+            height = max(int(viewer.s.training_renderer.height), 1)
+        else:
+            width, height = resolution
     elif viewer.s.training_frames:
         factor = _preview_train_render_factor(viewer)
         native_width = max(int(viewer.s.training_frames[0].width), 1)
