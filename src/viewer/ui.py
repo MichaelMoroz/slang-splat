@@ -807,6 +807,7 @@ class ToolkitWindow:
             export_ply=_noop,
             browse_colmap_root=_noop,
             browse_colmap_images=_noop,
+            browse_colmap_alpha_mask=_noop,
             browse_colmap_depth=_noop,
             browse_colmap_ply=_noop,
             browse_colmap_mesh=_noop,
@@ -2658,7 +2659,7 @@ class ToolkitWindow:
         if import_active and not self._show_colmap_import:
             self._show_colmap_import = True
         if opened:
-            imgui.text_wrapped("Select the dataset root, verify the RGB image folder, optionally provide a depth folder, choose import-time downscale, then enable any combination of initialization sources.")
+            imgui.text_wrapped("Select the dataset root, verify the RGB image folder, optionally provide an alpha mask folder and depth folder, choose import-time downscale, then enable any combination of initialization sources.")
             imgui.separator()
             if import_active:
                 status = ui._texts.get("colmap_import_status", "")
@@ -2674,12 +2675,21 @@ class ToolkitWindow:
             for label, key, button_label, callback, tooltip in (
                 ("COLMAP Root", "colmap_root_path", "Browse Root...", self.callbacks.browse_colmap_root, None),
                 ("Image Folder", "colmap_images_root", "Browse Image Folder...", self.callbacks.browse_colmap_images, None),
+                ("Alpha Mask Folder", "colmap_alpha_mask_root", "Browse Alpha Mask Folder...", self.callbacks.browse_colmap_alpha_mask, "Optional root containing black-and-white masks matched to RGB images by relative path stem or basename stem. White becomes alpha 1, black becomes alpha 0, and the composed alpha is baked into any BC7 cache."),
                 ("Depth Folder", "colmap_depth_root", "Browse Depth Folder...", self.callbacks.browse_colmap_depth, "Optional root containing 16-bit depth PNGs matched to RGB images by relative path stem."),
             ):
                 self._draw_import_path_selector(ui, label=label, key=key, button_label=button_label, callback=callback)
                 if tooltip is not None:
                     ToolkitWindow._set_tooltip(tooltip)
                 imgui.spacing()
+            mask_root_text = str(ui._values.get("colmap_alpha_mask_root", "")).strip()
+            imgui.begin_disabled(not mask_root_text)
+            changed, use_alpha_masks = imgui.checkbox("Use Alpha Masks", bool(ui._values.get("colmap_use_alpha_masks", False)))
+            if changed:
+                ui._values["colmap_use_alpha_masks"] = bool(use_alpha_masks)
+            imgui.end_disabled()
+            ToolkitWindow._set_tooltip("Enable or disable importing alpha from the selected Alpha Mask Folder. When disabled, the source image alpha channel is used instead.")
+            imgui.spacing()
             camera_rows = tuple(ui._values.get("_colmap_camera_rows", ()))
             if len(camera_rows) > 0:
                 self._draw_colmap_camera_selection_table(ui, camera_rows)
@@ -3580,10 +3590,14 @@ class ToolkitWindow:
             self._show_colmap_import = True
         root_text = self._path_text(ui, "colmap_root_path", "<none>")
         images_text = self._path_text(ui, "colmap_images_root", "<none>")
+        alpha_mask_text = self._path_text(ui, "colmap_alpha_mask_root", "<none>")
         depth_text = self._path_text(ui, "colmap_depth_root", "<none>")
         imgui.spacing()
         imgui.text_disabled(f"Root: {Path(root_text).name if root_text != '<none>' else root_text}")
         imgui.text_disabled(f"Images: {Path(images_text).name if images_text != '<none>' else images_text}")
+        if alpha_mask_text != "<none>":
+            alpha_state = "on" if bool(ui._values.get("colmap_use_alpha_masks", False)) else "off"
+            imgui.text_disabled(f"Alpha: {Path(alpha_mask_text).name} ({alpha_state})")
         if depth_text != "<none>":
             imgui.text_disabled(f"Depth: {Path(depth_text).name}")
             imgui.text_disabled(f"Depth Mode: {_COLMAP_DEPTH_VALUE_MODE_LABELS[max(0, min(int(ui._values.get('colmap_depth_value_mode', 1)), len(_COLMAP_DEPTH_VALUE_MODE_LABELS) - 1))]}")
@@ -3995,7 +4009,7 @@ def build_ui(renderer) -> ViewerUI:
     for spec in DEBUG_RENDER_SPECS:
         values[spec.key] = spec.kwargs.get("value", 0)
     RendererParams.from_renderer(renderer).apply_ui_values(values, _renderer_atomic_mode_index, _renderer_debug_mode_index, _threshold_from_band_range)
-    for key in ("colmap_root_path", "colmap_database_path", "colmap_images_root", "colmap_depth_root", "colmap_custom_ply_path", "colmap_custom_mesh_path"):
+    for key in ("colmap_root_path", "colmap_database_path", "colmap_images_root", "colmap_alpha_mask_root", "colmap_depth_root", "colmap_custom_ply_path", "colmap_custom_mesh_path"):
         values[key] = ""
     values["colmap_selected_camera_ids"] = ()
     for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:

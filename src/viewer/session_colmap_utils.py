@@ -5,7 +5,7 @@ import sqlite3
 
 import numpy as np
 
-from ..scene._internal.colmap_ops import DEPTH_INIT_VALUE_DISTANCE, DEPTH_INIT_VALUE_Z_DEPTH
+from ..scene._internal.colmap_ops import DEPTH_INIT_VALUE_DISTANCE, DEPTH_INIT_VALUE_Z_DEPTH, resolve_colmap_image_path
 from ..scene._internal.colmap_binary import _resolve_colmap_sparse_paths
 from ..scene import load_colmap_reconstruction
 from ..scene._internal.colmap_types import ColmapFrame
@@ -123,6 +123,11 @@ def _looks_like_depth_directory(path: Path) -> bool:
     return "depth" in value or "depth" in Path(path).name.lower()
 
 
+def _looks_like_alpha_mask_directory(path: Path) -> bool:
+    name = Path(path).name.lower()
+    return "mask" in name or "alpha" in name
+
+
 def _suggest_images_root_from_dataset_root(dataset_root: Path, image_names: list[str]) -> Path:
     root = Path(dataset_root).resolve()
     sample_names = image_names[: min(len(image_names), _COLMAP_DB_SAMPLE_LIMIT)]
@@ -132,6 +137,19 @@ def _suggest_images_root_from_dataset_root(dataset_root: Path, image_names: list
         if any((candidate / image_name).exists() for image_name in sample_names):
             return candidate
     raise FileNotFoundError(f"Could not find an image folder under {root} for COLMAP images: {sample_names[:4]}")
+
+
+def _suggest_alpha_mask_root_from_dataset_root(dataset_root: Path, images_root: Path, image_names: list[str]) -> Path | None:
+    root = Path(dataset_root).resolve()
+    resolved_images_root = Path(images_root).resolve()
+    sample_names = image_names[: min(len(image_names), _COLMAP_DB_SAMPLE_LIMIT)]
+    sibling_dirs = () if not resolved_images_root.parent.exists() else tuple(path.resolve() for path in sorted(resolved_images_root.parent.iterdir()) if path.is_dir())
+    for candidate in _unique_paths([*sibling_dirs, *_dataset_directories(root)]):
+        if candidate == resolved_images_root or _looks_like_depth_directory(candidate) or not _looks_like_alpha_mask_directory(candidate):
+            continue
+        if any(resolve_colmap_image_path(candidate, image_name) is not None for image_name in sample_names):
+            return candidate
+    return None
 
 
 def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
@@ -196,6 +214,8 @@ def _update_import_settings(
     dataset_root: Path,
     database_path: Path | None,
     images_root: Path,
+    alpha_mask_root: Path | None,
+    use_alpha_masks: bool,
     depth_root: Path | None,
     selected_camera_ids: tuple[int, ...],
     depth_value_mode: str,
@@ -257,6 +277,8 @@ def _update_import_settings(
     viewer.s.colmap_import = ColmapImportSettings(
         database_path=None if database_path is None else Path(database_path).resolve(),
         images_root=Path(images_root).resolve(),
+        alpha_mask_root=None if alpha_mask_root is None else Path(alpha_mask_root).resolve(),
+        use_alpha_masks=bool(use_alpha_masks and alpha_mask_root is not None),
         depth_root=None if depth_root is None else Path(depth_root).resolve(),
         selected_camera_ids=tuple(int(camera_id) for camera_id in selected_camera_ids),
         depth_value_mode=str(depth_value_mode),
@@ -300,6 +322,8 @@ def _update_import_settings(
     _set_ui_path(viewer, "colmap_root_path", dataset_root)
     _set_ui_path(viewer, "colmap_database_path", database_path)
     _set_ui_path(viewer, "colmap_images_root", images_root)
+    _set_ui_path(viewer, "colmap_alpha_mask_root", alpha_mask_root)
+    viewer.ui._values["colmap_use_alpha_masks"] = bool(use_alpha_masks and alpha_mask_root is not None)
     _set_ui_path(viewer, "colmap_depth_root", depth_root)
     viewer.ui._values["colmap_selected_camera_ids"] = tuple(int(camera_id) for camera_id in selected_camera_ids)
     viewer.ui._values["colmap_depth_value_mode"] = 0 if str(depth_value_mode) == _COLMAP_DEPTH_VALUE_DISTANCE else 1

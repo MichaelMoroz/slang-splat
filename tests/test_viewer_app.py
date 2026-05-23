@@ -266,6 +266,8 @@ def test_reload_callback_forwards_target_alpha_threshold(monkeypatch) -> None:
     import_cfg = SimpleNamespace(
         database_path=None,
         images_root=Path("dataset/images"),
+        alpha_mask_root=Path("dataset/masks"),
+        use_alpha_masks=False,
         depth_root=None,
         init_mode="pointcloud",
         custom_ply_path=None,
@@ -297,6 +299,8 @@ def test_reload_callback_forwards_target_alpha_threshold(monkeypatch) -> None:
     app.SplatViewer._reload_callback(viewer)
 
     assert calls[0]["target_alpha_threshold"] == 0.25
+    assert calls[0]["alpha_mask_root"] == Path("dataset/masks")
+    assert calls[0]["use_alpha_masks"] is False
 
 
 def test_precompile_runtime_shaders_loads_lazy_runtime_shader_sets(monkeypatch) -> None:

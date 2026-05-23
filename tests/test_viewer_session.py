@@ -86,6 +86,128 @@ def test_bc7_cache_compression_uses_resized_frame_image(tmp_path: Path, monkeypa
     assert cache_path.exists()
 
 
+def test_load_dataset_texture_replaces_alpha_from_mask_folder(tmp_path: Path) -> None:
+    images_root = (tmp_path / "images").resolve()
+    mask_root = (tmp_path / "masks").resolve()
+    images_root.mkdir()
+    mask_root.mkdir()
+    image_path = images_root / "frame.png"
+    mask_path = mask_root / "frame.png"
+    rgba = np.zeros((3, 4, 4), dtype=np.uint8)
+    rgba[:, :, 0] = 25
+    rgba[:, :, 1] = 50
+    rgba[:, :, 2] = 75
+    rgba[:, :, 3] = 255
+    mask = np.array(
+        [
+            [0, 64, 128, 255],
+            [255, 128, 64, 0],
+            [32, 96, 160, 224],
+        ],
+        dtype=np.uint8,
+    )
+    Image.fromarray(rgba, mode="RGBA").save(image_path)
+    Image.fromarray(mask, mode="L").save(mask_path)
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=image_path,
+        q_wxyz=_identity_q(),
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=4.0,
+        fy=3.0,
+        cx=2.0,
+        cy=1.5,
+        width=4,
+        height=3,
+    )
+
+    result = session._load_dataset_texture(frame, images_root, False, mask_root, session.build_colmap_image_path_index(mask_root))
+
+    assert isinstance(result, np.ndarray)
+    assert np.array_equal(result[:, :, :3], rgba[:, :, :3])
+    assert np.array_equal(result[:, :, 3], mask)
+
+
+def test_create_native_dataset_textures_ignores_mask_root_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    images_root = (tmp_path / "images").resolve()
+    mask_root = (tmp_path / "masks").resolve()
+    images_root.mkdir()
+    mask_root.mkdir()
+    image_path = images_root / "frame.png"
+    Image.fromarray(np.full((2, 2, 4), 32, dtype=np.uint8), mode="RGBA").save(image_path)
+    Image.fromarray(np.full((2, 2), 255, dtype=np.uint8), mode="L").save(mask_root / "frame.png")
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=image_path,
+        q_wxyz=_identity_q(),
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=2.0,
+        fy=2.0,
+        cx=1.0,
+        cy=1.0,
+        width=2,
+        height=2,
+    )
+    viewer = SimpleNamespace(s=SimpleNamespace(colmap_import=SimpleNamespace(images_root=images_root, alpha_mask_root=mask_root, use_alpha_masks=False, compress_dataset_using_bc7=False)))
+    captured: list[np.ndarray] = []
+
+    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda _viewer, rgba8: captured.append(np.asarray(rgba8, dtype=np.uint8).copy()) or "tex")
+
+    textures = session._create_native_dataset_textures(viewer, [frame], alpha_mask_root=mask_root, use_alpha_masks=False, compress_dataset_using_bc7=False)
+
+    assert textures == ["tex"]
+    assert len(captured) == 1
+    assert np.all(captured[0][:, :, 3] == 32)
+
+
+def test_load_dataset_texture_bakes_masked_alpha_into_bc7_cache(tmp_path: Path, monkeypatch) -> None:
+    images_root = (tmp_path / "images").resolve()
+    mask_root = (tmp_path / "masks").resolve()
+    images_root.mkdir()
+    mask_root.mkdir()
+    image_path = images_root / "frame.png"
+    mask_path = mask_root / "frame.png"
+    rgba = np.full((2, 4, 4), 200, dtype=np.uint8)
+    rgba[:, :, 3] = 255
+    mask = np.array([[0, 255, 0, 255], [255, 0, 255, 0]], dtype=np.uint8)
+    Image.fromarray(rgba, mode="RGBA").save(image_path)
+    Image.fromarray(mask, mode="L").save(mask_path)
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=image_path,
+        q_wxyz=_identity_q(),
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=4.0,
+        fy=2.0,
+        cx=2.0,
+        cy=1.0,
+        width=4,
+        height=2,
+    )
+    seen: dict[str, object] = {}
+
+    def _fake_run(args, **_kwargs):
+        source_path = Path(args[-1])
+        with Image.open(source_path) as source_image:
+            seen["alpha"] = np.asarray(source_image, dtype=np.uint8)[:, :, 3].copy()
+        out_dir = Path(args[args.index("-o") + 1])
+        (out_dir / source_path.with_suffix(".dds").name).write_bytes(b"dds")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(session, "_ensure_dataset_bc7_texconv", lambda: tmp_path / "texconv.exe")
+    monkeypatch.setattr(session.subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        session,
+        "_parse_compressed_dataset_texture",
+        lambda _path: session._CompressedDatasetTexture(width=4, height=2, format=session.spy.Format.bc7_unorm_srgb, payload=np.zeros((16,), dtype=np.uint8)),
+    )
+
+    payload = session._load_dataset_texture(frame, images_root, True, mask_root, session.build_colmap_image_path_index(mask_root))
+
+    assert isinstance(payload, session._CompressedDatasetTexture)
+    assert np.array_equal(seen["alpha"], mask)
+
+
 def test_set_training_active_accumulates_elapsed_time_on_pause(monkeypatch) -> None:
     viewer = _viewer()
     times = iter((10.0, 14.5))
@@ -1392,6 +1514,26 @@ def test_choose_colmap_root_auto_selects_first_matching_image_folder(tmp_path: P
     assert viewer.s.last_error == ""
 
 
+def test_choose_colmap_root_auto_selects_matching_alpha_mask_folder(tmp_path: Path) -> None:
+    database_path, _ = _build_colmap_tree(
+        tmp_path,
+        image_names=["frame_000.png", "frame_001.png"],
+        image_root_rel=Path("images"),
+    )
+    mask_root = database_path.parents[1] / "masks"
+    mask_root.mkdir(parents=True, exist_ok=True)
+    for image_name in ("frame_000.png", "frame_001.png"):
+        Image.fromarray(np.full((8, 8), 255, dtype=np.uint8), mode="L").save(mask_root / image_name)
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(last_error="stale"),
+    )
+
+    session.choose_colmap_root(viewer, database_path.parents[1])
+
+    assert viewer.ui._values["colmap_alpha_mask_root"] == str(mask_root.resolve())
+
+
 def test_choose_colmap_root_skips_depth_named_image_directories(tmp_path: Path) -> None:
     database_path, _ = _build_colmap_tree(
         tmp_path,
@@ -1532,6 +1674,8 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
         image_names=["frame_000.png"],
         image_root_rel=Path("images"),
     )
+    alpha_mask_root = tmp_path / "masks"
+    alpha_mask_root.mkdir()
     calls: list[tuple[str, object]] = []
     viewer = _make_import_viewer(
         calls=calls,
@@ -1539,6 +1683,8 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
             "colmap_root_path": str(database_path.parents[1]),
             "colmap_database_path": str(database_path),
             "colmap_images_root": str(images_root),
+            "colmap_alpha_mask_root": str(alpha_mask_root),
+            "colmap_use_alpha_masks": False,
             "colmap_depth_value_mode": 1,
             "colmap_init_mode": 0,
             "colmap_custom_ply_path": "",
@@ -1589,6 +1735,8 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.colmap_import_progress.target_alpha_mode == 1
     assert viewer.s.colmap_import_progress.target_alpha_threshold == pytest.approx(0.25)
     assert viewer.s.colmap_import_progress.use_target_alpha_mask is True
+    assert viewer.s.colmap_import_progress.alpha_mask_root == alpha_mask_root.resolve()
+    assert viewer.s.colmap_import_progress.use_alpha_masks is False
     assert viewer.s.colmap_import_progress.training_image_color_init is True
     assert viewer.s.colmap_import_progress.photometric_compensation_enabled is True
 

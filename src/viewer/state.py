@@ -47,6 +47,8 @@ class ColmapImportSettings:
     database_path: Path | None = None
     images_root: Path | None = None
     depth_root: Path | None = None
+    alpha_mask_root: Path | None = None
+    use_alpha_masks: bool = False
     selected_camera_ids: tuple[int, ...] = ()
     depth_value_mode: str = "z_depth"
     init_mode: str = "pointcloud"
@@ -104,6 +106,8 @@ class ColmapImportProgress:
     image_downscale_max_size: int
     image_downscale_scale: float
     nn_radius_scale_coef: float
+    alpha_mask_root: Path | None = None
+    use_alpha_masks: bool = False
     rotation_mode: int = DEFAULT_COLMAP_ROTATION_MODE
     custom_rotation_deg: tuple[float, float, float] = DEFAULT_COLMAP_CUSTOM_ROTATION_DEG
     compress_dataset_using_bc7: bool = False
@@ -152,6 +156,8 @@ class ColmapImportProgress:
         self.target_alpha_threshold = float(np.clip(self.target_alpha_threshold, 0.0, 1.0))
         self.use_target_alpha_mask = target_alpha_skip_mask_enabled(self.target_alpha_mode)
     depth_index: dict[str, Path] | None = None
+    image_path_index: object | None = None
+    alpha_mask_path_index: object | None = None
     depth_init_payloads: list[object] = field(default_factory=list)
     native_textures: list[spy.Texture] = field(default_factory=list)
     native_rgba8_loader: object | None = None

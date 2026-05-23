@@ -642,6 +642,7 @@ class SplatViewer(_ViewerWindowHost):
         cb.export_ply = self._export_ply_callback
         cb.browse_colmap_root = self._browse_colmap_root_callback
         cb.browse_colmap_images = self._browse_colmap_images_callback
+        cb.browse_colmap_alpha_mask = self._browse_colmap_alpha_mask_callback
         cb.browse_colmap_depth = self._browse_colmap_depth_callback
         cb.browse_colmap_ply = self._browse_colmap_ply_callback
         cb.browse_colmap_mesh = self._browse_colmap_mesh_callback
@@ -724,6 +725,11 @@ class SplatViewer(_ViewerWindowHost):
         if path:
             self._run_action(lambda: session.choose_colmap_images_root(self, Path(path)))
 
+    def _browse_colmap_alpha_mask_callback(self) -> None:
+        path = spy.platform.choose_folder_dialog()
+        if path:
+            self._run_action(lambda: session.choose_colmap_alpha_mask_root(self, Path(path)))
+
     def _browse_colmap_depth_callback(self) -> None:
         path = spy.platform.choose_folder_dialog()
         if path:
@@ -759,6 +765,8 @@ class SplatViewer(_ViewerWindowHost):
                     colmap_root=self.s.colmap_root,
                     database_path=import_cfg.database_path,
                     images_root=import_cfg.images_root,
+                    alpha_mask_root=getattr(import_cfg, "alpha_mask_root", None),
+                    use_alpha_masks=bool(getattr(import_cfg, "use_alpha_masks", False)),
                     depth_root=import_cfg.depth_root,
                     init_mode=import_cfg.init_mode,
                     rotation_mode=getattr(

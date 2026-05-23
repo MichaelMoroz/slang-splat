@@ -37,11 +37,13 @@ from ..scene._internal.colmap_ops import (
     DEPTH_INIT_VALUE_Z_DEPTH,
     FIBONACCI_SPHERE_COLOR,
     TRAINING_FRAME_LOAD_THREADS,
+    build_colmap_image_path_index,
     build_depth_path_index,
     generate_depth_init_points,
     load_training_frame_rgba8,
     load_training_frame_rgba8_with_depth_payload,
     match_depth_path,
+    resolve_colmap_image_path,
 )
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode
 from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
@@ -79,6 +81,7 @@ from .session_colmap_utils import (
     _resolve_colmap_root_from_selection as _resolve_colmap_root_from_selection_impl,
     _set_colmap_camera_preview as _set_colmap_camera_preview_impl,
     _set_ui_path as _set_ui_path_impl,
+    _suggest_alpha_mask_root_from_dataset_root,
     _suggest_images_root_from_dataset_root,
     _update_import_settings as _update_import_settings_impl,
 )
@@ -87,7 +90,6 @@ from .session_dataset_utils import (
     _bc_payload_byte_count,
     _create_native_dataset_texture_from_bc_payload,
     _create_native_dataset_texture_from_rgba8,
-    _dataset_bc7_cache_dir,
     _dataset_bc7_cache_path,
     _parse_compressed_dataset_texture,
 )
@@ -113,6 +115,7 @@ _PERIODIC_RENDERER_REALLOCATION_INTERVAL_S = 120.0
 _COLMAP_IMPORT_PHOTOMETRIC_TOTAL_STEPS = 1000
 _COLMAP_IMPORT_PHOTOMETRIC_STEPS_PER_TICK = 8
 _DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
+
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "max_sh_band",
     "train_downscale_mode",
@@ -233,23 +236,71 @@ def _ensure_dataset_bc7_texconv() -> Path:
     return path
 
 
-def _compress_dataset_frame_to_bc7_cache(frame: ColmapFrame, images_root: Path) -> Path:
+def _compose_frame_relative_name(frame: ColmapFrame, images_root: Path) -> str:
+    try:
+        relative = Path(frame.image_path).resolve().relative_to(Path(images_root).resolve())
+        return str(relative).replace("\\", "/")
+    except ValueError:
+        return Path(frame.image_path).name
+
+
+def _resolve_alpha_mask_path(frame: ColmapFrame, images_root: Path, alpha_mask_root: Path, alpha_mask_path_index: object | None) -> Path:
+    mask_path = resolve_colmap_image_path(alpha_mask_root, _compose_frame_relative_name(frame, images_root), image_path_index=alpha_mask_path_index)
+    if mask_path is None:
+        raise FileNotFoundError(f"No alpha mask was found for {frame.image_path.name} in {Path(alpha_mask_root).resolve()}.")
+    return mask_path
+
+
+def _load_alpha_mask_u8(mask_path: Path, target_size: tuple[int, int]) -> np.ndarray:
+    with Image.open(Path(mask_path).resolve()) as pil_image:
+        mask_image = pil_image.convert("L")
+        if mask_image.size != target_size:
+            mask_image = mask_image.resize(target_size, Image.Resampling.LANCZOS)
+        return np.array(mask_image, dtype=np.uint8, order="C", copy=True)
+
+
+def _apply_alpha_mask_to_rgba8(
+    rgba8: np.ndarray,
+    frame: ColmapFrame,
+    images_root: Path,
+    alpha_mask_root: Path | None,
+    alpha_mask_path_index: object | None,
+) -> np.ndarray:
+    if alpha_mask_root is None:
+        return rgba8
+    mask_path = _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
+    composed = np.ascontiguousarray(rgba8, dtype=np.uint8).copy()
+    composed[:, :, 3] = _load_alpha_mask_u8(mask_path, (max(int(frame.width), 1), max(int(frame.height), 1)))
+    return composed
+
+
+def _compress_dataset_frame_to_bc7_cache(
+    frame: ColmapFrame,
+    images_root: Path,
+    *,
+    rgba8: np.ndarray | None = None,
+) -> Path:
     texconv_path = _ensure_dataset_bc7_texconv()
     cache_path = _dataset_bc7_cache_path(images_root, frame)
-    if cache_path.exists():
+    if cache_path.exists() and rgba8 is None:
         return cache_path
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     source_path = frame.image_path
     temp_source_path: Path | None = None
     target_size = (max(int(frame.width), 1), max(int(frame.height), 1))
-    with Image.open(frame.image_path) as pil_image:
-        if pil_image.size != target_size:
-            temp_source_path = cache_path.with_suffix(".png")
-            resized = pil_image.convert("RGBA")
-            if resized.size != target_size:
-                resized = resized.resize(target_size, Image.Resampling.LANCZOS)
-            resized.save(temp_source_path)
-            source_path = temp_source_path
+    if rgba8 is not None:
+        temp_source_path = cache_path.with_suffix(".png")
+        Image.fromarray(np.ascontiguousarray(rgba8, dtype=np.uint8), mode="RGBA").save(temp_source_path)
+        source_path = temp_source_path
+    else:
+        with Image.open(frame.image_path) as pil_image:
+            if pil_image.size != target_size:
+                temp_source_path = cache_path.with_suffix(".png")
+                resized = pil_image.convert("RGBA")
+                if resized.size != target_size:
+                    resized = resized.resize(target_size, Image.Resampling.LANCZOS)
+                resized.save(temp_source_path)
+                source_path = temp_source_path
     try:
         subprocess.run(
             [
@@ -440,9 +491,9 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
     selected = {int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())}
     if selected and int(image.camera_id) not in selected:
         return
-    image_path = (progress.images_root / image.name).resolve()
+    image_path = resolve_colmap_image_path(progress.images_root, image.name, image_path_index=progress.image_path_index)
     camera = progress.recon.cameras.get(image.camera_id)
-    if camera is None or not image_path.exists():
+    if camera is None or image_path is None:
         return
     with Image.open(image_path) as pil_image:
         src_width, src_height = pil_image.size
@@ -475,44 +526,38 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
     progress.frames.append(frame)
 
 
-def _load_dataset_texture(frame: ColmapFrame, images_root: Path, compress_dataset_using_bc7: bool) -> np.ndarray | _CompressedDatasetTexture:
-    return _load_or_create_bc7_dataset_texture(frame, images_root) if bool(compress_dataset_using_bc7) else load_training_frame_rgba8(frame)
+def _load_dataset_texture(
+    frame: ColmapFrame,
+    images_root: Path,
+    compress_dataset_using_bc7: bool,
+    alpha_mask_root: Path | None = None,
+    alpha_mask_path_index: object | None = None,
+) -> np.ndarray | _CompressedDatasetTexture:
+    if bool(compress_dataset_using_bc7) and alpha_mask_root is None:
+        return _load_or_create_bc7_dataset_texture(frame, images_root)
+    rgba8 = _apply_alpha_mask_to_rgba8(load_training_frame_rgba8(frame), frame, images_root, alpha_mask_root, alpha_mask_path_index)
+    if not bool(compress_dataset_using_bc7):
+        return rgba8
+    cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8)
+    payload = _parse_compressed_dataset_texture(cache_path)
+    if payload.format != spy.Format.bc7_unorm_srgb or payload.width != int(frame.width) or payload.height != int(frame.height):
+        cache_path.unlink(missing_ok=True)
+        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8)
+        payload = _parse_compressed_dataset_texture(cache_path)
+    return payload
 
 
-def _load_dataset_texture_with_depth_payload(task: tuple[ColmapReconstruction, object, object, ColmapFrame, Path | None, str, bool, Path]) -> tuple[np.ndarray | _CompressedDatasetTexture, object | None]:
-    recon, image, camera, frame, depth_path, depth_value_mode, compress_dataset_using_bc7, images_root = task
+def _load_dataset_texture_with_depth_payload(
+    task: tuple[ColmapReconstruction, object, object, ColmapFrame, Path | None, str, bool, Path, Path | None, object | None]
+) -> tuple[np.ndarray | _CompressedDatasetTexture, object | None]:
+    recon, image, camera, frame, depth_path, depth_value_mode, compress_dataset_using_bc7, images_root, alpha_mask_root, alpha_mask_path_index = task
     rgba8, payload = load_training_frame_rgba8_with_depth_payload((recon, image, camera, frame, depth_path, depth_value_mode))
+    rgba8 = _apply_alpha_mask_to_rgba8(rgba8, frame, images_root, alpha_mask_root, alpha_mask_path_index)
+    if payload is not None:
+        payload.rgba8 = rgba8
     if not bool(compress_dataset_using_bc7):
         return rgba8, payload
-    cache_path = _dataset_bc7_cache_path(images_root, frame)
-    if not cache_path.exists():
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        staging_path = cache_path.with_suffix(".png")
-        Image.fromarray(np.ascontiguousarray(rgba8, dtype=np.uint8), mode="RGBA").save(staging_path)
-        try:
-            subprocess.run(
-                [
-                    str(_ensure_dataset_bc7_texconv()),
-                    "-y",
-                    "-srgbi",
-                    "-srgbo",
-                    "-f",
-                    "BC7_UNORM_SRGB",
-                    "-m",
-                    "1",
-                    "-o",
-                    str(cache_path.parent),
-                    str(staging_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(f"texconv failed for {frame.image_path.name}: {exc.stderr.strip() or exc.stdout.strip()}") from exc
-        finally:
-            if staging_path.exists():
-                staging_path.unlink()
+    cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8)
     return _parse_compressed_dataset_texture(cache_path), payload
 
 
@@ -530,6 +575,8 @@ def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
         _ensure_dataset_bc7_texconv()
     loader = ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target")
     progress.native_rgba8_loader = loader
+    active_alpha_mask_root = progress.alpha_mask_root if bool(progress.use_alpha_masks) else None
+    active_alpha_mask_path_index = progress.alpha_mask_path_index if bool(progress.use_alpha_masks) else None
     if progress.init_mode == _COLMAP_IMPORT_DEPTH:
         if progress.recon is None:
             raise RuntimeError("Depth import mode requires reconstruction state before texture loading.")
@@ -538,16 +585,21 @@ def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
             camera = progress.recon.cameras.get(image.camera_id)
             if camera is None:
                 raise RuntimeError(f"Missing COLMAP camera {image.camera_id} for {image.name}.")
-            tasks.append((progress.recon, image, camera, frame, depth_path, progress.depth_value_mode, progress.compress_dataset_using_bc7, progress.images_root))
+            tasks.append((progress.recon, image, camera, frame, depth_path, progress.depth_value_mode, progress.compress_dataset_using_bc7, progress.images_root, active_alpha_mask_root, active_alpha_mask_path_index))
         progress.native_rgba8_iter = loader.map(_load_dataset_texture_with_depth_payload, tasks)
         return
-    progress.native_rgba8_iter = loader.map(lambda frame: _load_dataset_texture(frame, progress.images_root, progress.compress_dataset_using_bc7), progress.frames)
+    progress.native_rgba8_iter = loader.map(
+        lambda frame: _load_dataset_texture(frame, progress.images_root, progress.compress_dataset_using_bc7, active_alpha_mask_root, active_alpha_mask_path_index),
+        progress.frames,
+    )
 
 
 def _create_native_dataset_textures(
     viewer: object,
     frames: list[ColmapFrame],
     images_root: Path | None = None,
+    alpha_mask_root: Path | None = None,
+    use_alpha_masks: bool | None = None,
     compress_dataset_using_bc7: bool | None = None,
 ) -> list[spy.Texture]:
     import_cfg = getattr(viewer.s, "colmap_import", None)
@@ -555,6 +607,11 @@ def _create_native_dataset_textures(
     if resolved_images_root is None:
         raise RuntimeError("Dataset texture creation requires a resolved images root.")
     resolved_images_root = Path(resolved_images_root).resolve()
+    resolved_alpha_mask_root = alpha_mask_root if alpha_mask_root is not None else None if import_cfg is None else getattr(import_cfg, "alpha_mask_root", None)
+    resolved_alpha_mask_root = None if resolved_alpha_mask_root is None else Path(resolved_alpha_mask_root).resolve()
+    active_use_alpha_masks = bool(use_alpha_masks if use_alpha_masks is not None else False if import_cfg is None else getattr(import_cfg, "use_alpha_masks", False))
+    active_alpha_mask_root = resolved_alpha_mask_root if active_use_alpha_masks else None
+    alpha_mask_path_index = None if active_alpha_mask_root is None else build_colmap_image_path_index(active_alpha_mask_root)
     use_bc7 = bool(
         compress_dataset_using_bc7
         if compress_dataset_using_bc7 is not None
@@ -564,7 +621,10 @@ def _create_native_dataset_textures(
     if use_bc7:
         _ensure_dataset_bc7_texconv()
     with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target") as executor:
-        for payload in executor.map(lambda frame: _load_dataset_texture(frame, resolved_images_root, use_bc7), frames):
+        for payload in executor.map(
+            lambda frame: _load_dataset_texture(frame, resolved_images_root, use_bc7, active_alpha_mask_root, alpha_mask_path_index),
+            frames,
+        ):
             textures.append(_create_native_dataset_texture_from_bc_payload(viewer, payload) if isinstance(payload, _CompressedDatasetTexture) else _create_native_dataset_texture_from_rgba8(viewer, payload))
     return textures
 
@@ -706,9 +766,13 @@ def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     recon = load_colmap_reconstruction(colmap_root)
     db_path = _find_optional_colmap_database(root)
     image_names = [str(image.name).strip() for _, image in sorted(recon.images.items()) if str(image.name).strip()] if db_path is None else _database_image_names(db_path)
+    images_root = _suggest_images_root_from_dataset_root(root, image_names)
     _set_ui_path(viewer, "colmap_root_path", root)
     _set_ui_path(viewer, "colmap_database_path", db_path)
-    _set_ui_path(viewer, "colmap_images_root", _suggest_images_root_from_dataset_root(root, image_names))
+    _set_ui_path(viewer, "colmap_images_root", images_root)
+    alpha_mask_root = _suggest_alpha_mask_root_from_dataset_root(root, images_root, image_names)
+    _set_ui_path(viewer, "colmap_alpha_mask_root", alpha_mask_root)
+    viewer.ui._values["colmap_use_alpha_masks"] = bool(alpha_mask_root is not None)
     _set_colmap_camera_preview(viewer, recon)
     viewer.s.last_error = ""
 
@@ -720,6 +784,12 @@ def choose_colmap_images_root(viewer: object, images_root: Path) -> None:
 
 def choose_colmap_depth_root(viewer: object, depth_root: Path) -> None:
     _set_ui_path(viewer, "colmap_depth_root", Path(depth_root).resolve())
+    viewer.s.last_error = ""
+
+
+def choose_colmap_alpha_mask_root(viewer: object, alpha_mask_root: Path) -> None:
+    _set_ui_path(viewer, "colmap_alpha_mask_root", Path(alpha_mask_root).resolve())
+    viewer.ui._values["colmap_use_alpha_masks"] = True
     viewer.s.last_error = ""
 
 
@@ -2455,6 +2525,8 @@ def _finish_import_colmap_dataset(
     colmap_root: Path,
     database_path: Path | None,
     images_root: Path,
+    alpha_mask_root: Path | None = None,
+    use_alpha_masks: bool = False,
     depth_root: Path | None = None,
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
@@ -2511,6 +2583,8 @@ def _finish_import_colmap_dataset(
         dataset_root=colmap_root,
         database_path=database_path,
         images_root=images_root,
+        alpha_mask_root=alpha_mask_root,
+        use_alpha_masks=use_alpha_masks,
         depth_root=depth_root,
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
@@ -2591,6 +2665,8 @@ def import_colmap_dataset(
     colmap_root: Path,
     database_path: Path | None,
     images_root: Path,
+    alpha_mask_root: Path | None = None,
+    use_alpha_masks: bool = False,
     depth_root: Path | None = None,
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
@@ -2638,6 +2714,8 @@ def import_colmap_dataset(
     recon = _load_aligned_colmap_reconstruction(root, rotation_mode=resolved_rotation_mode, custom_rotation_deg=resolved_custom_rotation_deg)
     viewer.s.colmap_import = ColmapImportSettings(
         images_root=Path(images_root).resolve(),
+        alpha_mask_root=None if alpha_mask_root is None else Path(alpha_mask_root).resolve(),
+        use_alpha_masks=bool(use_alpha_masks and alpha_mask_root is not None),
         rotation_mode=resolved_rotation_mode,
         custom_rotation_deg=resolved_custom_rotation_deg,
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
@@ -2698,6 +2776,8 @@ def import_colmap_dataset(
         colmap_root=root,
         database_path=database_path,
         images_root=images_root,
+        alpha_mask_root=alpha_mask_root,
+        use_alpha_masks=use_alpha_masks,
         depth_root=depth_root,
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
@@ -2758,6 +2838,9 @@ def import_colmap_from_ui(viewer: object) -> None:
     database_path_text = _ui_path_string(viewer, "colmap_database_path")
     database_path = None if not database_path_text else Path(database_path_text).expanduser()
     images_root = Path(_ui_path_string(viewer, "colmap_images_root")).expanduser()
+    alpha_mask_root_text = _ui_path_string(viewer, "colmap_alpha_mask_root")
+    alpha_mask_root = None if not alpha_mask_root_text else Path(alpha_mask_root_text).expanduser()
+    use_alpha_masks = bool(viewer.ui._values.get("colmap_use_alpha_masks", False))
     depth_root_text = _ui_path_string(viewer, "colmap_depth_root")
     depth_root = None if not depth_root_text else Path(depth_root_text).expanduser()
     depth_value_mode = _ui_depth_value_mode(viewer)
@@ -2821,6 +2904,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         database_path = _find_optional_colmap_database(colmap_root)
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image folder does not exist: {images_root}")
+    if alpha_mask_root is not None and not alpha_mask_root.exists():
+        raise FileNotFoundError(f"COLMAP alpha mask folder does not exist: {alpha_mask_root}")
     if len(camera_rows) > 0 and len(selected_camera_ids) == 0:
         raise ValueError("Select at least one COLMAP camera model before importing.")
     if init_mode == _COLMAP_IMPORT_DEPTH and (depth_root is None or not depth_root.exists()):
@@ -2838,6 +2923,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         colmap_root=colmap_root.resolve(),
         database_path=None if database_path is None else database_path.resolve(),
         images_root=images_root.resolve(),
+        alpha_mask_root=None if alpha_mask_root is None else alpha_mask_root.resolve(),
+        use_alpha_masks=bool(use_alpha_masks and alpha_mask_root is not None),
         selected_camera_ids=selected_camera_ids,
         depth_root=None if depth_root is None else depth_root.resolve(),
         depth_value_mode=depth_value_mode,
@@ -2892,6 +2979,8 @@ def advance_colmap_import(viewer: object) -> None:
                 custom_rotation_deg=progress.custom_rotation_deg,
             )
             progress.image_items = sorted(progress.recon.images.items())
+            progress.image_path_index = build_colmap_image_path_index(progress.images_root)
+            progress.alpha_mask_path_index = None if progress.alpha_mask_root is None else build_colmap_image_path_index(progress.alpha_mask_root)
             progress.depth_index = build_depth_path_index(progress.depth_root) if progress.init_mode == _COLMAP_IMPORT_DEPTH and progress.depth_root is not None else None
             progress.total = max(len(progress.image_items), 1)
             progress.current = 0

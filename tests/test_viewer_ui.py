@@ -190,6 +190,8 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "colmap_custom_rotation_deg",
         "colmap_training_image_color_init",
         "colmap_photometric_compensation_enabled",
+        "colmap_use_alpha_masks",
+        "colmap_alpha_mask_root",
         "colmap_depth_root",
         "colmap_fibonacci_sphere_point_count",
         "colmap_fibonacci_sphere_radius_multiplier",
