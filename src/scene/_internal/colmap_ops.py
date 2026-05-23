@@ -43,6 +43,7 @@ FIBONACCI_SPHERE_COLOR = np.array([0.8, 0.8, 0.8], dtype=np.float32)
 FIBONACCI_SPHERE_RADIUS_JITTER_RATIO = np.float32(0.10)
 FIBONACCI_SPHERE_RADIUS_JITTER_SEQUENCE = np.float32(0.41421356237)
 DIFFUSED_INIT_COVARIANCE_NEIGHBOR_COUNT = 8
+_AMBIGUOUS_IMAGE_PATH = object()
 
 
 @dataclass(slots=True)
@@ -86,6 +87,61 @@ def _world_to_camera_from_pose(pose: np.ndarray) -> tuple[np.ndarray, np.ndarray
 def _rotation_to_quaternion_wxyz(rotation: np.ndarray) -> np.ndarray:
     quat_xyzw = Rotation.from_matrix(np.asarray(rotation, dtype=np.float64).reshape(3, 3)).as_quat().astype(np.float32)
     return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float32)
+
+
+def _normalize_colmap_image_key(path_value: Path | str, *, basename_only: bool = False, drop_suffix: bool = False) -> str:
+    path = Path(path_value)
+    if basename_only:
+        path = Path(path.name)
+    if drop_suffix:
+        path = path.with_suffix("")
+    text = str(path).replace("\\", "/").strip()
+    return "" if text in {"", "."} else text.lower()
+
+
+def _register_colmap_image_key(index: dict[str, Path | object], key: str, image_path: Path) -> None:
+    if not key:
+        return
+    current = index.get(key)
+    if current is None:
+        index[key] = image_path
+    elif current != image_path:
+        index[key] = _AMBIGUOUS_IMAGE_PATH
+
+
+def build_colmap_image_path_index(images_root: Path) -> tuple[dict[str, Path | object], dict[str, Path | object]]:
+    root = Path(images_root).resolve()
+    relative_stem_index: dict[str, Path | object] = {}
+    basename_stem_index: dict[str, Path | object] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        resolved = path.resolve()
+        relative = resolved.relative_to(root)
+        _register_colmap_image_key(relative_stem_index, _normalize_colmap_image_key(relative, drop_suffix=True), resolved)
+        _register_colmap_image_key(basename_stem_index, _normalize_colmap_image_key(relative.name, basename_only=True, drop_suffix=True), resolved)
+    return relative_stem_index, basename_stem_index
+
+
+def resolve_colmap_image_path(
+    images_root: Path,
+    image_name: str,
+    *,
+    image_path_index: tuple[dict[str, Path | object], dict[str, Path | object]] | None = None,
+) -> Path | None:
+    exact_path = (Path(images_root).resolve() / Path(image_name)).resolve()
+    if exact_path.exists():
+        return exact_path
+    if image_path_index is None:
+        image_path_index = build_colmap_image_path_index(images_root)
+    relative_stem_index, basename_stem_index = image_path_index
+    relative_key = _normalize_colmap_image_key(image_name, drop_suffix=True)
+    relative_match = relative_stem_index.get(relative_key)
+    if isinstance(relative_match, Path):
+        return relative_match
+    basename_key = _normalize_colmap_image_key(image_name, basename_only=True, drop_suffix=True)
+    basename_match = basename_stem_index.get(basename_key)
+    return basename_match if isinstance(basename_match, Path) else None
 
 
 def rescale_poses_to_unit_cube(poses: np.ndarray, transform: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -457,12 +513,13 @@ def build_training_frames_from_root(
     if not images_root.exists():
         raise FileNotFoundError(f"COLMAP image directory does not exist: {images_root}")
     selected = {int(camera_id) for camera_id in selected_camera_ids}
+    image_path_index = build_colmap_image_path_index(images_root)
     tasks = []
     for image_id, image in sorted(recon.images.items()):
         if selected and int(image.camera_id) not in selected:
             continue
-        image_path, camera = (images_root / image.name).resolve(), recon.cameras.get(image.camera_id)
-        if camera is None or not image_path.exists(): continue
+        image_path, camera = resolve_colmap_image_path(images_root, image.name, image_path_index=image_path_index), recon.cameras.get(image.camera_id)
+        if camera is None or image_path is None: continue
         tasks.append((image_id, image, camera, image_path, downscale_mode, downscale_max_size, downscale_scale))
     frames: list[ColmapFrame] = []
     if tasks:

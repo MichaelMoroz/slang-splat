@@ -163,6 +163,20 @@ def test_colmap_loader_and_frame_scaling(tmp_path: Path):
     assert np.all(np.isfinite(scene.positions))
 
 
+def test_build_training_frames_from_root_matches_alternate_image_extension(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
+    sparse = root / "sparse" / "0"
+    (root / "images_4" / "frame.png").unlink()
+    _write_images_bin(sparse / "images.bin", "frame.jpg")
+    Image.fromarray(np.full((100, 200, 3), 127, dtype=np.uint8), mode="RGB").save(root / "images_4" / "frame.png")
+
+    recon = load_colmap_reconstruction(root)
+    frames = colmap_ops.build_training_frames_from_root(recon, root / "images_4")
+
+    assert len(frames) == 1
+    assert frames[0].image_path == (root / "images_4" / "frame.png").resolve()
+
+
 def test_colmap_loader_autodetects_sparse_directory_without_zero(tmp_path: Path) -> None:
     root = tmp_path / "scene_sparse"
     sparse = root / "sparse"
