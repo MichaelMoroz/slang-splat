@@ -1863,6 +1863,28 @@ def test_training_targets_use_srgb_textures(device, tmp_path: Path):
     train_target = trainer.get_frame_target_texture(0, native_resolution=False)
 
     assert native_target.format == spy.Format.rgba8_unorm_srgb
+    assert train_target is native_target
+    assert trainer._loss_vars(0, step=0, target_texture=native_target)["g_TargetTextureIsLinear"] == np.uint32(0)
+    assert trainer._loss_vars(0, step=0, target_texture=train_target)["g_TargetTextureIsLinear"] == np.uint32(0)
+
+
+def test_training_targets_use_float_texture_when_render_factor_reduces_resolution(device, tmp_path: Path):
+    scene = _make_scene()
+    frame = _make_frame(tmp_path, width=64, height=64)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=32)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=123,
+    )
+
+    native_target = trainer.get_frame_target_texture(0, native_resolution=True)
+    train_target = trainer.get_frame_target_texture(0, native_resolution=False, step=0)
+
+    assert native_target.format == spy.Format.rgba8_unorm_srgb
     assert train_target.format == spy.Format.rgba32_float
     assert native_target is not train_target
     assert trainer._loss_vars(0, step=0, target_texture=native_target)["g_TargetTextureIsLinear"] == np.uint32(0)
