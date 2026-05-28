@@ -3,6 +3,8 @@
 Gaussian splat renderer and trainer built around Slang compute shaders and Slangpy.
 The main runtime target is Vulkan.
 
+<iframe src="https://github.com/sponsors/MichaelMoroz/button" title="Sponsor MichaelMoroz" height="32" width="114" style="border: 0; border-radius: 6px;"></iframe>
+
 The repository includes:
 
 - a realtime viewer with training controls and debug tooling,
