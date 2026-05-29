@@ -137,6 +137,11 @@ _VIEWPORT_OVERLAY_WIDTH = 320.0
 _VIEWPORT_OVERLAY_MIN_WIDTH = 220.0
 _VIEWPORT_OVERLAY_PADDING = 10.0
 _VIEWPORT_OVERLAY_MIN_HEIGHT = 44.0
+_VIEWPORT_CAMERA_OVERLAY_VERTEX_BUDGET = 54000
+_CAMERA_OVERLAY_POLYLINE_VERTEX_COST = 4
+_CAMERA_OVERLAY_LINE_VERTEX_COST = 8
+_CAMERA_OVERLAY_RECT_VERTEX_COST = 4
+_CAMERA_OVERLAY_GLYPH_VERTEX_COST = 4
 _TRAINING_CAMERA_COLMAP_POINT_RADIUS = 2.5
 _TRAINING_CAMERA_COLMAP_POINT_SELECTED_RADIUS = 4.0
 _TRAINING_CAMERA_COLMAP_POINT_HIT_RADIUS = 12.0
@@ -291,6 +296,107 @@ def _point_in_any_rect(point: tuple[float, float] | None, rects: tuple[tuple[flo
 
 def _should_capture_mouse_for_ui(handled: bool, inside_viewport: bool, point_in_viewport_ui: bool) -> bool:
     return bool(handled) and not (bool(inside_viewport) and not bool(point_in_viewport_ui))
+
+
+def _camera_overlay_variant(overlay: tuple, *, include_labels: bool, include_rings: bool) -> tuple:
+    near_points, far_points, connectors, sphere_rings, label_anchor, label_text, color, thickness = overlay
+    return (
+        near_points,
+        far_points,
+        connectors,
+        sphere_rings if include_rings else (),
+        label_anchor,
+        str(label_text) if include_labels else "",
+        color,
+        thickness,
+    )
+
+
+def _camera_overlay_vertex_cost(overlay: tuple) -> int:
+    near_points, far_points, connectors, sphere_rings, _label_anchor, label_text, _color, _thickness = overlay
+    vertex_count = 0
+    if len(near_points) >= 2:
+        vertex_count += _CAMERA_OVERLAY_POLYLINE_VERTEX_COST * len(near_points)
+    if len(far_points) >= 2:
+        vertex_count += _CAMERA_OVERLAY_POLYLINE_VERTEX_COST * len(far_points)
+    for ring in sphere_rings:
+        if len(ring) >= 2:
+            vertex_count += _CAMERA_OVERLAY_POLYLINE_VERTEX_COST * len(ring)
+    vertex_count += _CAMERA_OVERLAY_LINE_VERTEX_COST * len(connectors)
+    label = str(label_text)
+    if label:
+        vertex_count += _CAMERA_OVERLAY_RECT_VERTEX_COST + _CAMERA_OVERLAY_GLYPH_VERTEX_COST * len(label)
+    return vertex_count
+
+
+def _camera_overlay_total_vertex_cost(overlays: tuple[tuple, ...]) -> int:
+    return sum(_camera_overlay_vertex_cost(overlay) for overlay in overlays)
+
+
+def _evenly_spaced_indices(count: int, target_count: int) -> tuple[int, ...]:
+    if target_count <= 0 or count <= 0:
+        return ()
+    if target_count >= count:
+        return tuple(range(count))
+    raw = np.linspace(0, count - 1, target_count, dtype=np.float64)
+    indices: list[int] = []
+    used: set[int] = set()
+    for value in raw:
+        index = int(round(float(value)))
+        index = min(max(index, 0), count - 1)
+        if index in used:
+            continue
+        indices.append(index)
+        used.add(index)
+    if len(indices) >= target_count:
+        return tuple(indices[:target_count])
+    for index in range(count):
+        if index in used:
+            continue
+        indices.append(index)
+        if len(indices) >= target_count:
+            break
+    return tuple(indices)
+
+
+def _downsample_camera_overlay_budget(overlays: tuple[tuple, ...], budget: int) -> tuple[tuple, ...]:
+    if len(overlays) <= 1 or _camera_overlay_total_vertex_cost(overlays) <= budget:
+        return overlays
+
+    candidate_variants = (
+        overlays,
+        tuple(_camera_overlay_variant(overlay, include_labels=False, include_rings=True) for overlay in overlays),
+        tuple(_camera_overlay_variant(overlay, include_labels=False, include_rings=False) for overlay in overlays),
+    )
+    candidate = overlays
+    for variant in candidate_variants:
+        candidate = variant
+        if _camera_overlay_total_vertex_cost(candidate) <= budget:
+            return candidate
+
+    active_indices = tuple(index for index, overlay in enumerate(candidate) if float(overlay[7]) > 1.5)
+    min_target_count = max(1, len(active_indices))
+    total_cost = _camera_overlay_total_vertex_cost(candidate)
+    target_count = max(min_target_count, int(len(candidate) * float(budget) / max(total_cost, 1)))
+
+    def _sample(target: int) -> tuple[tuple, ...]:
+        if target >= len(candidate):
+            return candidate
+        selected = list(active_indices[:target])
+        remaining = [index for index in range(len(candidate)) if index not in active_indices]
+        remaining_needed = max(target - len(selected), 0)
+        if remaining_needed > 0 and remaining:
+            selected.extend(remaining[index] for index in _evenly_spaced_indices(len(remaining), remaining_needed))
+        selected = sorted(set(selected))
+        if len(selected) > target:
+            selected = selected[:target]
+        return tuple(candidate[index] for index in selected)
+
+    sampled = _sample(target_count)
+    while len(sampled) > min_target_count and _camera_overlay_total_vertex_cost(sampled) > budget:
+        target_count -= 1
+        sampled = _sample(target_count)
+    return sampled
 
 
 @lru_cache(maxsize=1)
@@ -1825,6 +1931,7 @@ class ToolkitWindow:
         overlays = tuple(ui._values.get("_training_view_overlay_segments", ()))
         if len(overlays) == 0:
             return
+        overlays = _downsample_camera_overlay_budget(overlays, _VIEWPORT_CAMERA_OVERLAY_VERTEX_BUDGET)
         draw_list = imgui.get_window_draw_list()
         base_x = float(image_origin.x)
         base_y = float(image_origin.y)
@@ -1839,13 +1946,13 @@ class ToolkitWindow:
             near_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in near_points]
             far_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in far_points]
             if len(near_polyline) >= 2:
-                draw_list.add_polyline(near_polyline, color_u32, imgui.ImDrawFlags_.closed.value, float(thickness))
+                draw_list.add_polyline(near_polyline, color_u32, float(thickness), imgui.ImDrawFlags_.closed.value)
             if len(far_polyline) >= 2:
-                draw_list.add_polyline(far_polyline, color_u32, imgui.ImDrawFlags_.closed.value, float(thickness))
+                draw_list.add_polyline(far_polyline, color_u32, float(thickness), imgui.ImDrawFlags_.closed.value)
             for ring in sphere_rings:
                 ring_polyline = [imgui.ImVec2(base_x + float(x), base_y + float(y)) for x, y in ring]
                 if len(ring_polyline) >= 2:
-                    draw_list.add_polyline(ring_polyline, color_u32, imgui.ImDrawFlags_.closed.value, float(max(thickness * 0.85, 1.0)))
+                    draw_list.add_polyline(ring_polyline, color_u32, float(max(thickness * 0.85, 1.0)), imgui.ImDrawFlags_.closed.value)
             for x0, y0, x1, y1 in connectors:
                 draw_list.add_line(
                     imgui.ImVec2(base_x + float(x0), base_y + float(y0)),

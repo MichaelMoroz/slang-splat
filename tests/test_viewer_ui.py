@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import slangpy as spy
 
 from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS
@@ -999,8 +1000,8 @@ def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
     rects: list[tuple[float, float, float, float]] = []
 
     class _DrawList:
-        def add_polyline(self, points, _color, _flags, thickness):
-            polylines.append(([(float(p.x), float(p.y)) for p in points], int(_flags), float(thickness)))
+        def add_polyline(self, points, _color, thickness, flags):
+            polylines.append(([(float(p.x), float(p.y)) for p in points], int(flags), float(thickness)))
 
         def add_line(self, p0, p1, _color, thickness):
             lines.append((float(p0.x), float(p0.y), float(p1.x), float(p1.y), float(thickness)))
@@ -1066,8 +1067,8 @@ def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
     texts: list[tuple[float, float, float, str]] = []
 
     class _DrawList:
-        def add_polyline(self, points, _color, _flags, thickness):
-            polylines.append(([(float(p.x), float(p.y)) for p in points], int(_flags), float(thickness)))
+        def add_polyline(self, points, _color, thickness, flags):
+            polylines.append(([(float(p.x), float(p.y)) for p in points], int(flags), float(thickness)))
 
         def add_line(self, p0, p1, _color, thickness):
             lines.append((float(p0.x), float(p0.y), float(p1.x), float(p1.y), float(thickness)))
@@ -1107,6 +1108,186 @@ def test_viewport_camera_overlays_skip_lines_when_disabled(monkeypatch) -> None:
     assert polylines == []
     assert lines == []
     assert texts == []
+
+
+def test_viewport_camera_overlays_use_imgui_bundle_polyline_argument_order(monkeypatch) -> None:
+    polyline_calls: list[tuple[float, int]] = []
+
+    class _DrawList:
+        def add_polyline(self, _points, _color, thickness, flags):
+            polyline_calls.append((float(thickness), int(flags)))
+
+        def add_line(self, *_args):
+            return None
+
+    monkeypatch.setattr(ui.imgui, "get_window_draw_list", lambda: _DrawList())
+    monkeypatch.setattr(ui.imgui, "get_font", lambda: object())
+    monkeypatch.setattr(ui.imgui, "get_font_size", lambda: 20.0)
+    toolkit = SimpleNamespace(_interface_scale_factor=lambda _ui_obj: 1.0)
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_camera_overlays": True,
+            "show_camera_labels": False,
+            "_training_view_overlay_segments": (
+                (
+                    ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)),
+                    ((9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0)),
+                    ((1.0, 2.0, 9.0, 10.0), (3.0, 4.0, 11.0, 12.0), (5.0, 6.0, 13.0, 14.0), (7.0, 8.0, 15.0, 16.0)),
+                    (
+                        ((2.0, 3.0), (4.0, 5.0), (6.0, 7.0)),
+                    ),
+                    (13.0, 14.0),
+                    "",
+                    (0.1, 0.2, 0.3, 0.4),
+                    1.5,
+                ),
+            ),
+        }
+    )
+
+    ui.ToolkitWindow._draw_viewport_camera_overlays(toolkit, viewer_ui, ui.imgui.ImVec2(10.0, 20.0))
+
+    assert polyline_calls == [
+        (1.5, int(ui.imgui.ImDrawFlags_.closed.value)),
+        (1.5, int(ui.imgui.ImDrawFlags_.closed.value)),
+        (1.275, int(ui.imgui.ImDrawFlags_.closed.value)),
+    ]
+
+
+def test_manual_camera_outline_render_path_works_without_viewer(device) -> None:
+    imgui_bundle = pytest.importorskip("imgui_bundle")
+    external_imgui = imgui_bundle.imgui
+
+    import slangpy.ui.imgui_bundle as simgui
+
+    context = simgui.create_imgui_context(640, 480)
+    external_imgui.set_current_context(context)
+    external_imgui.get_io().display_size = external_imgui.ImVec2(640.0, 480.0)
+    render_context = spy.ui.Context(device)
+    target = device.create_texture(
+        format=spy.Format.rgba8_unorm,
+        width=640,
+        height=480,
+        usage=spy.TextureUsage.render_target | spy.TextureUsage.shader_resource,
+        label="camera_overlay_manual_render_target",
+    )
+    toolkit = SimpleNamespace(_interface_scale_factor=lambda _ui_obj: 1.0)
+    overlays = (
+        (
+            ((20.0, 20.0), (60.0, 20.0), (60.0, 60.0), (20.0, 60.0)),
+            ((32.0, 32.0), (72.0, 32.0), (72.0, 72.0), (32.0, 72.0)),
+            ((20.0, 20.0, 32.0, 32.0), (60.0, 20.0, 72.0, 32.0), (60.0, 60.0, 72.0, 72.0), (20.0, 60.0, 32.0, 72.0)),
+            (
+                ((26.0, 26.0), (46.0, 26.0), (46.0, 46.0), (26.0, 46.0)),
+            ),
+            (72.0, 72.0),
+            "frame_000",
+            (0.15, 0.55, 0.95, 1.0),
+            1.5,
+        ),
+    )
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_camera_overlays": True,
+            "show_camera_labels": True,
+            "_training_view_overlay_segments": overlays,
+        }
+    )
+
+    external_imgui.new_frame()
+    external_imgui.set_next_window_pos((0.0, 0.0))
+    external_imgui.set_next_window_size((640.0, 480.0))
+    external_imgui.begin(
+        "Manual Camera Outline Render",
+        flags=external_imgui.WindowFlags_.no_title_bar.value
+        | external_imgui.WindowFlags_.no_scrollbar.value
+        | external_imgui.WindowFlags_.no_scroll_with_mouse.value,
+    )
+    origin = external_imgui.get_cursor_screen_pos()
+    ui.ToolkitWindow._draw_viewport_camera_overlays(toolkit, viewer_ui, origin)
+    external_imgui.end()
+    external_imgui.render()
+
+    draw_data = external_imgui.get_draw_data()
+    assert len(draw_data.cmd_lists) >= 1
+    assert sum(len(cmd_list.idx_buffer) for cmd_list in draw_data.cmd_lists) > 0
+
+    simgui.sync_draw_data_textures(device, render_context, draw_data)
+    encoder = device.create_command_encoder()
+    encoder.clear_texture_uint(target, clear_value=spy.uint4(0, 0, 0, 255))
+    simgui.render_imgui_draw_data(render_context, draw_data, target, encoder)
+    device.submit_command_buffer(encoder.finish())
+
+    pixels = target.to_numpy().reshape((480, 640, 4))
+    assert np.sum(pixels[..., :3]) > 0
+
+
+def test_manual_camera_outline_render_path_caps_vertex_budget(device) -> None:
+    imgui_bundle = pytest.importorskip("imgui_bundle")
+    external_imgui = imgui_bundle.imgui
+
+    import slangpy.ui.imgui_bundle as simgui
+
+    context = simgui.create_imgui_context(1600, 900)
+    external_imgui.set_current_context(context)
+    external_imgui.get_io().display_size = external_imgui.ImVec2(1600.0, 900.0)
+    render_context = spy.ui.Context(device)
+    target = device.create_texture(
+        format=spy.Format.rgba8_unorm,
+        width=1600,
+        height=900,
+        usage=spy.TextureUsage.render_target | spy.TextureUsage.shader_resource,
+        label="camera_overlay_manual_budget_target",
+    )
+    toolkit = SimpleNamespace(_interface_scale_factor=lambda _ui_obj: 1.0)
+    ring = tuple((float(i), float((i % 10) * 0.5)) for i in range(40))
+    overlays = []
+    for index in range(160):
+        offset_x = float(index % 16) * 48.0
+        offset_y = float(index // 16) * 48.0
+        near = tuple((x + offset_x, y + offset_y) for x, y in ((0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0)))
+        far = tuple((x + offset_x, y + offset_y) for x, y in ((2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)))
+        connectors = tuple((x0 + offset_x, y0 + offset_y, x1 + offset_x, y1 + offset_y) for x0, y0, x1, y1 in ((0.0, 0.0, 2.0, 2.0), (6.0, 0.0, 8.0, 2.0), (6.0, 6.0, 8.0, 8.0), (0.0, 6.0, 2.0, 8.0)))
+        sphere_rings = (
+            tuple((x + offset_x, y + offset_y) for x, y in ring),
+            tuple((x + offset_x, y + offset_y + 8.0) for x, y in ring),
+            tuple((x + offset_x + 8.0, y + offset_y) for x, y in ring),
+        )
+        overlays.append((near, far, connectors, sphere_rings, far[2], "", (0.15, 0.55, 0.95, 1.0), 1.25))
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_camera_overlays": True,
+            "show_camera_labels": False,
+            "_training_view_overlay_segments": tuple(overlays),
+        }
+    )
+
+    external_imgui.new_frame()
+    external_imgui.set_next_window_pos((0.0, 0.0))
+    external_imgui.set_next_window_size((1400.0, 800.0))
+    external_imgui.begin(
+        "Manual Camera Outline Budget",
+        flags=external_imgui.WindowFlags_.no_title_bar.value
+        | external_imgui.WindowFlags_.no_scrollbar.value
+        | external_imgui.WindowFlags_.no_scroll_with_mouse.value,
+    )
+    origin = external_imgui.get_cursor_screen_pos()
+    ui.ToolkitWindow._draw_viewport_camera_overlays(toolkit, viewer_ui, origin)
+    external_imgui.end()
+    external_imgui.render()
+
+    draw_data = external_imgui.get_draw_data()
+    max_vtx = max((len(cmd_list.vtx_buffer) for cmd_list in draw_data.cmd_lists), default=0)
+    assert max_vtx <= ui._VIEWPORT_CAMERA_OVERLAY_VERTEX_BUDGET
+
+    simgui.sync_draw_data_textures(device, render_context, draw_data)
+    encoder = device.create_command_encoder()
+    encoder.clear_texture_uint(target, clear_value=spy.uint4(0, 0, 0, 255))
+    simgui.render_imgui_draw_data(render_context, draw_data, target, encoder)
+    device.submit_command_buffer(encoder.finish())
+
+    pixels = target.to_numpy().reshape((900, 1600, 4))
+    assert np.sum(pixels[..., :3]) > 0
 
 
 def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
