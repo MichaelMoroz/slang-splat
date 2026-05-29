@@ -13,8 +13,11 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent
 _PROJECT_VENV_DIR_NAME = ".venv"
 _REQUIREMENTS_FILE_NAME = "requirements.txt"
-_WHEEL_DIR_NAME = "slangpy_wheels"
 _BOOTSTRAP_REEXEC_ENV = "SLANGPY_BOOTSTRAP_PROJECT_PYTHON"
+_SLANGPY_VERSION = "0.42.0"
+_SLANGPY_PIP_SPEC = f"slangpy=={_SLANGPY_VERSION}"
+_SLANGPY_MIN_PYTHON = (3, 9)
+_SLANGPY_MAX_PYTHON = (3, 13)
 _REEXEC_ENV_DROP_NAMES = (
     "PYTHONHOME",
     "PYTHONPATH",
@@ -111,9 +114,73 @@ def _current_interpreter_matches(path: Path) -> bool:
     return _same_path(_resolved_path(path), Path(sys.executable))
 
 
-def _create_project_venv(repo_root: Path) -> Path:
+def _python_supports_slangpy(major: int, minor: int) -> bool:
+    return _SLANGPY_MIN_PYTHON <= (major, minor) <= _SLANGPY_MAX_PYTHON
+
+
+def _current_python_supports_slangpy() -> bool:
+    return _python_supports_slangpy(sys.version_info.major, sys.version_info.minor)
+
+
+def _interpreter_version(python_executable: Path) -> tuple[int, int] | None:
+    if _current_interpreter_matches(python_executable):
+        return (sys.version_info.major, sys.version_info.minor)
     try:
-        subprocess.run([sys.executable, "-m", "venv", _PROJECT_VENV_DIR_NAME], cwd=repo_root, check=True)
+        completed = subprocess.run(
+            [str(python_executable), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.match(r"^(\d+)\.(\d+)$", completed.stdout.strip())
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def _project_python_supports_slangpy(project_python: Path) -> bool:
+    version = _interpreter_version(project_python)
+    return version is not None and _python_supports_slangpy(*version)
+
+
+def _supported_venv_python() -> Path | None:
+    if _current_python_supports_slangpy():
+        return Path(sys.executable)
+    if os.name != "nt":
+        return None
+    for minor in range(_SLANGPY_MAX_PYTHON[1], _SLANGPY_MIN_PYTHON[1] - 1, -1):
+        try:
+            completed = subprocess.run(
+                ["py", f"-3.{minor}", "-c", "import sys; print(sys.executable)"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return None
+        if completed.returncode != 0:
+            continue
+        candidate = Path(completed.stdout.strip())
+        if candidate.is_file() and _project_python_supports_slangpy(candidate):
+            return candidate
+    return None
+
+
+def _create_project_venv(repo_root: Path, *, clear: bool = False) -> Path:
+    venv_python = _supported_venv_python()
+    if venv_python is None:
+        supported = f"{_SLANGPY_MIN_PYTHON[0]}.{_SLANGPY_MIN_PYTHON[1]}-{_SLANGPY_MAX_PYTHON[0]}.{_SLANGPY_MAX_PYTHON[1]}"
+        raise RuntimeError(
+            f"Slangpy {_SLANGPY_VERSION} requires Python {supported}, but no compatible interpreter was found to create {repo_root / _PROJECT_VENV_DIR_NAME}."
+        )
+    command = [str(venv_python), "-m", "venv"]
+    if clear:
+        command.append("--clear")
+    command.append(_PROJECT_VENV_DIR_NAME)
+    try:
+        subprocess.run(command, cwd=repo_root, check=True)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"Failed to create project virtual environment at {repo_root / _PROJECT_VENV_DIR_NAME}.") from exc
     project_python = find_project_python(repo_root)
@@ -125,12 +192,17 @@ def _create_project_venv(repo_root: Path) -> Path:
 def _ensure_project_python(repo_root: Path) -> Path | None:
     project_python = find_project_python(repo_root)
     if _running_inside_virtual_environment():
-        if project_python is None:
+        if project_python is None or not _current_interpreter_matches(project_python):
             return None
-        return project_python if _current_interpreter_matches(project_python) else None
-    if project_python is not None or not _current_python_externally_managed():
+        return project_python if _project_python_supports_slangpy(project_python) else None
+    project_python_compatible = project_python is not None and _project_python_supports_slangpy(project_python)
+    if project_python_compatible:
         return project_python
-    return _create_project_venv(repo_root)
+    if project_python is not None:
+        return _create_project_venv(repo_root, clear=True)
+    if not _current_python_supports_slangpy() or _current_python_externally_managed():
+        return _create_project_venv(repo_root)
+    return None
 
 
 def _maybe_reexec_into_project_python(repo_root: Path) -> None:
@@ -198,56 +270,9 @@ def _installed_package_version(package: str) -> str | None:
         return None
 
 
-def _wheel_version(wheel_path: Path) -> str | None:
-    match = re.match(r"^[^-]+-([^-]+)-", wheel_path.name)
-    if match is None:
-        return None
-    return match.group(1)
-
-
 def _slangpy_requirement_satisfied(repo_root: Path) -> bool:
-    wheel_path = find_local_slangpy_wheel(repo_root)
-    if wheel_path is None:
-        return _slangpy_available()
-    expected_version = _wheel_version(wheel_path)
-    if expected_version is None:
-        return _slangpy_available()
-    return _installed_package_version("slangpy") == expected_version
-
-
-def _python_tag() -> str:
-    return f"cp{sys.version_info.major}{sys.version_info.minor}" if sys.implementation.name == "cpython" else ""
-
-
-def _platform_tag() -> str:
-    return sysconfig.get_platform().replace("-", "_").replace(".", "_")
-
-
-def _wheel_tags(wheel_path: Path) -> tuple[str, str, str] | None:
-    if wheel_path.suffix != ".whl":
-        return None
-    try:
-        _, python_tag, abi_tag, platform_tag = wheel_path.name[:-4].rsplit("-", 3)
-    except ValueError:
-        return None
-    return python_tag, abi_tag, platform_tag
-
-
-def find_local_slangpy_wheel(repo_root: Path | None = None) -> Path | None:
-    wheel_dir = _repo_root(repo_root) / _WHEEL_DIR_NAME
-    if not wheel_dir.is_dir():
-        return None
-    python_tag = _python_tag()
-    if not python_tag:
-        return None
-    platform_tag = _platform_tag()
-    matches = []
-    for wheel_path in wheel_dir.glob("slangpy-*.whl"):
-        tags = _wheel_tags(wheel_path)
-        if tags != (python_tag, python_tag, platform_tag):
-            continue
-        matches.append(wheel_path)
-    return sorted(matches)[-1] if matches else None
+    del repo_root
+    return _slangpy_available() and _installed_package_version("slangpy") == _SLANGPY_VERSION
 
 
 def _run_pip_install(args: list[str], repo_root: Path) -> None:
@@ -265,18 +290,15 @@ def _install_requirements(repo_root: Path) -> None:
         raise RuntimeError(f"Failed to install Python requirements from {_requirements_path(repo_root)}.") from exc
 
 
-def _install_local_wheel(wheel_path: Path, repo_root: Path) -> None:
-    try:
-        _run_pip_install(["--upgrade", str(wheel_path)], repo_root)
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to install slangpy from local wheel: {wheel_path}") from exc
-
-
 def _install_from_pip(repo_root: Path) -> None:
+    if not _current_python_supports_slangpy():
+        supported = f"{_SLANGPY_MIN_PYTHON[0]}.{_SLANGPY_MIN_PYTHON[1]}-{_SLANGPY_MAX_PYTHON[0]}.{_SLANGPY_MAX_PYTHON[1]}"
+        current = f"{sys.version_info.major}.{sys.version_info.minor}"
+        raise RuntimeError(f"Slangpy {_SLANGPY_VERSION} requires Python {supported}, but the active interpreter is Python {current}.")
     try:
-        _run_pip_install(["slangpy"], repo_root)
+        _run_pip_install(["--upgrade", _SLANGPY_PIP_SPEC], repo_root)
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError("Failed to install slangpy from pip.") from exc
+        raise RuntimeError(f"Failed to install {_SLANGPY_PIP_SPEC} from pip.") from exc
 
 
 def ensure_requirements_available(repo_root: Path | None = None) -> None:
@@ -294,23 +316,15 @@ def ensure_requirements_available(repo_root: Path | None = None) -> None:
 
 def ensure_slangpy_available(repo_root: Path | None = None) -> None:
     resolved_root = _repo_root(repo_root)
-    wheel_path = find_local_slangpy_wheel(resolved_root)
-    if wheel_path is not None:
-        if _slangpy_requirement_satisfied(resolved_root):
-            return
-        _install_local_wheel(wheel_path, resolved_root)
-    else:
-        if _slangpy_available():
-            return
-        _install_from_pip(resolved_root)
-    expected_version = _wheel_version(wheel_path) if wheel_path is not None else None
+    if _slangpy_requirement_satisfied(resolved_root):
+        return
+    _install_from_pip(resolved_root)
     installed_version = _installed_package_version("slangpy")
-    if wheel_path is not None and expected_version is not None and installed_version != expected_version:
-        raise RuntimeError(f"slangpy version {installed_version!r} is installed, but repo wheel requires {expected_version!r} from {wheel_path}.")
     importlib.invalidate_caches()
+    if installed_version != _SLANGPY_VERSION:
+        raise RuntimeError(f"slangpy version {installed_version!r} is installed, but repo requires {_SLANGPY_VERSION!r} from pip.")
     if not _slangpy_available():
-        source = str(wheel_path) if wheel_path is not None else "pip"
-        raise RuntimeError(f"slangpy is still unavailable after installation from {source}.")
+        raise RuntimeError("slangpy is still unavailable after installation from pip.")
 
 
 def ensure_project_dependencies_available(repo_root: Path | None = None) -> None:
@@ -324,6 +338,5 @@ __all__ = [
     "ensure_project_dependencies_available",
     "ensure_requirements_available",
     "ensure_slangpy_available",
-    "find_local_slangpy_wheel",
     "find_project_python",
 ]

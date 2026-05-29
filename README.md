@@ -26,17 +26,17 @@ The repository includes:
 Open an elevated PowerShell session first. Slangpy and the test suite are expected to run with elevated permissions in this repo.
 
 ```powershell
-python -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-`viewer.py` and `cli.py` install the matching local `slangpy` wheel from `slangpy_wheels` automatically on first launch when `slangpy` is missing.
+`viewer.py`, `cli.py`, and `render.py` install `slangpy==0.42.0` from pip automatically on first launch when it is missing or the wrong version is installed. SlangPy 0.42.0 currently needs Python 3.9-3.13, so prefer a Python 3.13 repo venv.
 
 `viewer.py`, `cli.py`, and `render.py` also auto-install the Python packages declared in `requirements.txt` when they are missing from the active environment.
 
-If you need `slangpy` before launching those entrypoints, install it manually from a local wheel or replace it with an editable install from your local Slangpy checkout.
+If you need `slangpy` before launching those entrypoints, install `slangpy==0.42.0` manually or replace it with an editable install from your local Slangpy checkout.
 
 Optional PyTorch support:
 

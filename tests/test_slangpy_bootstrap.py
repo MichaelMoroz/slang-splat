@@ -22,18 +22,29 @@ def _clear_modules(*names: str) -> None:
         sys.modules.pop(name, None)
 
 
-def test_find_local_slangpy_wheel_prefers_matching_interpreter_and_platform(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wheel_dir = tmp_path / "slangpy_wheels"
-    wheel_dir.mkdir()
-    expected = wheel_dir / "slangpy-0.41.0-cp313-cp313-win_amd64.whl"
-    expected.touch()
-    (wheel_dir / "slangpy-0.41.0-cp312-cp312-win_amd64.whl").touch()
-    (wheel_dir / "slangpy-0.41.0-cp313-cp313-manylinux_2_28_x86_64.whl").touch()
+def test_create_project_venv_uses_supported_python_when_current_interpreter_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    supported_python = tmp_path / "python313" / "python.exe"
+    supported_python.parent.mkdir(parents=True)
+    supported_python.write_text("", encoding="utf-8")
+    project_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    calls: list[tuple[list[str], Path, bool]] = []
 
-    monkeypatch.setattr(bootstrap, "_python_tag", lambda: "cp313")
-    monkeypatch.setattr(bootstrap, "_platform_tag", lambda: "win_amd64")
+    monkeypatch.setattr(bootstrap, "_supported_venv_python", lambda: supported_python)
 
-    assert bootstrap.find_local_slangpy_wheel(tmp_path) == expected
+    def _fake_run(arguments: list[str], cwd: Path | None = None, check: bool = False) -> subprocess.CompletedProcess[str]:
+        if arguments[:3] == [str(supported_python), "-m", "venv"]:
+            project_python.parent.mkdir(parents=True)
+            project_python.write_text("", encoding="utf-8")
+        calls.append((arguments, Path(cwd) if cwd is not None else tmp_path, check))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", _fake_run)
+
+    assert bootstrap._create_project_venv(tmp_path, clear=True) == project_python
+    assert calls == [([str(supported_python), "-m", "venv", "--clear", bootstrap._PROJECT_VENV_DIR_NAME], tmp_path.resolve(), True)]
 
 
 def test_find_project_python_prefers_repo_venv(tmp_path: Path) -> None:
@@ -104,6 +115,7 @@ def test_project_dependencies_available_reexecs_into_repo_venv_when_current_inte
     monkeypatch.setattr(sys, "orig_argv", [str(current_python), *argv], raising=False)
     monkeypatch.setattr(bootstrap, "_missing_requirements", lambda repo_root: ("numpy",))
     monkeypatch.setattr(bootstrap, "_slangpy_available", lambda: False)
+    monkeypatch.setattr(bootstrap, "_project_python_supports_slangpy", lambda project_python: True)
     monkeypatch.delenv(bootstrap._BOOTSTRAP_REEXEC_ENV, raising=False)
     monkeypatch.setenv("PYTHONHOME", "uv-home")
     monkeypatch.setenv("UV_INTERNAL__PYTHONHOME", "uv-internal-home")
@@ -150,6 +162,10 @@ def test_project_dependencies_available_creates_repo_venv_when_missing_for_exter
     monkeypatch.setattr(bootstrap, "_missing_requirements", lambda repo_root: ("numpy",))
     monkeypatch.setattr(bootstrap, "_slangpy_available", lambda: False)
     monkeypatch.setattr(bootstrap.sysconfig, "get_path", lambda name: str(externally_managed_root) if name == "stdlib" else None)
+    supported_python = tmp_path / "python313" / "python.exe"
+    supported_python.parent.mkdir(parents=True)
+    supported_python.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "_supported_venv_python", lambda: supported_python)
     monkeypatch.delenv(bootstrap._BOOTSTRAP_REEXEC_ENV, raising=False)
     monkeypatch.setenv("PYTHONHOME", "uv-home")
 
@@ -159,7 +175,7 @@ def test_project_dependencies_available_creates_repo_venv_when_missing_for_exter
         env: dict[str, str] | None = None,
         check: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        if arguments == [str(current_python), "-m", "venv", bootstrap._PROJECT_VENV_DIR_NAME]:
+        if arguments == [str(supported_python), "-m", "venv", bootstrap._PROJECT_VENV_DIR_NAME]:
             project_python.parent.mkdir(parents=True)
             project_python.write_text("", encoding="utf-8")
             calls.append(("venv", arguments, cwd, dict(env) if env is not None else None, check))
@@ -173,7 +189,7 @@ def test_project_dependencies_available_creates_repo_venv_when_missing_for_exter
         bootstrap.ensure_project_dependencies_available(tmp_path)
 
     assert exc.value.code == 0
-    assert calls[0] == ("venv", [str(current_python), "-m", "venv", bootstrap._PROJECT_VENV_DIR_NAME], tmp_path.resolve(), None, True)
+    assert calls[0] == ("venv", [str(supported_python), "-m", "venv", bootstrap._PROJECT_VENV_DIR_NAME], tmp_path.resolve(), None, True)
     assert len(calls) == 2
     relaunch_kind, relaunch_args, relaunch_cwd, relaunch_env, relaunch_check = calls[1]
     assert relaunch_kind == "reexec"
@@ -233,66 +249,42 @@ def test_project_dependencies_available_does_not_reexec_into_repo_venv_when_runn
     assert calls == ["requirements", "slangpy"]
 
 
-def test_ensure_slangpy_available_skips_install_when_present_without_repo_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bootstrap, "find_local_slangpy_wheel", lambda repo_root=None: None)
-    monkeypatch.setattr(bootstrap, "_slangpy_available", lambda: True)
-    monkeypatch.setattr(bootstrap, "_install_local_wheel", lambda wheel_path, repo_root: (_ for _ in ()).throw(AssertionError("should not install local wheel")))
+def test_ensure_slangpy_available_skips_install_when_target_version_is_already_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bootstrap, "_slangpy_requirement_satisfied", lambda repo_root: True)
     monkeypatch.setattr(bootstrap, "_install_from_pip", lambda repo_root: (_ for _ in ()).throw(AssertionError("should not install from pip")))
 
     bootstrap.ensure_slangpy_available()
 
 
-def test_ensure_slangpy_available_skips_install_when_repo_wheel_version_already_installed(
+def test_ensure_slangpy_available_installs_target_version_from_pip_when_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    wheel_path = tmp_path / "slangpy_wheels" / "slangpy-0.41.0-cp313-cp313-win_amd64.whl"
+    calls: list[Path] = []
 
-    monkeypatch.setattr(bootstrap, "find_local_slangpy_wheel", lambda repo_root=None: wheel_path)
-    monkeypatch.setattr(bootstrap, "_installed_package_version", lambda package: "0.41.0")
-    monkeypatch.setattr(bootstrap, "_install_local_wheel", lambda wheel_path, repo_root: (_ for _ in ()).throw(AssertionError("should not install local wheel")))
-    monkeypatch.setattr(bootstrap, "_install_from_pip", lambda repo_root: (_ for _ in ()).throw(AssertionError("should not install from pip")))
-
-    bootstrap.ensure_slangpy_available(tmp_path)
-
-
-def test_ensure_slangpy_available_installs_matching_local_wheel_when_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    calls: list[tuple[str, Path]] = []
-    wheel_path = tmp_path / "slangpy_wheels" / "slangpy-0.41.0-cp313-cp313-win_amd64.whl"
-    versions = iter((None, "0.41.0"))
-
-    monkeypatch.setattr(bootstrap, "find_local_slangpy_wheel", lambda repo_root=None: wheel_path)
-    monkeypatch.setattr(bootstrap, "_installed_package_version", lambda package: next(versions))
-    monkeypatch.setattr(bootstrap, "_install_local_wheel", lambda resolved_wheel, repo_root: calls.append(("wheel", resolved_wheel)))
-    monkeypatch.setattr(bootstrap, "_install_from_pip", lambda repo_root: calls.append(("pip", Path(repo_root))))
+    monkeypatch.setattr(bootstrap, "_slangpy_requirement_satisfied", lambda repo_root: False)
+    monkeypatch.setattr(bootstrap, "_install_from_pip", lambda repo_root: calls.append(Path(repo_root)))
+    monkeypatch.setattr(bootstrap, "_installed_package_version", lambda package: bootstrap._SLANGPY_VERSION)
+    monkeypatch.setattr(bootstrap, "_slangpy_available", lambda: True)
 
     bootstrap.ensure_slangpy_available(tmp_path)
 
-    assert calls == [("wheel", wheel_path)]
+    assert calls == [tmp_path.resolve()]
 
 
-def test_project_dependencies_missing_when_repo_wheel_version_differs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    wheel_path = tmp_path / "slangpy_wheels" / "slangpy-0.41.0-cp313-cp313-win_amd64.whl"
+def test_project_dependencies_missing_when_slangpy_version_differs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(bootstrap, "_missing_requirements", lambda repo_root: ())
-    monkeypatch.setattr(bootstrap, "find_local_slangpy_wheel", lambda repo_root=None: wheel_path)
-    monkeypatch.setattr(bootstrap, "_installed_package_version", lambda package: "0.40.1")
+    monkeypatch.setattr(bootstrap, "_slangpy_requirement_satisfied", lambda repo_root: False)
 
     assert bootstrap._project_dependencies_missing(tmp_path)
 
 
-def test_ensure_slangpy_available_falls_back_to_pip_without_matching_wheel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    calls: list[tuple[str, Path]] = []
-    states = iter((False, True))
+def test_install_from_pip_rejects_unsupported_python(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(bootstrap, "_current_python_supports_slangpy", lambda: False)
 
-    monkeypatch.setattr(bootstrap, "_slangpy_available", lambda: next(states))
-    monkeypatch.setattr(bootstrap, "find_local_slangpy_wheel", lambda repo_root=None: None)
-    monkeypatch.setattr(bootstrap, "_install_local_wheel", lambda resolved_wheel, repo_root: calls.append(("wheel", resolved_wheel)))
-    monkeypatch.setattr(bootstrap, "_install_from_pip", lambda repo_root: calls.append(("pip", Path(repo_root))))
-
-    bootstrap.ensure_slangpy_available(tmp_path)
-
-    assert calls == [("pip", tmp_path.resolve())]
+    with pytest.raises(RuntimeError, match="requires Python"):
+        bootstrap._install_from_pip(tmp_path)
 
 
 def test_viewer_entrypoint_bootstraps_before_app_import(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
