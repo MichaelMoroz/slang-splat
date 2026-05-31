@@ -388,6 +388,13 @@ def test_build_ui_exposes_refinement_clone_scale_mul_default() -> None:
     assert "refinement_clone_scale_mul" in viewer_ui._values
 
 
+def test_build_ui_exposes_raster_grad_distance_defaults() -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+
+    assert "raster_grad_distance_power" in viewer_ui._values
+    assert "raster_grad_distance_bias" in viewer_ui._values
+
+
 def test_train_setup_exposes_global_sh_cap_and_target_alpha_mode_controls() -> None:
     setup_keys = {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
 
@@ -1290,6 +1297,61 @@ def test_manual_camera_outline_render_path_caps_vertex_budget(device) -> None:
     assert np.sum(pixels[..., :3]) > 0
 
 
+def test_manual_debug_colorbar_render_path_works_without_viewer(device, monkeypatch) -> None:
+    imgui_bundle = pytest.importorskip("imgui_bundle")
+    external_imgui = imgui_bundle.imgui
+
+    import slangpy.ui.imgui_bundle as simgui
+
+    context = simgui.create_imgui_context(640, 480)
+    external_imgui.set_current_context(context)
+    external_imgui.get_io().display_size = external_imgui.ImVec2(640.0, 480.0)
+    render_context = spy.ui.Context(device)
+    target = device.create_texture(
+        format=spy.Format.rgba8_unorm,
+        width=640,
+        height=480,
+        usage=spy.TextureUsage.render_target | spy.TextureUsage.shader_resource,
+        label="debug_colorbar_manual_render_target",
+    )
+    toolkit = SimpleNamespace(
+        _viewport_content_rect=(0.0, 0.0, 640.0, 480.0),
+        _interface_scale_factor=lambda _ui_obj: 1.0,
+    )
+    toolkit._debug_colorbar_title = lambda mode: ui.ToolkitWindow._debug_colorbar_title(toolkit, mode)
+    toolkit._debug_colorbar_tick_label = lambda mode, t, viewer_ui: ui.ToolkitWindow._debug_colorbar_tick_label(toolkit, mode, t, viewer_ui)
+    toolkit._draw_debug_colorbar_gradient = lambda draw_list, x0, y0, x1, y1: ui.ToolkitWindow._draw_debug_colorbar_gradient(toolkit, draw_list, x0, y0, x1, y1)
+    toolkit._draw_debug_colorbar_ticks = lambda draw_list, mode, x0, y0, x1, y1, viewer_ui, scale: ui.ToolkitWindow._draw_debug_colorbar_ticks(toolkit, draw_list, mode, x0, y0, x1, y1, viewer_ui, scale)
+    viewer_ui = SimpleNamespace(_values={"scale": 1.0, "debug_depth_std_min": 0.0, "debug_depth_std_max": 1.0}, _texts={})
+    monkeypatch.setattr(ui, "_debug_colorbar_mode", lambda _viewer_ui: "depth_std")
+
+    external_imgui.new_frame()
+    external_imgui.set_next_window_pos((0.0, 0.0))
+    external_imgui.set_next_window_size((640.0, 480.0))
+    external_imgui.begin(
+        "Manual Debug Colorbar Render",
+        flags=external_imgui.WindowFlags_.no_title_bar.value
+        | external_imgui.WindowFlags_.no_scrollbar.value
+        | external_imgui.WindowFlags_.no_scroll_with_mouse.value,
+    )
+    ui.ToolkitWindow._draw_debug_colorbar(toolkit, viewer_ui)
+    external_imgui.end()
+    external_imgui.render()
+
+    draw_data = external_imgui.get_draw_data()
+    assert len(draw_data.cmd_lists) >= 1
+    assert sum(len(cmd_list.idx_buffer) for cmd_list in draw_data.cmd_lists) > 0
+
+    simgui.sync_draw_data_textures(device, render_context, draw_data)
+    encoder = device.create_command_encoder()
+    encoder.clear_texture_uint(target, clear_value=spy.uint4(0, 0, 0, 255))
+    simgui.render_imgui_draw_data(render_context, draw_data, target, encoder)
+    device.submit_command_buffer(encoder.finish())
+
+    pixels = target.to_numpy().reshape((480, 640, 4))
+    assert np.sum(pixels[..., :3]) > 0
+
+
 def test_training_views_window_docks_and_uses_imgui_table(monkeypatch) -> None:
     dock_calls: list[tuple[int, int]] = []
     table_columns: list[str] = []
@@ -2041,6 +2103,8 @@ def test_main_menu_bar_draws_right_aligned_status(monkeypatch) -> None:
     monkeypatch.setattr(ui.ToolkitWindow, "_draw_file_menu", lambda self, viewer_ui: None)
     monkeypatch.setattr(ui.ToolkitWindow, "_draw_view_menu", lambda self, viewer_ui: None)
     monkeypatch.setattr(ui.ToolkitWindow, "_draw_debug_menu", lambda self, viewer_ui: None)
+    monkeypatch.setattr(ui.ToolkitWindow, "_draw_settings_menu", lambda self, viewer_ui: None)
+    monkeypatch.setattr(ui.ToolkitWindow, "_draw_training_menu", lambda self, viewer_ui: None)
     monkeypatch.setattr(ui.ToolkitWindow, "_draw_help_menu", lambda self: None)
     toolkit = SimpleNamespace(
         tk=SimpleNamespace(fps_history=[58.25]),
@@ -2123,7 +2187,7 @@ def test_debug_colorbar_height_scales_with_interface_scale(monkeypatch) -> None:
         def add_text(self, *_args):
             return None
 
-        def add_rect(self, *_args):
+        def add_rect(self, *_args, **_kwargs):
             return None
 
     monkeypatch.setattr(ui, "_debug_colorbar_mode", lambda _viewer_ui: "depth_std")
@@ -2141,6 +2205,34 @@ def test_debug_colorbar_height_scales_with_interface_scale(monkeypatch) -> None:
 
     assert len(boxes) == 2
     assert boxes[1][0] > boxes[0][0] * 1.5
+
+
+def test_debug_colorbar_outline_uses_imgui_bundle_rect_argument_order(monkeypatch) -> None:
+    rect_calls: list[tuple[float, float, int]] = []
+
+    class _DrawList:
+        def add_rect_filled(self, *_args):
+            return None
+
+        def add_text(self, *_args):
+            return None
+
+        def add_rect(self, _p0, _p1, _color, rounding=0.0, thickness=1.0, flags=0):
+            rect_calls.append((float(rounding), float(thickness), int(flags)))
+
+    monkeypatch.setattr(ui, "_debug_colorbar_mode", lambda _viewer_ui: "depth_std")
+    monkeypatch.setattr(ui.imgui, "get_foreground_draw_list", lambda: _DrawList())
+    toolkit = SimpleNamespace(
+        _viewport_content_rect=(0.0, 0.0, 800.0, 600.0),
+        _interface_scale_factor=lambda viewer_ui: float(viewer_ui._values["scale"]),
+        _debug_colorbar_title=lambda _mode: "Depth Std",
+        _draw_debug_colorbar_gradient=lambda *_args: None,
+        _draw_debug_colorbar_ticks=lambda *_args: None,
+    )
+
+    ui.ToolkitWindow._draw_debug_colorbar(toolkit, SimpleNamespace(_values={"scale": 1.5}, _texts={}))
+
+    assert rect_calls == [(3.0, 1.5, 0)]
 
 
 def test_apply_visual_state_applies_theme_scale(monkeypatch) -> None:
@@ -2254,6 +2346,8 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "position_push_away_from_camera_step" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "raster_grad_distance_power" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
+    assert "raster_grad_distance_bias" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "ssim_c2" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_min" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "depth_ratio_grad_max" not in ui._OPTIMIZER_TAB_KEYS["Regularization"]

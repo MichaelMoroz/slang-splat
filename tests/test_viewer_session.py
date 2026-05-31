@@ -1503,12 +1503,14 @@ def test_rebind_renderer_preserves_refinement_history() -> None:
         optimizer=optimizer,
         training=SimpleNamespace(train_downscale_factor=1),
         state=SimpleNamespace(step=7),
+        training_resolutions_vary=lambda _step: True,
         _scene_count=32,
         _refinement_splat_capacity=32,
         _max_training_resolution=lambda _step: (80, 40),
         effective_train_downscale_factor=lambda _step: 1,
         _ensure_training_buffers=lambda splat_count, batch_step_count=1: calls.append(("training_buffers", (splat_count, batch_step_count))),
         _ensure_refinement_buffers=lambda splat_count: calls.append(("refinement_buffers", splat_count)),
+        _ensure_renderer_workspace=lambda splat_count: calls.append(("workspace", splat_count)),
         _ensure_train_target_texture=lambda: calls.append(("target", None)),
         _invalidate_downscaled_target=lambda: calls.append(("invalidate", None)),
         apply_renderer_training_hparams=lambda step=None, renderer=None: calls.append(("params", (step, renderer))),
@@ -1525,6 +1527,7 @@ def test_rebind_renderer_preserves_refinement_history() -> None:
         ("params", (None, renderer)),
         ("training_buffers", (32, 1)),
         ("refinement_buffers", 32),
+        ("workspace", 32),
         ("clear", True),
         ("target", None),
         ("invalidate", None),
@@ -2554,7 +2557,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.fibonacci_sphere_radius_multiplier == 2.0
     assert defaults.fibonacci_sphere_color == pytest.approx((0.8, 0.8, 0.8))
     assert isinstance(defaults.fibonacci_sphere_upper_hemisphere_only, bool)
-    assert defaults.target_alpha_threshold == pytest.approx(0.5)
+    assert defaults.target_alpha_threshold == pytest.approx(session._DEFAULT_TARGET_ALPHA_THRESHOLD)
     assert defaults.use_target_alpha_mask is False
 
 
@@ -3050,7 +3053,12 @@ def test_build_initial_training_scene_uses_cached_diffused_points(monkeypatch) -
     monkeypatch.setattr(
         session,
         "_diffused_pointcloud_init_hparams_from_positions",
-        lambda recon, positions, init_hparams, nn_radius_scale_coef, min_track_length: SimpleNamespace(base_scale=0.25) if np.array_equal(positions, cached_positions) and int(min_track_length) == 3 else (_ for _ in ()).throw(AssertionError("cached positions not used")),
+        lambda recon, positions, init_hparams, nn_radius_scale_coef, min_track_length, init_neighbor_count, init_anisotropy_strength: GaussianInitHyperParams(base_scale=0.25)
+        if np.array_equal(positions, cached_positions)
+        and int(min_track_length) == 3
+        and int(init_neighbor_count) >= 2
+        and 0.0 <= float(init_anisotropy_strength) <= 1.0
+        else (_ for _ in ()).throw(AssertionError("cached positions not used")),
     )
     monkeypatch.setattr(session, "initialize_scene_from_points_colors", lambda positions, colors, seed, init_hparams: built_scene if np.array_equal(positions, cached_positions) and np.array_equal(colors, cached_colors) else (_ for _ in ()).throw(AssertionError("cached init data not forwarded")))
 
@@ -3120,8 +3128,12 @@ def test_build_initial_training_scene_uses_cached_mesh_points(monkeypatch) -> No
     monkeypatch.setattr(
         session,
         "_sampled_point_init_hparams_from_positions",
-        lambda positions, max_gaussians, init_hparams, nn_radius_scale_coef: SimpleNamespace(base_scale=0.125)
-        if np.array_equal(positions, cached_positions) and int(max_gaussians) == cached_positions.shape[0] and float(nn_radius_scale_coef) == 0.25
+        lambda positions, max_gaussians, init_hparams, nn_radius_scale_coef, init_neighbor_count, init_anisotropy_strength: GaussianInitHyperParams(base_scale=0.125)
+        if np.array_equal(positions, cached_positions)
+        and int(max_gaussians) == cached_positions.shape[0]
+        and float(nn_radius_scale_coef) == 0.25
+        and int(init_neighbor_count) >= 2
+        and 0.0 <= float(init_anisotropy_strength) <= 1.0
         else (_ for _ in ()).throw(AssertionError("unexpected mesh init hparams request")),
     )
     monkeypatch.setattr(
@@ -3145,7 +3157,14 @@ def test_sampled_point_init_hparams_disables_mesh_position_jitter(monkeypatch) -
     monkeypatch.setattr(session, "resolve_points_init_hparams", lambda pts, max_gaussians, init_hparams: resolved if np.array_equal(pts, positions) and int(max_gaussians) == 2 else (_ for _ in ()).throw(AssertionError("unexpected init hparams request")))
     monkeypatch.setattr(session, "point_nn_scales", lambda pts: np.array([2.0, 4.0], dtype=np.float32) if np.array_equal(pts, positions[:2]) else (_ for _ in ()).throw(AssertionError("unexpected nn scale request")))
 
-    result = session._sampled_point_init_hparams_from_positions(positions, 2, SimpleNamespace(), 0.25)
+    result = session._sampled_point_init_hparams_from_positions(
+        positions,
+        2,
+        SimpleNamespace(),
+        0.25,
+        session.DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
+        session.DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
+    )
 
     assert result.position_jitter_std == 0.0
     assert result.base_scale == 0.75
@@ -3200,14 +3219,14 @@ def test_build_initial_training_scene_combines_fibonacci_as_separate_source(monk
     monkeypatch.setattr(
         session,
         "_pointcloud_init_hparams_from_positions",
-        lambda recon, positions, max_gaussians, init_hparams, nn_radius_scale_coef, min_track_length: SimpleNamespace(base_scale=0.5)
+        lambda recon, positions, max_gaussians, init_hparams, nn_radius_scale_coef, min_track_length, init_neighbor_count, init_anisotropy_strength: GaussianInitHyperParams(base_scale=0.5)
         if np.array_equal(positions, point_positions) and int(max_gaussians) == point_positions.shape[0]
         else (_ for _ in ()).throw(AssertionError("fibonacci source leaked into pointcloud initialization")),
     )
     monkeypatch.setattr(
         session,
         "_sampled_point_init_hparams_from_positions",
-        lambda positions, max_gaussians, init_hparams, nn_radius_scale_coef: SimpleNamespace(base_scale=0.25)
+        lambda positions, max_gaussians, init_hparams, nn_radius_scale_coef, init_neighbor_count, init_anisotropy_strength: GaussianInitHyperParams(base_scale=0.25)
         if np.array_equal(positions, fibonacci_positions) and int(max_gaussians) == fibonacci_positions.shape[0]
         else (_ for _ in ()).throw(AssertionError("unexpected fibonacci init request")),
     )
@@ -3265,15 +3284,15 @@ def test_build_initial_training_scene_fibonacci_source_uses_own_nn_coef(monkeypa
     def _resolved_init(recon, positions, *args):
         del recon
         assert np.array_equal(positions, base_positions)
-        nn_radius_scale_coef = float(args[-2])
-        return SimpleNamespace(position_jitter_std=None, base_scale=nn_radius_scale_coef, scale_jitter_ratio=None, initial_opacity=None)
+        nn_radius_scale_coef = float(args[2] if helper_name == "_pointcloud_init_hparams_from_positions" else args[1])
+        return GaussianInitHyperParams(position_jitter_std=None, base_scale=nn_radius_scale_coef, scale_jitter_ratio=None, initial_opacity=None)
 
     monkeypatch.setattr(session, "_ensure_cached_init_source", lambda viewer_obj, init: None)
     monkeypatch.setattr(session, helper_name, _resolved_init)
     monkeypatch.setattr(
         session,
         "_sampled_point_init_hparams_from_positions",
-        lambda positions, max_gaussians, init_hparams, nn_radius_scale_coef: SimpleNamespace(position_jitter_std=None, base_scale=float(nn_radius_scale_coef), scale_jitter_ratio=None, initial_opacity=None)
+        lambda positions, max_gaussians, init_hparams, nn_radius_scale_coef, init_neighbor_count, init_anisotropy_strength: GaussianInitHyperParams(position_jitter_std=None, base_scale=float(nn_radius_scale_coef), scale_jitter_ratio=None, initial_opacity=None)
         if np.array_equal(positions, fibonacci_positions)
         else (_ for _ in ()).throw(AssertionError("unexpected fibonacci init request")),
     )

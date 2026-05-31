@@ -2052,7 +2052,14 @@ class ToolkitWindow:
         )
         draw_list.add_text(imgui.ImVec2(box_x + 0.5 * side_pad, box_y + 0.25 * top_pad), _color_u32(*_theme_color(ui, (0.20, 0.26, 0.34, 0.95), (0.90, 0.93, 0.97, 0.95))), self._debug_colorbar_title(mode))
         self._draw_debug_colorbar_gradient(draw_list, x0, y0, x1, y1)
-        draw_list.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(*_theme_color(ui, (0.50, 0.60, 0.72, 0.95), (0.43, 0.57, 0.76, 0.95))), 2.0 * scale, 0, max(scale, 1.0))
+        draw_list.add_rect(
+            imgui.ImVec2(x0, y0),
+            imgui.ImVec2(x1, y1),
+            _color_u32(*_theme_color(ui, (0.50, 0.60, 0.72, 0.95), (0.43, 0.57, 0.76, 0.95))),
+            rounding=2.0 * scale,
+            thickness=max(scale, 1.0),
+            flags=0,
+        )
         self._draw_debug_colorbar_ticks(draw_list, mode, x0, y0, x1, y1, ui, scale)
 
     def _draw_debug_colorbar_gradient(self, draw_list: object, x0: float, y0: float, x1: float, y1: float) -> None:

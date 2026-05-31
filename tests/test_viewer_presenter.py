@@ -313,14 +313,16 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     expected_prune_floor_pct = presenter_state.resolve_refinement_prune_lowest_contribution_ratio(training, step) * 100.0
     expected_prune_now_pct = expected_prune_floor_pct
     expected_opacity_reg = presenter_state.resolve_opacity_reg_weight(training, step)
+    expected_push = presenter_state.resolve_position_push_away_from_camera_step(training, step)
+    expected_min_contrib = presenter_state.resolve_refinement_min_contribution(training, step, len(viewer.s.training_frames))
 
     assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "320x180"), ("factor", 1))),)
     assert viewer.ui._values["_training_downscale_sections"] == (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),)
     assert viewer.t("training_schedule").text == "LR Schedule: 2.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@12,225 -> 7.00e-04@30,058 -> 4.00e-04@100,000 | current=5.00e-03"
     assert schedule_sections[""] == {"step": 0, "stage": "Stage 0", "sh": "SH0"}
     assert schedule_sections["Learning Rates"] == pytest.approx({"base": 0.002, "pos": 0.25, "scale": 5.0, "rot": 1.0, "dc": 5.0, "opacity": 5.0, "sh": 0.1})
-    assert schedule_sections["Other"] == pytest.approx({"colorspace": 0.6, "dither": 0.01, "target%": expected_target_pct, "prune_floor%": expected_prune_floor_pct, "opacity_reg": expected_opacity_reg, "push": 0.005, "noise": 0.0})
-    assert refinement == pytest.approx({"every": 200, "target_now%": expected_target_now_pct, "target%": expected_target_pct, "after": 1000, "prune_now%": expected_prune_now_pct, "prune_floor%": expected_prune_floor_pct, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": 0.05, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": 1500000})
+    assert schedule_sections["Other"] == pytest.approx({"colorspace": 0.6, "dither": 0.01, "target%": expected_target_pct, "prune_floor%": expected_prune_floor_pct, "opacity_reg": expected_opacity_reg, "push": expected_push, "noise": 0.0})
+    assert refinement == pytest.approx({"every": 200, "target_now%": expected_target_now_pct, "target%": expected_target_pct, "after": 1000, "prune_now%": expected_prune_now_pct, "prune_floor%": expected_prune_floor_pct, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": expected_min_contrib, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": 1500000})
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_camera_struct_sections"] == (
         ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
