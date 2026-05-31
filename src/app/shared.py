@@ -156,6 +156,8 @@ def build_training_params(
     max_opacity_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage4", DEFAULT_MAX_OPACITY_STAGE4)),
     position_abs_max: float = TRAINING_BUILD_ARG_DEFAULTS["position_abs_max"],
     camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"],
+    raster_grad_distance_power: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_power"],
+    raster_grad_distance_bias: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_bias"],
     scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"],
     scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"],
     opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"],
@@ -320,6 +322,8 @@ def build_training_params(
     training = TrainingHyperParams(
         background=tuple(float(v) for v in np.asarray(background, dtype=np.float32).reshape(3)),
         camera_min_dist=float(camera_min_dist),
+        raster_grad_distance_power=float(raster_grad_distance_power),
+        raster_grad_distance_bias=float(raster_grad_distance_bias),
         background_mode=TRAIN_BACKGROUND_MODE_RANDOM if clamp_int(background_mode, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM,
         target_alpha_mode=resolved_target_alpha_mode,
         use_target_alpha_mask=bool(use_target_alpha_mask),

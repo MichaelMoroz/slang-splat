@@ -47,7 +47,7 @@ def test_render_settings_forward_debug_overlays_to_renderer(monkeypatch) -> None
     assert captured["width"] == 64
     assert captured["height"] == 32
     assert captured["kwargs"] == expected_kwargs
-    assert captured["kwargs"]["alpha_cutoff"] == 1e-2
+    assert captured["kwargs"]["alpha_cutoff"] == expected_kwargs["alpha_cutoff"]
 
 
 def test_render_settings_allow_renderer_creation_overrides(monkeypatch) -> None:

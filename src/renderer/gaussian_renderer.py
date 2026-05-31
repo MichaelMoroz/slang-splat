@@ -437,6 +437,13 @@ class GaussianRenderer:
     def _raster_grad_decode_scale_var(grad_scale: float) -> dict[str, object]:
         return {"g_RasterGradDecodeScale": float(grad_scale)}
 
+    @staticmethod
+    def _raster_grad_distance_scale_vars(distance_power: float, distance_bias: float) -> dict[str, object]:
+        return {
+            "g_RasterGradDistancePower": float(distance_power),
+            "g_RasterGradDistanceBias": float(distance_bias),
+        }
+
     def _raster_grad_fixed_range_vars(self) -> dict[str, object]:
         return {
             "g_CachedRasterGradFixedROLocalRange": float(self.cached_raster_grad_fixed_ro_local_range),
@@ -1603,7 +1610,16 @@ class GaussianRenderer:
             28,
         )
 
-    def _backprop_cached_raster_grads(self, encoder: spy.CommandEncoder, splat_count: int, camera: Camera, grad_scale: float = 1.0, training_workspace: Mapping[str, object] | None = None) -> None:
+    def _backprop_cached_raster_grads(
+        self,
+        encoder: spy.CommandEncoder,
+        splat_count: int,
+        camera: Camera,
+        grad_scale: float = 1.0,
+        raster_grad_distance_power: float = 0.0,
+        raster_grad_distance_bias: float = 0.0,
+        training_workspace: Mapping[str, object] | None = None,
+    ) -> None:
         self._dispatch(
             self._raster_grad_shader_set().backprop,
             encoder,
@@ -1613,6 +1629,7 @@ class GaussianRenderer:
                 **self._raster_cache_vars(),
                 **self._raster_grad_vars(training_workspace),
                 **self._raster_grad_decode_scale_var(grad_scale),
+                **self._raster_grad_distance_scale_vars(raster_grad_distance_power, raster_grad_distance_bias),
                 **self._raster_grad_fixed_range_vars(),
                 **self._prepass_uniforms(splat_count),
                 **self._raster_uniforms(np.zeros((3,), dtype=np.float32)),
@@ -2242,6 +2259,8 @@ class GaussianRenderer:
         background: np.ndarray,
         output_grad: spy.Buffer,
         grad_scale: float = 1.0,
+        raster_grad_distance_power: float = 0.0,
+        raster_grad_distance_bias: float = 0.0,
         target_texture: spy.Texture | None = None,
         use_target_alpha_mask: bool = False,
         target_alpha_threshold: float = 0.0,
@@ -2257,7 +2276,7 @@ class GaussianRenderer:
     ) -> None:
         self._require_scene()
         self._rasterize_backward(encoder, camera, background, output_grad, target_texture, use_target_alpha_mask, target_alpha_threshold, regularizer_grad, clone_counts_buffer, training_background_mode, training_background_seed, training_native_camera, training_sample_vars, gradient_stats_buffer, splat_contribution_buffer, training_workspace)
-        self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale, training_workspace)
+        self._backprop_cached_raster_grads(encoder, self._scene_count, camera, grad_scale, raster_grad_distance_power, raster_grad_distance_bias, training_workspace)
 
     def render_to_texture(
         self,

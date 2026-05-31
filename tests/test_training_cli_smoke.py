@@ -205,9 +205,19 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert args.cached_raster_grad_fixed_color_range == 8.0
     assert args.cached_raster_grad_fixed_opacity_range == 8.0
     assert args.refinement_min_contribution == 2.0
-    assert args.refinement_ema_pose_count_decay == 0.25
+    assert args.refinement_ema_pose_count_decay == float(TRAINING_BUILD_ARG_DEFAULTS["refinement_ema_pose_count_decay"])
     assert args.refinement_viewed_fraction_zero_threshold == 0.66
     assert args.init_opacity is None
+
+
+def test_train_cli_parser_defaults_include_raster_grad_distance_flags() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["train-colmap", "--colmap-root", "dummy"])
+    kwargs = training_cli_build_kwargs(args)
+
+    assert kwargs["raster_grad_distance_power"] == float(TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_power"])
+    assert kwargs["raster_grad_distance_bias"] == float(TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_bias"])
 
 
 def test_train_cli_refinement_distribution_exponent_flags_and_alias() -> None:

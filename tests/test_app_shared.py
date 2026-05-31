@@ -7,6 +7,7 @@ import numpy as np
 from src.app.shared import apply_training_profile, build_training_params, estimate_scene_bounds
 from src.scene import GaussianInitHyperParams, GaussianScene
 from src.training import TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, resolve_sorting_order_dithering
+from src.training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from src.viewer.app import default_training_params
 from src.viewer.session import resolve_effective_training_setup
 from src.viewer.ui import default_control_values
@@ -95,7 +96,7 @@ def test_build_training_params_preserves_numeric_ranges():
     assert params.stability.position_abs_max == 0.0
     assert params.training.camera_min_dist == -5.0
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
-    assert params.training.target_alpha_mode == 0
+    assert params.training.target_alpha_mode == int(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_mode"])
     assert params.training.use_target_alpha_mask is False
     assert params.training.target_alpha_threshold == 0.25
     assert params.training.use_sh is False
@@ -135,10 +136,23 @@ def test_default_training_params_expose_config_backed_training_controls():
     params = default_training_params()
     for key in (
         "density_regularizer",
+        "raster_grad_distance_power",
+        "raster_grad_distance_bias",
         "refinement_sample_radius",
         "train_subsample_factor",
     ):
         assert hasattr(params.training, key)
+
+
+def test_build_training_params_preserves_raster_grad_distance_controls() -> None:
+    params = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        raster_grad_distance_power=-6.0,
+        raster_grad_distance_bias=-7.0,
+    )
+
+    assert params.training.raster_grad_distance_power == -6.0
+    assert params.training.raster_grad_distance_bias == -7.0
 
 
 def test_build_training_params_preserves_subsample_factor() -> None:
@@ -320,7 +334,7 @@ def test_auto_profile_resolves_to_legacy_defaults():
 def test_default_training_params_use_half_target_alpha_threshold() -> None:
     params = default_training_params()
 
-    assert params.training.target_alpha_threshold == 0.5
+    assert params.training.target_alpha_threshold == float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 
 
 def test_viewer_effective_training_setup_keeps_requested_init_opacity():

@@ -9,6 +9,8 @@ import "utility/splatting/raster.slang";
 import "utility/ppisp_tonemap.slang";
 
 uniform float g_MaxAnisotropy;
+uniform float g_RasterGradDistancePower;
+uniform float g_RasterGradDistanceBias;
 uniform CameraParams g_TrainingNativeCamera;
 uniform TrainingSubsampleParams g_TrainingSubsample;
 uniform Texture2D<float4> g_Target;
@@ -78,6 +80,13 @@ bool raster_grad_include_depth()
 bool raster_cache_param_uses_depth(uint cacheParamId)
 {
     return cacheParamId == RASTER_CACHE_RO_CAMERA_Z || cacheParamId == RASTER_CACHE_SIGMA_ZZ || cacheParamId == RASTER_CACHE_SIGMA_XZ || cacheParamId == RASTER_CACHE_SIGMA_YZ;
+}
+
+float raster_grad_distance_scale(float3 position)
+{
+    float distanceToCamera = max(length(position - g_Camera.camPos), SMALL_VALUE);
+    float denom = pow(distanceToCamera, g_RasterGradDistancePower) + g_RasterGradDistanceBias;
+    return 1.0 / max(denom, SMALL_VALUE);
 }
 
 uint splat_contribution_fixed_quantize(float value)
@@ -1187,7 +1196,7 @@ void backprop_cached_raster_grads<let FixedPointMode : int>(uint3 dispatchThread
     var dpGaussian = diffPair(gaussian);
     bwd_diff(build_raster_gaussian)(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, g_Camera.camPos, g_Raster.shBand, dpGaussian, dRaster);
     Gaussian3D.Differential dGaussian = dpGaussian.getDifferential();
-    float gradScale = g_RasterGradDecodeScale;
+    float gradScale = g_RasterGradDecodeScale * raster_grad_distance_scale(gaussian.position);
     store_param_grad<3>(g_Prepass.splatCount, PARAM_POSITION_X, splatId, dGaussian.position * gradScale);
     store_param_grad<3>(g_Prepass.splatCount, PARAM_SCALE_X, splatId, dGaussian.logScale * gradScale);
     store_param_grad<4>(g_Prepass.splatCount, PARAM_ROTATION_X, splatId, dGaussian.rotation * gradScale);

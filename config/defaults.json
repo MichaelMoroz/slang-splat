@@ -15,6 +15,8 @@
     "max_opacity": 0.9999,
     "position_abs_max": 10000.0,
     "camera_min_dist": 0.1,
+    "raster_grad_distance_power": 0.5,
+    "raster_grad_distance_bias": 0.01,
     "scale_l2_weight": 0.0,
     "scale_abs_reg_weight": 0.05000000074505806,
     "sh1_reg_weight": 0.30000001192092896,
