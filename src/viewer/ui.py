@@ -14,6 +14,11 @@ import numpy as np
 import slangpy as spy
 import slangpy.ui.imgui_bundle as simgui
 from imgui_bundle import imgui, imgui_md, implot
+try:
+    from imgui_bundle import imguizmo as _imguizmo
+    _IM_GUIZMO = _imguizmo.im_guizmo
+except Exception:  # pragma: no cover - imguizmo is part of imgui_bundle but guard anyway
+    _IM_GUIZMO = None
 
 from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10
 from ..repo_defaults import json_value
@@ -935,6 +940,13 @@ class ToolkitWindow:
             capture_renderdoc_frame=_noop,
             save_defaults=_noop,
             set_graphics_api=lambda _value: None,
+            editor_select_box=_noop,
+            editor_select_range=lambda _kind: None,
+            editor_invert_selection=_noop,
+            editor_clear_selection=_noop,
+            editor_reset_box=_noop,
+            editor_resample=_noop,
+            editor_edit_properties=_noop,
         )
         self.tk = ToolkitState()
         self._alive = True
@@ -1340,6 +1352,11 @@ class ToolkitWindow:
         self._last_frame_time = now
         self._set_current_context()
         simgui.begin_frame(width, height, dt)
+        if _IM_GUIZMO is not None and bool(ui._values.get("show_splat_editor", False)):
+            try:
+                _IM_GUIZMO.begin_frame()
+            except Exception:
+                pass
         self._sync_interface_scale(ui)
         self._non_viewport_ui_capture_rects = ()
         self._non_viewport_ui_focused = False
@@ -1349,6 +1366,7 @@ class ToolkitWindow:
         self._draw_viewport_window(ui, viewport_texture, width, height)
         self._draw_debug_colorbar(ui)
         self._draw_histogram_window(ui)
+        self._draw_splat_editor_window(ui)
         self._draw_photometric_compensation_window(ui)
         self._draw_dataset_metrics_window(ui)
         self._draw_training_views_window(ui)
@@ -1767,6 +1785,8 @@ class ToolkitWindow:
                     label,
                 )
             self._draw_viewport_camera_overlays(ui, cursor)
+            self._draw_splat_editor_box_overlay(ui, cursor)
+            self._draw_splat_editor_gizmo(ui, cursor)
             overlay_origin = self._draw_viewport_view_menu(ui, cursor)
             self._draw_viewport_debug_overlay(ui, overlay_origin)
         else:
@@ -2187,6 +2207,238 @@ class ToolkitWindow:
             self.callbacks.capture_renderdoc_frame()
         imgui.end_menu()
 
+    def _draw_edit_menu(self, ui: ViewerUI) -> None:
+        if not imgui.begin_menu("Edit"):
+            return
+        selected = bool(ui._values.get("show_splat_editor", False))
+        if _menu_item("Edit Splat", selected=selected):
+            ui._values["show_splat_editor"] = not selected
+        imgui.end_menu()
+
+    def _draw_splat_editor_box_overlay(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
+        if not bool(ui._values.get("show_splat_editor", False)):
+            return
+        segments = tuple(ui._values.get("_splat_editor_box_segments", ()))
+        if len(segments) == 0:
+            return
+        draw_list = imgui.get_window_draw_list()
+        base_x, base_y = float(image_origin.x), float(image_origin.y)
+        color = _color_u32(*_theme_color(ui, (0.92, 0.55, 0.08, 0.95), (1.0, 0.7, 0.2, 0.95)))
+        thickness = max(1.5 * self._interface_scale_factor(ui), 1.0)
+        for x0, y0, x1, y1 in segments:
+            draw_list.add_line(imgui.ImVec2(base_x + float(x0), base_y + float(y0)), imgui.ImVec2(base_x + float(x1), base_y + float(y1)), color, thickness)
+
+    def _draw_splat_editor_gizmo(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
+        if _IM_GUIZMO is None or not bool(ui._values.get("show_splat_editor", False)):
+            return
+        state = ui._values.get("_splat_editor_state")
+        gizmo = ui._values.get("_splat_editor_gizmo")
+        if state is None or gizmo is None or not bool(getattr(state, "box_enabled", False)):
+            ui._values["_splat_editor_gizmo_capturing"] = False
+            return
+        try:
+            import src.viewer.splat_editor as splat_editor
+            operation = {
+                "translate": _IM_GUIZMO.OPERATION.translate,
+                "rotate": _IM_GUIZMO.OPERATION.rotate,
+                "scale": _IM_GUIZMO.OPERATION.scale,
+                "universal": _IM_GUIZMO.OPERATION.universal,
+            }.get(str(getattr(state, "gizmo_operation", "universal")), _IM_GUIZMO.OPERATION.universal)
+            _IM_GUIZMO.set_drawlist()
+            _IM_GUIZMO.set_orthographic(False)
+            _IM_GUIZMO.set_rect(float(image_origin.x), float(image_origin.y), float(gizmo["width"]), float(gizmo["height"]))
+            view = _IM_GUIZMO.Matrix16([float(v) for v in gizmo["view"]])
+            projection = _IM_GUIZMO.Matrix16([float(v) for v in gizmo["projection"]])
+            model = _IM_GUIZMO.Matrix16([float(v) for v in splat_editor.box_model_matrix(state).flatten(order="F")])
+            changed = bool(_IM_GUIZMO.manipulate(view, projection, operation, _IM_GUIZMO.MODE.world, model))
+            ui._values["_splat_editor_gizmo_capturing"] = bool(_IM_GUIZMO.is_using()) or bool(_IM_GUIZMO.is_over())
+            if changed:
+                comp = _IM_GUIZMO.decompose_matrix_to_components(model)
+                state.box_center = np.asarray(list(comp.translation.values), dtype=np.float32)
+                state.box_half_extents = np.maximum(np.abs(np.asarray(list(comp.scale.values), dtype=np.float32)), 1e-5)
+                state.box_rotation_euler = np.asarray(list(comp.rotation.values), dtype=np.float32)
+        except Exception:
+            ui._values["_splat_editor_gizmo_capturing"] = False
+
+    def _draw_splat_editor_range_histogram(self, ui: ViewerUI, kind: str, label: str, counts: np.ndarray, edges: np.ndarray, value_range: tuple[float, float]) -> tuple[float, float]:
+        scale = self._interface_scale_factor(ui)
+        counts_arr = np.asarray(counts, dtype=np.float64).reshape(-1)
+        edges_arr = np.asarray(edges, dtype=np.float64).reshape(-1)
+        imgui.text(label)
+        width = max(float(imgui.get_content_region_avail().x), 80.0)
+        height = 60.0 * scale
+        origin = imgui.get_cursor_screen_pos()
+        imgui.invisible_button(f"##editor_hist_{kind}", imgui.ImVec2(width, height))
+        active = bool(imgui.is_item_active())
+        draw_list = imgui.get_window_draw_list()
+        x0, y0 = float(origin.x), float(origin.y)
+        x1, y1 = x0 + width, y0 + height
+        draw_list.add_rect_filled(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), _color_u32(*_theme_color(ui, (0.86, 0.89, 0.93, 1.0), (0.10, 0.12, 0.15, 1.0))), 3.0 * scale)
+        if edges_arr.size < 2 or counts_arr.size == 0 or not np.all(np.isfinite(edges_arr)) or edges_arr[0] <= 0.0:
+            return value_range
+        log_lo, log_hi = float(np.log10(edges_arr[0])), float(np.log10(edges_arr[-1]))
+        span = max(log_hi - log_lo, 1e-9)
+
+        def value_to_x(value: float) -> float:
+            log_v = float(np.clip(np.log10(max(value, edges_arr[0])), log_lo, log_hi))
+            return x0 + (log_v - log_lo) / span * width
+
+        def x_to_value(px: float) -> float:
+            frac = float(np.clip((px - x0) / max(width, 1e-6), 0.0, 1.0))
+            return float(10.0 ** (log_lo + frac * span))
+
+        bar_color = _color_u32(*_theme_color(ui, (0.38, 0.66, 0.96, 0.85), (0.40, 0.62, 0.92, 0.85)))
+        max_count = max(float(counts_arr.max()), 1.0)
+        log_max = np.log10(max_count + 1.0)
+        bin_count = counts_arr.size
+        for i in range(bin_count):
+            count = counts_arr[i]
+            if count <= 0.0:
+                continue
+            bar_h = float(np.log10(count + 1.0) / log_max) * (height - 2.0 * scale)
+            bx0 = x0 + (i / bin_count) * width
+            bx1 = x0 + ((i + 1) / bin_count) * width
+            draw_list.add_rect_filled(imgui.ImVec2(bx0, y1 - bar_h), imgui.ImVec2(max(bx1 - 1.0, bx0 + 0.5), y1 - 1.0), bar_color)
+
+        lo = float(np.clip(value_range[0], edges_arr[0], edges_arr[-1]))
+        hi = float(np.clip(value_range[1], edges_arr[0], edges_arr[-1]))
+        if active:
+            mouse_x = float(imgui.get_mouse_pos().x)
+            lo_x, hi_x = value_to_x(lo), value_to_x(hi)
+            moved = x_to_value(mouse_x)
+            if abs(mouse_x - lo_x) <= abs(mouse_x - hi_x):
+                lo = min(moved, hi)
+            else:
+                hi = max(moved, lo)
+        lo_x, hi_x = value_to_x(lo), value_to_x(hi)
+        draw_list.add_rect_filled(imgui.ImVec2(lo_x, y0), imgui.ImVec2(hi_x, y1), _color_u32(*_theme_color(ui, (0.95, 0.6, 0.1, 0.22), (1.0, 0.7, 0.2, 0.22))))
+        handle_color = _color_u32(*_theme_color(ui, (0.85, 0.45, 0.05, 1.0), (1.0, 0.72, 0.25, 1.0)))
+        draw_list.add_line(imgui.ImVec2(lo_x, y0), imgui.ImVec2(lo_x, y1), handle_color, max(2.0 * scale, 1.0))
+        draw_list.add_line(imgui.ImVec2(hi_x, y0), imgui.ImVec2(hi_x, y1), handle_color, max(2.0 * scale, 1.0))
+        imgui.text_disabled(f"  [{lo:.4g}, {hi:.4g}]")
+        return (lo, hi)
+
+    def _draw_splat_editor_window(self, ui: ViewerUI) -> None:
+        if not bool(ui._values.get("show_splat_editor", False)):
+            return
+        scale = max(self._applied_interface_scale, 1.0)
+        self._dock_tool_window(imgui.Cond_.appearing.value)
+        imgui.set_next_window_pos(imgui.ImVec2(96.0 * scale, self._menu_bar_height + 64.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(360.0 * scale, 620.0 * scale), imgui.Cond_.first_use_ever.value)
+        opened, show = imgui.begin("Edit Splat", True)
+        ToolkitWindow._register_non_viewport_window(self)
+        ui._values["show_splat_editor"] = bool(show)
+        if opened:
+            state = ui._values.get("_splat_editor_state")
+            payload = ui._values.get("_splat_editor_payload") or {}
+            if state is None or not bool(payload.get("has_scene", False)):
+                imgui.text_wrapped("Load a scene (File > Load PLY) or start training to edit splats.")
+            else:
+                self._draw_splat_editor_body(ui, state, payload)
+        imgui.end()
+
+    def _draw_splat_editor_body(self, ui: ViewerUI, state: object, payload: dict) -> None:
+        scene_count = int(payload.get("scene_count", 0))
+        selected = int(payload.get("selected_count", 0))
+        imgui.text(f"Splats: {scene_count:,}    Selected: {selected:,}")
+        if bool(payload.get("editing_trainer", False)):
+            imgui.text_disabled("Editing live training scene (optimizer resets on resample/edit).")
+        imgui.separator()
+
+        imgui.text("Selection")
+        changed, box_enabled = imgui.checkbox("Bounding box selection", bool(state.box_enabled))
+        if changed:
+            state.box_enabled = bool(box_enabled)
+        if state.box_enabled:
+            center = [float(v) for v in np.asarray(state.box_center, dtype=np.float32).reshape(3)]
+            c_changed, c_val = imgui.drag_float3("Center", center, 0.01, -1e6, 1e6, "%.4f")
+            if c_changed:
+                state.box_center = np.asarray(c_val[:3], dtype=np.float32)
+            half = [float(v) for v in np.asarray(state.box_half_extents, dtype=np.float32).reshape(3)]
+            h_changed, h_val = imgui.drag_float3("Half size", half, 0.01, 1e-5, 1e6, "%.4f")
+            if h_changed:
+                state.box_half_extents = np.maximum(np.asarray(h_val[:3], dtype=np.float32), 1e-5)
+            euler = [float(v) for v in np.asarray(state.box_rotation_euler, dtype=np.float32).reshape(3)]
+            r_changed, r_val = imgui.drag_float3("Rotation (deg XYZ)", euler, 0.5, -360.0, 360.0, "%.1f")
+            if r_changed:
+                state.box_rotation_euler = np.asarray(r_val[:3], dtype=np.float32)
+            if _IM_GUIZMO is not None:
+                current_op = str(getattr(state, "gizmo_operation", "universal"))
+                imgui.text_disabled("Gizmo:")
+                for op_key, op_label in (("translate", "Move"), ("rotate", "Rotate"), ("scale", "Scale"), ("universal", "All")):
+                    imgui.same_line()
+                    if imgui.radio_button(f"{op_label}##gizmo_{op_key}", current_op == op_key):
+                        state.gizmo_operation = op_key
+            if imgui.button("Reset box to scene"):
+                self.callbacks.editor_reset_box()
+            imgui.same_line()
+            if imgui.button("Select in box"):
+                self.callbacks.editor_select_box()
+        imgui.spacing()
+
+        histograms = getattr(state, "histograms", {}) or {}
+        for kind, label in (("scale", "Total scale"), ("opacity", "Opacity"), ("color", "Color (luminance)")):
+            entry = histograms.get(kind)
+            if entry is None:
+                continue
+            counts, edges = entry
+            current_range = state.ranges.get(kind, (float(edges[0]), float(edges[-1])))
+            new_range = self._draw_splat_editor_range_histogram(ui, kind, label, counts, edges, current_range)
+            state.ranges[kind] = new_range
+            if imgui.button(f"Select {label} range##{kind}"):
+                self.callbacks.editor_select_range(kind)
+            imgui.spacing()
+
+        if imgui.button("Invert selection"):
+            self.callbacks.editor_invert_selection()
+        imgui.same_line()
+        if imgui.button("Clear selection"):
+            self.callbacks.editor_clear_selection()
+        imgui.separator()
+
+        imgui.text("Resample selection")
+        imgui.text_disabled("< 100% removes splats, > 100% subdivides to add splats.")
+        pct_changed, pct = imgui.slider_float("Amount", float(state.resample_percent), 1.0, 400.0, "%.0f%%")
+        if pct_changed:
+            state.resample_percent = float(pct)
+        if imgui.button("Resample selection##apply"):
+            self.callbacks.editor_resample()
+        imgui.separator()
+
+        imgui.text("Edit properties")
+        col_changed, edit_color = imgui.checkbox("Set color", bool(state.edit_color_enabled))
+        if col_changed:
+            state.edit_color_enabled = bool(edit_color)
+        if state.edit_color_enabled:
+            imgui.same_line()
+            color = state.edit_color
+            cc_changed, cc_val = imgui.color_edit3("##editor_color", imgui.ImVec4(float(color[0]), float(color[1]), float(color[2]), 1.0))
+            if cc_changed:
+                state.edit_color = (float(cc_val.x), float(cc_val.y), float(cc_val.z))
+        op_changed, edit_op = imgui.checkbox("Set opacity", bool(state.edit_opacity_enabled))
+        if op_changed:
+            state.edit_opacity_enabled = bool(edit_op)
+        if state.edit_opacity_enabled:
+            imgui.same_line()
+            o_changed, o_val = imgui.slider_float("##editor_opacity", float(state.edit_opacity), 0.0, 1.0, "%.3f")
+            if o_changed:
+                state.edit_opacity = float(o_val)
+        sc_changed, edit_scale = imgui.checkbox("Set total scale", bool(state.edit_scale_enabled))
+        if sc_changed:
+            state.edit_scale_enabled = bool(edit_scale)
+        if state.edit_scale_enabled:
+            imgui.same_line()
+            s_changed, s_val = imgui.drag_float("##editor_scale", float(state.edit_scale), 0.0005, 1e-5, 1e6, "%.5f")
+            if s_changed:
+                state.edit_scale = float(max(s_val, 1e-5))
+        if imgui.button("Apply property edits"):
+            self.callbacks.editor_edit_properties()
+
+        status = str(getattr(state, "status", "")).strip()
+        if status:
+            imgui.separator()
+            imgui.text_wrapped(status)
+
     def _draw_training_menu(self, ui: ViewerUI) -> None:
         if not imgui.begin_menu("Training"):
             return
@@ -2341,6 +2593,7 @@ class ToolkitWindow:
         if not imgui.begin_main_menu_bar():
             return 0.0
         ToolkitWindow._draw_file_menu(self, ui)
+        ToolkitWindow._draw_edit_menu(self, ui)
         ToolkitWindow._draw_view_menu(self, ui)
         ToolkitWindow._draw_settings_menu(self, ui)
         ToolkitWindow._draw_training_menu(self, ui)

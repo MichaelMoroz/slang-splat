@@ -2101,6 +2101,7 @@ def test_main_menu_bar_draws_right_aligned_status(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "push_style_color", lambda idx, color: pushed_colors.append((int(idx), (float(color.x), float(color.y), float(color.z), float(color.w)))))
     monkeypatch.setattr(ui.imgui, "pop_style_color", lambda count=1: pop_counts.append(int(count)))
     monkeypatch.setattr(ui.ToolkitWindow, "_draw_file_menu", lambda self, viewer_ui: None)
+    monkeypatch.setattr(ui.ToolkitWindow, "_draw_edit_menu", lambda self, viewer_ui: None)
     monkeypatch.setattr(ui.ToolkitWindow, "_draw_view_menu", lambda self, viewer_ui: None)
     monkeypatch.setattr(ui.ToolkitWindow, "_draw_debug_menu", lambda self, viewer_ui: None)
     monkeypatch.setattr(ui.ToolkitWindow, "_draw_settings_menu", lambda self, viewer_ui: None)

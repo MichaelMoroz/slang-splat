@@ -18,6 +18,7 @@ from .presenter_state import (
     _debug_frame_idx,
     _debug_view_key,
     _frame_metrics_snapshot,
+    _project_overlay_points,
     _render_stats_text,
     _run_photometric_batch,
     _run_training_batch,
@@ -27,6 +28,7 @@ from .presenter_state import (
     _ui_header_state,
     _viewport_target_size,
 )
+from . import splat_editor as splat_editor_ctrl
 from .ui_schema import PPISP_DEBUG_MODE, _DEBUG_MODE_VALUES
 
 _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access | spy.TextureUsage.copy_destination
@@ -582,6 +584,7 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_text(viewer, "dataset_metrics_status", panel_state["dataset_metrics_status"])
     _set_text(viewer, "dataset_metrics_report_path", panel_state["dataset_metrics_report_path"])
     _set_ui_value(viewer, "_training_view_overlay_segments", panel_state["training_view_overlay_segments"])
+    _update_splat_editor_panel(viewer)
     _refresh_resource_debug_snapshot(viewer)
     _refresh_menu_bar_device_vram(viewer)
     _refresh_menu_bar_resource_totals(viewer)
@@ -593,6 +596,96 @@ def update_ui_text(viewer: object, dt: float) -> None:
         _set_text(viewer, key, text)
     _set_text(viewer, "error", f"Error: {viewer.s.last_error}" if viewer.s.last_error else "")
     _update_toolkit_history(viewer, dt)
+
+
+_BOX_CORNER_SIGNS = np.array(
+    [
+        [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+        [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
+    ],
+    dtype=np.float32,
+)
+_BOX_EDGES = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7))
+
+
+def _splat_editor_box_segments(viewer: object, state: object) -> tuple[tuple[float, float, float, float], ...]:
+    camera = viewer.camera() if hasattr(viewer, "camera") else None
+    if camera is None or not hasattr(camera, "basis"):
+        return ()
+    fallback_width = int(getattr(getattr(viewer.s, "renderer", None), "width", 1))
+    fallback_height = int(getattr(getattr(viewer.s, "renderer", None), "height", 1))
+    viewport_width, viewport_height = _viewport_target_size(viewer, fallback_width, fallback_height)
+    center = np.asarray(state.box_center, dtype=np.float32).reshape(3)
+    half = np.abs(np.asarray(state.box_half_extents, dtype=np.float32).reshape(3))
+    rotation = splat_editor_ctrl.box_rotation_matrix(state)
+    corners_world = center[None, :] + (_BOX_CORNER_SIGNS * half[None, :]) @ rotation.T
+    screen, valid = _project_overlay_points(camera, corners_world, viewport_width, viewport_height)
+    if screen.size == 0:
+        return ()
+    segments: list[tuple[float, float, float, float]] = []
+    for i0, i1 in _BOX_EDGES:
+        if bool(valid[i0]) and bool(valid[i1]):
+            segments.append((float(screen[i0, 0]), float(screen[i0, 1]), float(screen[i1, 0]), float(screen[i1, 1])))
+    return tuple(segments)
+
+
+def _splat_editor_gizmo_payload(viewer: object) -> dict | None:
+    camera = viewer.camera() if hasattr(viewer, "camera") else None
+    if camera is None:
+        return None
+    fallback_width = int(getattr(getattr(viewer.s, "renderer", None), "width", 1))
+    fallback_height = int(getattr(getattr(viewer.s, "renderer", None), "height", 1))
+    viewport_width, viewport_height = _viewport_target_size(viewer, fallback_width, fallback_height)
+    matrices = splat_editor_ctrl.camera_view_projection_matrices(camera, viewport_width, viewport_height)
+    if matrices is None:
+        return None
+    view, projection = matrices
+    return {
+        "view": [float(v) for v in view.flatten(order="F")],
+        "projection": [float(v) for v in projection.flatten(order="F")],
+        "width": float(viewport_width),
+        "height": float(viewport_height),
+    }
+
+
+def _update_splat_editor_panel(viewer: object) -> None:
+    ui_values = getattr(getattr(viewer, "ui", None), "_values", None)
+    if not isinstance(ui_values, dict):
+        return
+    window_open = bool(ui_values.get("show_splat_editor", False))
+    was_open = bool(ui_values.get("_splat_editor_was_open", False))
+    ui_values["_splat_editor_was_open"] = window_open
+    if not window_open:
+        if was_open:
+            splat_editor_ctrl.clear_highlight(viewer)
+        _set_ui_value(viewer, "_splat_editor_state", None)
+        _set_ui_value(viewer, "_splat_editor_box_segments", ())
+        _set_ui_value(viewer, "_splat_editor_gizmo", None)
+        _set_ui_value(viewer, "_splat_editor_gizmo_capturing", False)
+        _set_ui_value(viewer, "_splat_editor_payload", {"has_scene": False})
+        return
+    state = splat_editor_ctrl.editor_state(viewer)
+    has_scene = splat_editor_ctrl.has_editable_scene(viewer)
+    if has_scene:
+        splat_editor_ctrl.init_box_to_scene(viewer)
+        splat_editor_ctrl.refresh_histograms(viewer)
+        splat_editor_ctrl.ensure_selection(state, splat_editor_ctrl._scene_count(viewer))
+        if not was_open:
+            splat_editor_ctrl.sync_highlight(viewer)
+    box_segments = _splat_editor_box_segments(viewer, state) if (has_scene and state.box_enabled) else ()
+    _set_ui_value(viewer, "_splat_editor_state", state)
+    _set_ui_value(viewer, "_splat_editor_box_segments", box_segments)
+    _set_ui_value(viewer, "_splat_editor_gizmo", _splat_editor_gizmo_payload(viewer) if (has_scene and state.box_enabled) else None)
+    _set_ui_value(
+        viewer,
+        "_splat_editor_payload",
+        {
+            "has_scene": has_scene,
+            "scene_count": splat_editor_ctrl._scene_count(viewer),
+            "selected_count": splat_editor_ctrl.selected_count(viewer),
+            "editing_trainer": splat_editor_ctrl.is_editing_trainer(viewer),
+        },
+    )
 
 
 def _update_toolkit_history(viewer: object, dt: float) -> None:

@@ -5,6 +5,7 @@ from dataclasses import replace
 import math
 from pathlib import Path
 import time
+import traceback
 
 import numpy as np
 import slangpy as spy
@@ -24,7 +25,7 @@ from ..training.image_color_init import TrainingImageColorInitializer
 from ..utility import SHADER_ROOT, device_type_name, drain_deferred_resource_releases, load_compute_items, load_compute_kernels, normalize3
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
-from . import frame_capture, presenter, session
+from . import frame_capture, presenter, session, splat_editor
 from .constants import _WINDOW_TITLE
 from .state import (
     COLMAP_ROTATION_MODE_AUTO,
@@ -664,6 +665,13 @@ class SplatViewer(_ViewerWindowHost):
         cb.capture_renderdoc_frame = self._capture_renderdoc_frame_callback
         cb.save_defaults = self._save_defaults_callback
         cb.set_graphics_api = self._set_graphics_api_callback
+        cb.editor_select_box = self._editor_select_box_callback
+        cb.editor_select_range = self._editor_select_range_callback
+        cb.editor_invert_selection = self._editor_invert_selection_callback
+        cb.editor_clear_selection = self._editor_clear_selection_callback
+        cb.editor_reset_box = self._editor_reset_box_callback
+        cb.editor_resample = self._editor_resample_callback
+        cb.editor_edit_properties = self._editor_edit_properties_callback
 
     def _request_exit_callback(self) -> None:
         _request_exit_confirmation(self)
@@ -679,6 +687,7 @@ class SplatViewer(_ViewerWindowHost):
             action()
         except Exception as exc:
             self.s.last_error = str(exc)
+            traceback.print_exc()
         else:
             self.s.last_error = ""
             if close_colmap_import:
@@ -838,6 +847,27 @@ class SplatViewer(_ViewerWindowHost):
     def _reset_camera_callback(self) -> None:
         self._run_action(lambda: session.reset_main_camera(self))
 
+    def _editor_select_box_callback(self) -> None:
+        self._run_action(lambda: splat_editor.select_box(self))
+
+    def _editor_select_range_callback(self, kind: str) -> None:
+        self._run_action(lambda: splat_editor.select_range(self, kind))
+
+    def _editor_invert_selection_callback(self) -> None:
+        self._run_action(lambda: splat_editor.invert_selection(self))
+
+    def _editor_clear_selection_callback(self) -> None:
+        self._run_action(lambda: splat_editor.clear_selection(self))
+
+    def _editor_reset_box_callback(self) -> None:
+        self._run_action(lambda: splat_editor.init_box_to_scene(self, force=True))
+
+    def _editor_resample_callback(self) -> None:
+        self._run_action(lambda: splat_editor.apply_resample(self))
+
+    def _editor_edit_properties_callback(self) -> None:
+        self._run_action(lambda: splat_editor.apply_edit_properties(self))
+
     def _capture_python_frame_callback(self) -> None:
         self._run_action(
             lambda: (
@@ -923,6 +953,7 @@ class SplatViewer(_ViewerWindowHost):
             self.s.training_active = False
             self.s.last_error = str(exc)
             self.s.last_render_exception = self.s.last_error
+            traceback.print_exc()
 
     def update_camera(self, dt: float) -> None:
         self.s.move_speed, self.s.fov_y = float(self.c("move_speed").value), float(self.c("fov").value)
@@ -931,7 +962,10 @@ class SplatViewer(_ViewerWindowHost):
             self.s.move_speed = max(self.s.move_speed * (_SCROLL_SPEED_BASE ** self.s.scroll_delta), 0.0)
             self.c("move_speed").value, self.s.scroll_delta = self.s.move_speed, 0.0
         mouse_delta = spy.float2(float(self.s.mouse_delta.x), float(self.s.mouse_delta.y))
-        target_rot = mouse_delta * self.s.look_speed if self.s.mouse_left else spy.float2(0.0, 0.0)
+        gizmo_busy = bool(getattr(getattr(self, "toolkit", None), "_values", {}).get("_splat_editor_gizmo_capturing", False))
+        mouse_left = bool(self.s.mouse_left) and not gizmo_busy
+        mouse_right = bool(self.s.mouse_right) and not gizmo_busy
+        target_rot = mouse_delta * self.s.look_speed if mouse_left else spy.float2(0.0, 0.0)
         self.s.rot_vel += (target_rot - self.s.rot_vel) * min(1.0, _LOOK_SMOOTH * dt)
         self.s.mouse_delta = spy.float2(0.0, 0.0)
         if float(smath.length(self.s.rot_vel)) > _VIEW_VEC_EPS:
@@ -944,7 +978,7 @@ class SplatViewer(_ViewerWindowHost):
         if scroll_active or self.s.mouse_left or self.s.mouse_right or move_length > _VIEW_VEC_EPS:
             _mark_recent_interaction(self, float(getattr(self.s, "last_time", time.perf_counter())))
         target_move = move * (self.s.move_speed / max(move_length, _VIEW_VEC_EPS)) if move_length > _VIEW_VEC_EPS else spy.float3(0.0, 0.0, 0.0)
-        if self.s.mouse_right:
+        if mouse_right:
             drag_speed = self.s.move_speed * self.s.look_speed / max(float(dt), _VIEW_VEC_EPS)
             target_move += spy.float3(-float(mouse_delta.y) * drag_speed, -float(mouse_delta.x) * drag_speed, 0.0)
         self.s.move_vel += (target_move - self.s.move_vel) * min(1.0, _MOVE_SMOOTH * dt)
