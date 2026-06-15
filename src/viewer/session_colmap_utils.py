@@ -5,7 +5,7 @@ import sqlite3
 
 import numpy as np
 
-from ..scene._internal.colmap_ops import DEPTH_INIT_VALUE_DISTANCE, DEPTH_INIT_VALUE_Z_DEPTH, resolve_colmap_image_path
+from ..scene._internal.colmap_ops import DEPTH_INIT_VALUE_DISTANCE, DEPTH_INIT_VALUE_Z_DEPTH, build_colmap_image_path_index, resolve_colmap_image_path
 from ..scene._internal.colmap_binary import _resolve_colmap_sparse_paths
 from ..scene import load_colmap_reconstruction
 from ..scene._internal.colmap_types import ColmapFrame
@@ -128,14 +128,47 @@ def _looks_like_alpha_mask_directory(path: Path) -> bool:
     return "mask" in name or "alpha" in name
 
 
+def _sample_colmap_image_names(image_names: list[str], limit: int = _COLMAP_DB_SAMPLE_LIMIT) -> list[str]:
+    """Sample image names spread across the whole list.
+
+    COLMAP names are ordered by image id, so a reconstruction that spans several
+    capture subfolders (e.g. ``A/000.png`` ... ``C/268.png``) but only ships one
+    subset on disk would never match if we only looked at the leading names. Spreading
+    the sample ensures every subset is represented.
+    """
+    names = [str(name).strip() for name in image_names if str(name).strip()]
+    cap = max(int(limit), 1)
+    if len(names) <= cap:
+        return names
+    step = len(names) / float(cap)
+    sampled = [names[min(int(index * step), len(names) - 1)] for index in range(cap)]
+    seen: set[str] = set()
+    return [name for name in sampled if not (name in seen or seen.add(name))]
+
+
 def _suggest_images_root_from_dataset_root(dataset_root: Path, image_names: list[str]) -> Path:
     root = Path(dataset_root).resolve()
-    sample_names = image_names[: min(len(image_names), _COLMAP_DB_SAMPLE_LIMIT)]
-    for candidate in _dataset_directories(root):
-        if _looks_like_depth_directory(candidate):
-            continue
+    sample_names = _sample_colmap_image_names(image_names)
+    candidates = [candidate for candidate in _dataset_directories(root) if not _looks_like_depth_directory(candidate)]
+    # Fast path: a candidate that directly contains a sampled image (handles
+    # subfolder-prefixed names and datasets that only ship part of the reconstruction).
+    for candidate in candidates:
         if any((candidate / image_name).exists() for image_name in sample_names):
             return candidate
+    # Robust fallback: match by basename / relative stem (handles extension differences,
+    # e.g. COLMAP names ``frame.jpg`` resolving to ``frame.png`` on disk).
+    best_candidate: Path | None = None
+    best_key = (0, -1)
+    for candidate in candidates:
+        index = build_colmap_image_path_index(candidate)
+        hits = sum(1 for image_name in sample_names if resolve_colmap_image_path(candidate, image_name, image_path_index=index) is not None)
+        # Prefer the most images matched, then the most specific (deepest) folder so
+        # plain names land on the leaf image directory rather than an ancestor.
+        key = (hits, len(candidate.parts))
+        if hits > 0 and key > best_key:
+            best_candidate, best_key = candidate, key
+    if best_candidate is not None:
+        return best_candidate
     raise FileNotFoundError(f"Could not find an image folder under {root} for COLMAP images: {sample_names[:4]}")
 
 

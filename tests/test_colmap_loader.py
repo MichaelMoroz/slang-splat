@@ -177,6 +177,31 @@ def test_build_training_frames_from_root_matches_alternate_image_extension(tmp_p
     assert frames[0].image_path == (root / "images_4" / "frame.png").resolve()
 
 
+def test_build_training_frames_from_root_ignores_dataset_cache(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
+    sparse = root / "sparse" / "0"
+    images_root = root / "images_4"
+    (images_root / "frame.png").unlink()
+    # COLMAP records a basename-only name while the source image lives in a
+    # subdirectory, so resolution must fall through to the basename index.
+    _write_images_bin(sparse / "images.bin", "frame.jpg")
+    sub_dir = images_root / "sub"
+    sub_dir.mkdir()
+    Image.fromarray(np.full((100, 200, 3), 127, dtype=np.uint8), mode="RGB").save(sub_dir / "frame.png")
+
+    # Precomputed BC7 textures share the source basename; they must not poison
+    # name resolution for frames matched via the basename index.
+    cache_dir = images_root / "cache" / "bc7" / "200x100"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "frame.dds").write_bytes(b"not a real dds")
+
+    recon = load_colmap_reconstruction(root)
+    frames = colmap_ops.build_training_frames_from_root(recon, images_root)
+
+    assert len(frames) == 1
+    assert frames[0].image_path == (sub_dir / "frame.png").resolve()
+
+
 def test_colmap_loader_autodetects_sparse_directory_without_zero(tmp_path: Path) -> None:
     root = tmp_path / "scene_sparse"
     sparse = root / "sparse"

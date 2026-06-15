@@ -44,6 +44,10 @@ FIBONACCI_SPHERE_RADIUS_JITTER_RATIO = np.float32(0.10)
 FIBONACCI_SPHERE_RADIUS_JITTER_SEQUENCE = np.float32(0.41421356237)
 DIFFUSED_INIT_COVARIANCE_NEIGHBOR_COUNT = 8
 _AMBIGUOUS_IMAGE_PATH = object()
+# Generated dataset artifacts (e.g. precomputed BC7 textures) live under
+# ``<images_root>/cache``; they must never be indexed as source frames because
+# their basenames collide with the real images and poison name resolution.
+_DATASET_CACHE_DIR_NAME = "cache"
 
 
 @dataclass(slots=True)
@@ -118,6 +122,8 @@ def build_colmap_image_path_index(images_root: Path) -> tuple[dict[str, Path | o
             continue
         resolved = path.resolve()
         relative = resolved.relative_to(root)
+        if relative.parts and relative.parts[0].lower() == _DATASET_CACHE_DIR_NAME:
+            continue
         _register_colmap_image_key(relative_stem_index, _normalize_colmap_image_key(relative, drop_suffix=True), resolved)
         _register_colmap_image_key(basename_stem_index, _normalize_colmap_image_key(relative.name, basename_only=True, drop_suffix=True), resolved)
     return relative_stem_index, basename_stem_index
