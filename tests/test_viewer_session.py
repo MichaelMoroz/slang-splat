@@ -377,12 +377,11 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
     assert training_renderer.copy_calls == []
 
 
-def test_reinitialize_training_scene_keeps_custom_ply_initial_step(monkeypatch) -> None:
+def test_reinitialize_training_scene_starts_custom_ply_from_step_zero(monkeypatch) -> None:
     calls: list[object] = []
     captured: dict[str, object] = {}
     applied_steps: list[int] = []
     training_renderer = _DebugTrainingRenderer()
-    custom_ply_initial_step = 33
     frame_targets = [object()]
     new_trainer = _TonemapAwareTrainer(
         target_tonemap_provider=None,
@@ -415,7 +414,6 @@ def test_reinitialize_training_scene_keeps_custom_ply_initial_step(monkeypatch) 
             diffused_point_count=100,
         ),
     )
-    monkeypatch.setattr(session, "resolve_stage_schedule_steps", lambda _training: (0, 0, 0, custom_ply_initial_step))
 
     _patch_training_scene_bootstrap(
         monkeypatch,
@@ -428,11 +426,11 @@ def test_reinitialize_training_scene_keeps_custom_ply_initial_step(monkeypatch) 
 
     session.reinitialize_training_scene(viewer)
 
+    # A custom-PLY-only init is treated like any other init source: it begins a
+    # fresh learning-rate schedule from step 0 rather than resuming at its end.
     assert captured["frame_targets_native"] == frame_targets
-    assert new_trainer.state.step == custom_ply_initial_step
-    assert new_trainer.state.last_base_lr == 0.125
-    assert new_trainer.training.train_downscale_factor == 2
-    assert applied_steps == [custom_ply_initial_step]
+    assert new_trainer.state.step == 0
+    assert applied_steps == []
 
 
 def test_initialize_training_scene_does_not_preserve_old_native_targets_on_fresh_import(monkeypatch) -> None:
