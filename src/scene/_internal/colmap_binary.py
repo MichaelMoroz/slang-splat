@@ -83,9 +83,11 @@ def _load_cameras_bin(path: Path) -> dict[int, ColmapCamera]:
     return cameras
 
 
-def _load_images_bin(path: Path) -> dict[int, ColmapImage]:
+def _load_images_bin(path: Path, *, load_observations: bool = True) -> dict[int, ColmapImage]:
     images: dict[int, ColmapImage] = {}
     point_dtype = np.dtype([("xy", "<f8", (2,)), ("point_id", "<i8")])
+    empty_xy = np.zeros((0, 2), dtype=np.float32)
+    empty_ids = np.zeros((0,), dtype=np.int64)
     with path.open("rb") as handle:
         for _ in range(_read(handle, U64)):
             image_id = _read(handle, I32)
@@ -93,15 +95,23 @@ def _load_images_bin(path: Path) -> dict[int, ColmapImage]:
             t_xyz = np.asarray(_read_f64_array(handle, 3), dtype=np.float32)
             camera_id = _read(handle, I32)
             name = _read_string(handle)
-            points2d = np.frombuffer(handle.read(_read(handle, U64) * point_dtype.itemsize), dtype=point_dtype)
+            point_count = _read(handle, U64)
+            if not load_observations:
+                # Skip past the observation block without materializing it.
+                handle.seek(point_count * point_dtype.itemsize, 1)
+                points2d_xy, points2d_point3d_ids = empty_xy, empty_ids
+            else:
+                points2d = np.frombuffer(handle.read(point_count * point_dtype.itemsize), dtype=point_dtype)
+                points2d_xy = points2d["xy"].astype(np.float32, copy=True)
+                points2d_point3d_ids = points2d["point_id"].astype(np.int64, copy=True)
             images[image_id] = ColmapImage(
                 image_id=image_id,
                 q_wxyz=q_wxyz,
                 t_xyz=t_xyz,
                 camera_id=camera_id,
                 name=name,
-                points2d_xy=points2d["xy"].astype(np.float32, copy=True),
-                points2d_point3d_ids=points2d["point_id"].astype(np.int64, copy=True),
+                points2d_xy=points2d_xy,
+                points2d_point3d_ids=points2d_point3d_ids,
             )
     return images
 
@@ -156,8 +166,10 @@ def _load_cameras_txt(path: Path) -> dict[int, ColmapCamera]:
     return cameras
 
 
-def _load_images_txt(path: Path) -> dict[int, ColmapImage]:
+def _load_images_txt(path: Path, *, load_observations: bool = True) -> dict[int, ColmapImage]:
     images: dict[int, ColmapImage] = {}
+    empty_xy = np.zeros((0, 2), dtype=np.float32)
+    empty_ids = np.zeros((0,), dtype=np.int64)
     with path.open("r", encoding="utf-8") as handle:
         while True:
             header = handle.readline()
@@ -177,16 +189,20 @@ def _load_images_txt(path: Path) -> dict[int, ColmapImage]:
             t_xyz = np.asarray([float(value) for value in tokens[5:8]], dtype=np.float32)
             camera_id = int(tokens[8])
             name = " ".join(tokens[9:])
-            point_tokens = points_line.strip().split()
-            if point_tokens:
+            # Per-image 2D observations are only needed for overlays / photometric
+            # compensation; skip the (potentially huge) parse when not requested.
+            if not load_observations:
+                points2d_xy, points2d_point3d_ids = empty_xy, empty_ids
+            else:
+                point_tokens = points_line.split()
                 if len(point_tokens) % 3 != 0:
                     raise ValueError(f"Malformed COLMAP images.txt observation line: {points_line.strip()}")
-                point_triplets = np.asarray([float(value) for value in point_tokens], dtype=np.float64).reshape(-1, 3)
-                points2d_xy = np.ascontiguousarray(point_triplets[:, :2], dtype=np.float32)
-                points2d_point3d_ids = np.ascontiguousarray(point_triplets[:, 2], dtype=np.int64)
-            else:
-                points2d_xy = np.zeros((0, 2), dtype=np.float32)
-                points2d_point3d_ids = np.zeros((0,), dtype=np.int64)
+                if point_tokens:
+                    point_triplets = np.array(point_tokens, dtype=np.float64).reshape(-1, 3)
+                    points2d_xy = np.ascontiguousarray(point_triplets[:, :2], dtype=np.float32)
+                    points2d_point3d_ids = np.ascontiguousarray(point_triplets[:, 2], dtype=np.int64)
+                else:
+                    points2d_xy, points2d_point3d_ids = empty_xy, empty_ids
             images[image_id] = ColmapImage(
                 image_id=image_id,
                 q_wxyz=q_wxyz,
@@ -206,13 +222,13 @@ def _load_points3d_txt(path: Path) -> dict[int, ColmapPoint3D]:
         if len(tokens) < 8:
             raise ValueError(f"Malformed COLMAP points3D.txt line: {line}")
         point_id = int(tokens[0])
-        xyz = np.asarray([float(value) for value in tokens[1:4]], dtype=np.float32)
-        rgb = np.asarray([int(value) for value in tokens[4:7]], dtype=np.float32) / 255.0
+        xyz = np.array(tokens[1:4], dtype=np.float32)
+        rgb = np.array(tokens[4:7], dtype=np.float32) / 255.0
         error = float(tokens[7])
-        track_tokens = tokens[8:]
-        if len(track_tokens) % 2 != 0:
+        track_token_count = len(tokens) - 8
+        if track_token_count % 2 != 0:
             raise ValueError(f"Malformed COLMAP points3D.txt track line: {line}")
-        track_length = len(track_tokens) // 2
+        track_length = track_token_count // 2
         points[point_id] = ColmapPoint3D(point_id=point_id, xyz=xyz, rgb=rgb, error=error, track_length=track_length)
     return points
 
@@ -228,7 +244,20 @@ def _resolve_colmap_sparse_paths(*sparse_dirs: Path) -> tuple[Path, Path, Path, 
     raise FileNotFoundError(f"Missing required COLMAP sparse files under: {', '.join(str(Path(path).resolve()) for path in sparse_dirs)}")
 
 
-def load_colmap_reconstruction(root: Path, sparse_subdir: str = COLMAP_DEFAULT_SPARSE_SUBDIR) -> ColmapReconstruction:
+def load_colmap_reconstruction(
+    root: Path,
+    sparse_subdir: str = COLMAP_DEFAULT_SPARSE_SUBDIR,
+    *,
+    load_points3d: bool = True,
+    load_observations: bool = True,
+) -> ColmapReconstruction:
+    """Load a COLMAP reconstruction.
+
+    ``load_points3d`` and ``load_observations`` can be disabled to skip the
+    expensive 3D point cloud and per-image 2D observation parsing when only camera
+    poses are needed (e.g. the dataset-selection preview), which is the bulk of the
+    parse cost for large reconstructions.
+    """
     root_path = Path(root).resolve()
     sparse_subdir_text = str(sparse_subdir)
     candidates = ((root_path / sparse_subdir_text).resolve() if sparse_subdir_text else root_path,)
@@ -237,10 +266,58 @@ def load_colmap_reconstruction(root: Path, sparse_subdir: str = COLMAP_DEFAULT_S
         candidates = tuple(dict.fromkeys((*candidates, (root_path / "sparse").resolve(), root_path, *child_sparse_dirs)))
     cameras_path, images_path, points_path, format_kind = _resolve_colmap_sparse_paths(*candidates)
     sparse_dir = cameras_path.parent
+    if not load_points3d:
+        points3d: dict[int, ColmapPoint3D] = {}
+    elif format_kind == "bin":
+        points3d = _load_points3d_bin(points_path)
+    else:
+        points3d = _load_points3d_txt(points_path)
     return ColmapReconstruction(
         root=root_path,
         sparse_dir=sparse_dir,
         cameras=_load_cameras_bin(cameras_path) if format_kind == "bin" else _load_cameras_txt(cameras_path),
-        images=_load_images_bin(images_path) if format_kind == "bin" else _load_images_txt(images_path),
-        points3d=_load_points3d_bin(points_path) if format_kind == "bin" else _load_points3d_txt(points_path),
+        images=(
+            _load_images_bin(images_path, load_observations=load_observations)
+            if format_kind == "bin"
+            else _load_images_txt(images_path, load_observations=load_observations)
+        ),
+        points3d=points3d,
     )
+
+
+def count_colmap_points3d(sparse_dir: Path) -> tuple[int, int]:
+    """Fast ``(total_points, tracked_points_min2)`` count without parsing coordinates.
+
+    Streams ``points3D.{txt,bin}`` and only inspects track lengths, so it is cheap
+    enough to run during the dataset-selection preview for very large point clouds.
+    """
+    sparse_path = Path(sparse_dir).resolve()
+    txt_path = sparse_path / "points3D.txt"
+    bin_path = sparse_path / "points3D.bin"
+    if txt_path.exists():
+        total = 0
+        tracked = 0
+        with txt_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                total += 1
+                # track_length = (token_count - 8) / 2; >= 2 observations.
+                if stripped.count(" ") >= 11:
+                    tracked += 1
+        return total, tracked
+    if bin_path.exists():
+        # Per record: id(u64) + xyz(3*f64) + rgb(3*u8) + error(f64) = 43 bytes,
+        # then track_length(u64), then track_length * (2*i32) bytes.
+        with bin_path.open("rb") as handle:
+            count = _read(handle, U64)
+            tracked = 0
+            for _ in range(count):
+                handle.seek(43, 1)
+                track_length = _read(handle, U64)
+                if track_length >= 2:
+                    tracked += 1
+                handle.seek(int(track_length) * 8, 1)
+        return int(count), int(tracked)
+    return 0, 0

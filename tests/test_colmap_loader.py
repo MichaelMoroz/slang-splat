@@ -21,6 +21,7 @@ from src.scene import (
     transform_poses_pca,
 )
 from src.scene._internal import colmap_ops
+from src.scene._internal.colmap_binary import count_colmap_points3d
 from src.scene._internal.colmap_ops import transform_colmap_reconstruction_custom_rotation
 from src.scene._internal.colmap_types import ColmapCamera, ColmapFrame, ColmapImage, ColmapPoint3D, ColmapReconstruction
 
@@ -131,6 +132,51 @@ def _build_tiny_colmap_text_tree(tmp_path: Path, model_name: str = "PINHOLE") ->
     _write_points3d_txt(sparse / "points3D.txt")
     Image.fromarray(np.full((100, 200, 3), 127, dtype=np.uint8), mode="RGB").save(images / "frame.png")
     return root
+
+
+def test_load_colmap_reconstruction_can_skip_points_and_observations(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_text_tree(tmp_path)
+    full = load_colmap_reconstruction(root)
+    lite = load_colmap_reconstruction(root, load_points3d=False, load_observations=False)
+    # Cameras and image poses are still fully loaded.
+    assert set(lite.cameras) == set(full.cameras)
+    assert set(lite.images) == set(full.images)
+    for image_id, image in lite.images.items():
+        np.testing.assert_array_equal(image.q_wxyz, full.images[image_id].q_wxyz)
+        np.testing.assert_array_equal(image.t_xyz, full.images[image_id].t_xyz)
+        assert image.camera_id == full.images[image_id].camera_id
+        assert image.name == full.images[image_id].name
+        # Observations are skipped.
+        assert image.points2d_xy.shape == (0, 2)
+        assert image.points2d_point3d_ids.shape == (0,)
+    # 3D points are skipped entirely.
+    assert len(lite.points3d) == 0
+    assert len(full.points3d) == 2
+
+
+def test_load_colmap_reconstruction_observations_match_when_requested(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_text_tree(tmp_path)
+    recon = load_colmap_reconstruction(root, load_observations=True)
+    image = recon.images[3]
+    # Observation line "10 20 11 30 40 -1" -> two (x, y, point3d_id) triplets.
+    np.testing.assert_allclose(image.points2d_xy, np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32))
+    np.testing.assert_array_equal(image.points2d_point3d_ids, np.array([11, -1], dtype=np.int64))
+
+
+def test_count_colmap_points3d_matches_full_load_txt(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_text_tree(tmp_path)
+    recon = load_colmap_reconstruction(root)
+    total, tracked = count_colmap_points3d(recon.sparse_dir)
+    assert total == len(recon.points3d)
+    assert tracked == sum(1 for point in recon.points3d.values() if point.track_length >= 2)
+
+
+def test_count_colmap_points3d_matches_full_load_bin(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_tree(tmp_path, model_id=1)
+    recon = load_colmap_reconstruction(root)
+    total, tracked = count_colmap_points3d(recon.sparse_dir)
+    assert total == len(recon.points3d)
+    assert tracked == sum(1 for point in recon.points3d.values() if point.track_length >= 2)
 
 
 def test_colmap_loader_and_frame_scaling(tmp_path: Path):

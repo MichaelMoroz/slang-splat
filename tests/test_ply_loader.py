@@ -131,3 +131,76 @@ def test_save_gaussian_ply_without_sh_omits_rest_properties(tmp_path) -> None:
     )
     np.testing.assert_allclose(loaded.sh_coeffs[:, 0, :], scene.sh_coeffs[:, 0, :], atol=1e-6)
     np.testing.assert_allclose(loaded.sh_coeffs[:, 1:, :], 0.0, atol=1e-6)
+
+
+def _write_point_cloud_ply(path, positions, colors=None, color_fields=("red", "green", "blue"), color_dtype="u1"):
+    fields = [("x", "f4"), ("y", "f4"), ("z", "f4")]
+    if colors is not None:
+        fields += [(name, color_dtype) for name in color_fields]
+    rows = np.empty((positions.shape[0],), dtype=fields)
+    rows["x"], rows["y"], rows["z"] = positions[:, 0], positions[:, 1], positions[:, 2]
+    if colors is not None:
+        for index, name in enumerate(color_fields):
+            rows[name] = colors[:, index]
+    PlyData([PlyElement.describe(rows, "vertex")], text=False).write(str(path))
+
+
+def test_load_point_cloud_ply_auto_detects_and_builds_opaque_splats(tmp_path):
+    rng = np.random.default_rng(0)
+    positions = rng.uniform(-2.0, 2.0, size=(50, 3)).astype(np.float32)
+    colors = np.array([[255, 128, 0]] * 50, dtype=np.uint8)
+    path = tmp_path / "cloud.ply"
+    _write_point_cloud_ply(path, positions, colors)
+
+    scene = load_gaussian_ply(path)
+
+    assert scene.count == 50
+    np.testing.assert_array_equal(scene.positions, positions)
+    # Fully opaque, identity rotation, DC-only SH (no padding to 16 coeffs).
+    np.testing.assert_allclose(scene.opacities, 1.0)
+    np.testing.assert_allclose(scene.rotations, np.tile([1.0, 0.0, 0.0, 0.0], (50, 1)))
+    assert scene.sh_coeffs.shape == (50, 1, 3)
+    # 8-bit colors decoded to [0, 1].
+    np.testing.assert_allclose(scene.colors[0], np.array([1.0, 0.502, 0.0]), atol=2e-3)
+    # Isotropic, finite scales.
+    assert np.all(scene.scales[:, 0] == scene.scales[:, 1]) and np.all(scene.scales[:, 0] == scene.scales[:, 2])
+    assert np.all(np.isfinite(scene.scales))
+
+
+def test_load_point_cloud_ply_scales_track_local_density(tmp_path):
+    # A dense cluster plus a far-apart sparse set: nearest-neighbor scaling must give the
+    # dense points smaller splats than the sparse ones (no single global scale).
+    rng = np.random.default_rng(1)
+    dense = rng.normal(0.0, 0.02, size=(200, 3)).astype(np.float32)
+    sparse = rng.uniform(-5.0, 5.0, size=(20, 3)).astype(np.float32) + 50.0
+    positions = np.concatenate([dense, sparse], axis=0)
+    path = tmp_path / "density.ply"
+    _write_point_cloud_ply(path, positions, colors=None)
+
+    scene = load_gaussian_ply(path)
+    linear_scales = np.exp(scene.scales[:, 0])
+
+    assert np.median(linear_scales[:200]) < np.median(linear_scales[200:])
+
+
+def test_load_point_cloud_ply_without_colors_defaults_to_gray(tmp_path):
+    positions = np.zeros((4, 3), dtype=np.float32)
+    positions[:, 0] = np.arange(4)
+    path = tmp_path / "nocolor.ply"
+    _write_point_cloud_ply(path, positions, colors=None)
+
+    scene = load_gaussian_ply(path)
+
+    assert scene.count == 4
+    np.testing.assert_allclose(scene.colors, 0.5)
+
+
+def test_load_point_cloud_ply_float_colors_not_rescaled(tmp_path):
+    positions = np.zeros((3, 3), dtype=np.float32)
+    colors = np.array([[0.1, 0.2, 0.3]] * 3, dtype=np.float32)
+    path = tmp_path / "floatcolor.ply"
+    _write_point_cloud_ply(path, positions, colors, color_fields=("r", "g", "b"), color_dtype="f4")
+
+    scene = load_gaussian_ply(path)
+
+    np.testing.assert_allclose(scene.colors, colors, atol=1e-6)

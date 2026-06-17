@@ -7,8 +7,10 @@ import numpy as np
 from plyfile import PlyData, PlyElement
 
 from .gaussian_scene import GaussianScene
-from .sh_utils import SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, sh_coeffs_to_display_colors
+from .sh_utils import SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 _LOGIT_EPS = 1e-6
+# A 3DGS PLY exposes per-splat opacity and SH DC terms; a plain point cloud does not.
+_GAUSSIAN_SPLAT_REQUIRED_PROPERTIES = ("opacity", "f_dc_0")
 
 
 def _sigmoid(values: np.ndarray) -> np.ndarray:
@@ -35,12 +37,65 @@ def _sorted_props(names: Iterable[str], prefix: str) -> list[str]:
     return sorted(filtered, key=to_index)
 
 
+def _point_cloud_colors(vertex: object, property_names: list[str], count: int) -> np.ndarray:
+    for channels in (("red", "green", "blue"), ("r", "g", "b"), ("diffuse_red", "diffuse_green", "diffuse_blue")):
+        if all(channel in property_names for channel in channels):
+            stacked = np.stack([np.asarray(vertex[channel], dtype=np.float32) for channel in channels], axis=1)
+            # 8-bit colors are stored 0-255; floats are already 0-1.
+            if stacked.size and float(stacked.max()) > 1.0:
+                stacked = stacked / 255.0
+            return np.clip(stacked, 0.0, 1.0).astype(np.float32, copy=False)
+    return np.full((count, 3), 0.5, dtype=np.float32)
+
+
+def _load_point_cloud_ply(vertex: object, property_names: list[str]) -> GaussianScene:
+    """Load a plain XYZ(+RGB) point cloud as a Gaussian scene of opaque splats.
+
+    Each splat is sized to its nearest-neighbor distance so density variations across the
+    cloud are respected (no global one-size-fits-all scale). SH is kept DC-only to stay
+    memory-light for very large clouds.
+    """
+    # Local import avoids a module-load cycle (colmap_ops pulls in heavy deps).
+    from ._internal.colmap_ops import point_nn_scales
+
+    count = int(vertex.count)
+    positions = np.ascontiguousarray(
+        np.stack(
+            [np.asarray(vertex["x"], dtype=np.float32), np.asarray(vertex["y"], dtype=np.float32), np.asarray(vertex["z"], dtype=np.float32)],
+            axis=1,
+        ),
+        dtype=np.float32,
+    )
+    colors = _point_cloud_colors(vertex, property_names, count)
+    # Per-point isotropic scale = distance to nearest neighbor (already clamped to a
+    # sane range), so dense regions get small splats and sparse regions larger ones.
+    nn_scales = point_nn_scales(positions)
+    scales = np.log(np.maximum(nn_scales, 1e-8)).astype(np.float32)[:, None].repeat(3, axis=1)
+    rotations = np.zeros((count, 4), dtype=np.float32)
+    rotations[:, 0] = 1.0
+    sh_coeffs = rgb_to_sh0(colors)[:, None, :].astype(np.float32, copy=False)
+    return GaussianScene(
+        positions=positions,
+        scales=scales,
+        rotations=rotations,
+        opacities=np.ones((count,), dtype=np.float32),
+        colors=colors,
+        sh_coeffs=sh_coeffs,
+    )
+
+
 def load_gaussian_ply(path: str | Path) -> GaussianScene:
     ply_data = PlyData.read(str(path))
     if len(ply_data.elements) == 0:
         raise ValueError("PLY file does not contain any elements.")
     vertex = ply_data.elements[0]
     n = int(vertex.count)
+    property_names = [prop.name for prop in vertex.properties]
+
+    # Auto-detect plain point clouds (no Gaussian-splat attributes) and load them as
+    # small opaque splats instead of failing on the missing opacity/SH properties.
+    if not all(name in property_names for name in _GAUSSIAN_SPLAT_REQUIRED_PROPERTIES):
+        return _load_point_cloud_ply(vertex, property_names)
 
     positions = np.stack(
         [
@@ -51,8 +106,6 @@ def load_gaussian_ply(path: str | Path) -> GaussianScene:
         axis=1,
     )
     opacities = _sigmoid(np.asarray(vertex["opacity"], dtype=np.float32))
-
-    property_names = [prop.name for prop in vertex.properties]
 
     scale_names = _sorted_props(property_names, "scale_")
     if scale_names:

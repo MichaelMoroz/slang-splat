@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -117,15 +118,18 @@ def build_colmap_image_path_index(images_root: Path) -> tuple[dict[str, Path | o
     root = Path(images_root).resolve()
     relative_stem_index: dict[str, Path | object] = {}
     basename_stem_index: dict[str, Path | object] = {}
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        resolved = path.resolve()
-        relative = resolved.relative_to(root)
-        if relative.parts and relative.parts[0].lower() == _DATASET_CACHE_DIR_NAME:
-            continue
-        _register_colmap_image_key(relative_stem_index, _normalize_colmap_image_key(relative, drop_suffix=True), resolved)
-        _register_colmap_image_key(basename_stem_index, _normalize_colmap_image_key(relative.name, basename_only=True, drop_suffix=True), resolved)
+    # os.walk lets us prune the generated dataset cache (potentially thousands of .dds
+    # files) without descending into it, and avoids a per-file Path.resolve() syscall
+    # (rglob already yields paths under the resolved root, so they are absolute).
+    root_str = str(root)
+    for dir_path, dir_names, file_names in os.walk(root_str):
+        if dir_path == root_str:
+            dir_names[:] = [name for name in dir_names if name.lower() != _DATASET_CACHE_DIR_NAME]
+        for file_name in file_names:
+            absolute = Path(dir_path) / file_name
+            relative = absolute.relative_to(root)
+            _register_colmap_image_key(relative_stem_index, _normalize_colmap_image_key(relative, drop_suffix=True), absolute)
+            _register_colmap_image_key(basename_stem_index, _normalize_colmap_image_key(relative.name, basename_only=True, drop_suffix=True), absolute)
     return relative_stem_index, basename_stem_index
 
 
