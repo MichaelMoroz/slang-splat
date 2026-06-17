@@ -34,6 +34,9 @@ _COLMAP_CAMERA_MODEL_NAMES = {
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
+# Frame scanning only reads image headers (cheap), so batch many per tick to avoid
+# being throttled to one image per rendered frame on large (thousands of images) sets.
+_COLMAP_IMPORT_SCAN_FRAMES_PER_TICK = 64
 _DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 
 
@@ -232,11 +235,11 @@ def _normalized_selected_camera_ids(camera_rows: tuple[dict[str, object], ...], 
     return tuple(camera_id for camera_id in camera_ids if camera_id in selected)
 
 
-def _set_colmap_camera_preview(viewer: object, recon: object, selected_camera_ids: tuple[int, ...] | None = None) -> tuple[int, ...]:
+def _set_colmap_camera_preview(viewer: object, recon: object, selected_camera_ids: tuple[int, ...] | None = None, point_stats: dict[str, int] | None = None) -> tuple[int, ...]:
     rows = _camera_rows(recon)
     selected_ids = _normalized_selected_camera_ids(rows, selected_camera_ids)
     viewer.ui._values["_colmap_camera_rows"] = rows
-    viewer.ui._values["_colmap_point_stats"] = _point_preview_stats(recon)
+    viewer.ui._values["_colmap_point_stats"] = _point_preview_stats(recon) if point_stats is None else point_stats
     viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
     return selected_ids
 

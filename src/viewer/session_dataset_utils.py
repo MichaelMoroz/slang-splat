@@ -33,13 +33,19 @@ def _dataset_cache_root(images_root: Path) -> Path:
     return Path(images_root).resolve() / "cache"
 
 
-def _dataset_bc7_cache_dir(images_root: Path, width: int, height: int) -> Path:
-    return _dataset_cache_root(images_root) / "bc7" / f"{max(int(width), 1)}x{max(int(height), 1)}"
+def _dataset_bc7_cache_dir(images_root: Path, width: int, height: int, *, subdir: str = "bc7") -> Path:
+    return _dataset_cache_root(images_root) / subdir / f"{max(int(width), 1)}x{max(int(height), 1)}"
 
 
-def _dataset_bc7_cache_path(images_root: Path, frame: ColmapFrame) -> Path:
+def _dataset_bc7_cache_path(images_root: Path, frame: ColmapFrame, *, alpha_mask_token: str | None = None) -> Path:
     relative = Path(frame.image_path).resolve().relative_to(Path(images_root).resolve())
-    return (_dataset_bc7_cache_dir(images_root, frame.width, frame.height) / relative).with_suffix(".dds")
+    if alpha_mask_token is None:
+        return (_dataset_bc7_cache_dir(images_root, frame.width, frame.height) / relative).with_suffix(".dds")
+    # Alpha-masked textures live in a separate cache keyed by the mask's identity so
+    # they never collide with the unmasked cache and are invalidated when the mask
+    # file changes.
+    masked = _dataset_bc7_cache_dir(images_root, frame.width, frame.height, subdir="bc7_masked") / relative
+    return masked.with_suffix(f".{alpha_mask_token}.dds")
 
 
 def _bc_payload_byte_count(width: int, height: int, format: spy.Format) -> int:

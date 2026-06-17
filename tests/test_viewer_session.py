@@ -50,9 +50,10 @@ def _viewer() -> SimpleNamespace:
     )
 
 
-def test_resolve_viewer_image_io_threads_uses_half_physical_cores() -> None:
-    assert session._resolve_viewer_image_io_threads(16) == 8
-    assert session._resolve_viewer_image_io_threads(7) == 3
+def test_resolve_viewer_image_io_threads_uses_all_but_one_thread() -> None:
+    assert session._resolve_viewer_image_io_threads(16) == 15
+    assert session._resolve_viewer_image_io_threads(7) == 6
+    assert session._resolve_viewer_image_io_threads(2) == 1
     assert session._resolve_viewer_image_io_threads(1) == 1
 
 
@@ -131,6 +132,70 @@ def test_load_dataset_texture_replaces_alpha_from_mask_folder(tmp_path: Path) ->
 
     assert isinstance(result, np.ndarray)
     assert np.array_equal(result[:, :, :3], rgba[:, :, :3])
+    assert np.array_equal(result[:, :, 3], mask)
+
+
+def test_bc7_with_alpha_mask_bakes_mask_caches_separately_and_reuses(tmp_path: Path, monkeypatch) -> None:
+    images_root = (tmp_path / "images").resolve()
+    mask_root = (tmp_path / "masks").resolve()
+    images_root.mkdir()
+    mask_root.mkdir()
+    image_path = images_root / "frame.png"
+    rgba = np.zeros((3, 4, 4), dtype=np.uint8)
+    rgba[:, :, :3] = 100
+    rgba[:, :, 3] = 255
+    mask = np.array([[0, 64, 128, 255], [255, 128, 64, 0], [32, 96, 160, 224]], dtype=np.uint8)
+    Image.fromarray(rgba, mode="RGBA").save(image_path)
+    Image.fromarray(mask, mode="L").save(mask_root / "frame.png")
+    frame = ColmapFrame(image_id=1, image_path=image_path, q_wxyz=_identity_q(), t_xyz=np.zeros((3,), dtype=np.float32), fx=4.0, fy=3.0, cx=2.0, cy=1.5, width=4, height=3)
+    mask_index = session.build_colmap_image_path_index(mask_root)
+
+    runs: list[np.ndarray] = []
+
+    def _fake_run(args, **_kwargs):
+        source_path = Path(args[-1])
+        with Image.open(source_path) as source_image:
+            runs.append(np.array(source_image.convert("RGBA"), dtype=np.uint8))
+        out_dir = Path(args[args.index("-o") + 1])
+        (out_dir / source_path.with_suffix(".dds").name).write_bytes(b"dds")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(session, "_ensure_dataset_bc7_texconv", lambda: tmp_path / "texconv.exe")
+    monkeypatch.setattr(session.subprocess, "run", _fake_run)
+    monkeypatch.setattr(session, "_parse_compressed_dataset_texture", lambda _path: session._CompressedDatasetTexture(width=4, height=3, format=session.spy.Format.bc7_unorm_srgb, payload=np.zeros((16,), dtype=np.uint8)))
+
+    payload = session._load_dataset_texture(frame, images_root, True, mask_root, mask_index)
+    assert isinstance(payload, session._CompressedDatasetTexture)
+    # The mask was baked into the alpha channel of the source handed to texconv.
+    assert len(runs) == 1
+    assert np.array_equal(runs[0][:, :, 3], mask)
+    # Masked cache lives under bc7_masked, separate from the unmasked bc7 cache.
+    masked_files = list((images_root / "cache" / "bc7_masked").rglob("*.dds"))
+    assert len(masked_files) == 1
+    assert not (images_root / "cache" / "bc7").exists()
+
+    # A second load reuses the cache without invoking texconv again.
+    session._load_dataset_texture(frame, images_root, True, mask_root, mask_index)
+    assert len(runs) == 1
+
+
+def test_load_dataset_texture_resolves_full_image_name_mask(tmp_path: Path) -> None:
+    # Masks named "<image filename>.png" (e.g. frame.jpg.png for frame.jpg).
+    images_root = (tmp_path / "images").resolve()
+    mask_root = (tmp_path / "masks").resolve()
+    images_root.mkdir()
+    mask_root.mkdir()
+    image_path = images_root / "frame_000011_front.jpg"
+    rgb = np.full((3, 4, 3), 80, dtype=np.uint8)
+    mask = np.array([[0, 64, 128, 255], [255, 128, 64, 0], [32, 96, 160, 224]], dtype=np.uint8)
+    Image.fromarray(rgb, mode="RGB").save(image_path)
+    Image.fromarray(mask, mode="L").save(mask_root / "frame_000011_front.jpg.png")
+    frame = ColmapFrame(image_id=1, image_path=image_path, q_wxyz=_identity_q(), t_xyz=np.zeros((3,), dtype=np.float32), fx=4.0, fy=3.0, cx=2.0, cy=1.5, width=4, height=3)
+
+    result = session._load_dataset_texture(frame, images_root, False, mask_root, session.build_colmap_image_path_index(mask_root))
+
+    assert isinstance(result, np.ndarray)
+    assert np.array_equal(result[:, :, :3], rgb)
     assert np.array_equal(result[:, :, 3], mask)
 
 
@@ -3568,3 +3633,30 @@ def test_apply_live_params_uses_viewport_sh_default_without_trainer(monkeypatch)
 
     assert viewer.s.renderer.sh_band == 3
     assert viewer.s.debug_renderer.sh_band == 3
+
+
+def test_concat_gaussian_scenes_pads_mismatched_sh_coeffs() -> None:
+    from src.scene.sh_utils import SUPPORTED_SH_COEFF_COUNT, sh_coeffs_to_display_colors
+
+    def _scene(count: int, coeff_count: int, dc: float) -> GaussianScene:
+        sh = np.zeros((count, coeff_count, 3), dtype=np.float32)
+        sh[:, 0, :] = dc
+        return GaussianScene(
+            positions=np.zeros((count, 3), dtype=np.float32),
+            scales=np.zeros((count, 3), dtype=np.float32),
+            rotations=np.tile([1.0, 0.0, 0.0, 0.0], (count, 1)).astype(np.float32),
+            opacities=np.ones((count,), dtype=np.float32),
+            colors=sh_coeffs_to_display_colors(sh),
+            sh_coeffs=sh,
+        )
+
+    full = _scene(5, SUPPORTED_SH_COEFF_COUNT, 0.3)
+    point_cloud = _scene(3, 1, 0.7)  # DC-only, like an auto-detected point cloud
+    merged = session._concat_gaussian_scenes([full, point_cloud])
+
+    assert merged.count == 8
+    assert merged.sh_coeffs.shape == (8, SUPPORTED_SH_COEFF_COUNT, 3)
+    # DC terms preserved for both sources; padded higher coeffs are zero.
+    np.testing.assert_allclose(merged.sh_coeffs[:5, 0, :], 0.3)
+    np.testing.assert_allclose(merged.sh_coeffs[5:, 0, :], 0.7)
+    np.testing.assert_allclose(merged.sh_coeffs[5:, 1:, :], 0.0)

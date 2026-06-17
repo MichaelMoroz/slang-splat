@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import ctypes
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 import os
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 import subprocess
 import time
@@ -25,6 +23,7 @@ from ..scene import (
     initialize_scene_from_points_colors,
     load_colmap_reconstruction,
     load_gaussian_ply,
+    pad_sh_coeffs,
     resolve_colmap_fibonacci_sphere_radius,
     resolve_colmap_init_hparams,
     resolve_points_init_hparams,
@@ -57,6 +56,7 @@ from ..training import (
     resolve_training_resolution,
 )
 from ..training.image_color_init import TrainingImageColorInitializer
+from ..scene._internal.colmap_binary import count_colmap_points3d
 from ..scene._internal.colmap_types import ColmapFrame, ColmapReconstruction, point_tables
 from .session_colmap_utils import (
     _COLMAP_CAMERA_MODEL_NAMES,
@@ -71,6 +71,7 @@ from .session_colmap_utils import (
     _COLMAP_IMPORT_DEPTH,
     _COLMAP_IMPORT_DIFFUSED_POINTCLOUD,
     _COLMAP_IMPORT_IMAGES_PER_TICK,
+    _COLMAP_IMPORT_SCAN_FRAMES_PER_TICK,
     _COLMAP_IMPORT_POINTCLOUD,
     _camera_rows as _camera_rows_impl,
     _database_image_names,
@@ -119,81 +120,11 @@ _COLMAP_IMPORT_PHOTOMETRIC_STEPS_PER_TICK = 8
 _DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 
 
-def _count_windows_physical_cpu_cores() -> int | None:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    relation_processor_core = 0
-    error_insufficient_buffer = 122
-    required_size = ctypes.c_ulong(0)
-    query = kernel32.GetLogicalProcessorInformationEx
-    query.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
-    query.restype = ctypes.c_int
-    query(relation_processor_core, None, ctypes.byref(required_size))
-    last_error = ctypes.get_last_error()
-    if required_size.value <= 0 or last_error != error_insufficient_buffer:
-        return None
-    buffer = ctypes.create_string_buffer(required_size.value)
-    if not bool(query(relation_processor_core, buffer, ctypes.byref(required_size))):
-        return None
-    offset = 0
-    core_count = 0
-    while offset < required_size.value:
-        header = ctypes.cast(ctypes.addressof(buffer) + offset, ctypes.POINTER(ctypes.c_ulong * 2)).contents
-        record_size = int(header[1])
-        if record_size <= 0:
-            break
-        core_count += 1
-        offset += record_size
-    return core_count if core_count > 0 else None
-
-
-def _count_linux_physical_cpu_cores() -> int | None:
-    cpuinfo_path = Path("/proc/cpuinfo")
-    if not cpuinfo_path.is_file():
-        return None
-    core_pairs: set[tuple[str, str]] = set()
-    processor_count = 0
-    physical_id: str | None = None
-    core_id: str | None = None
-    for line in cpuinfo_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        if line.startswith("processor"):
-            processor_count += 1
-        key, separator, value = line.partition(":")
-        if separator == "":
-            if physical_id is not None and core_id is not None:
-                core_pairs.add((physical_id, core_id))
-            physical_id = None
-            core_id = None
-            continue
-        key = key.strip()
-        value = value.strip()
-        if key == "physical id":
-            physical_id = value
-        elif key == "core id":
-            core_id = value
-    if physical_id is not None and core_id is not None:
-        core_pairs.add((physical_id, core_id))
-    if len(core_pairs) > 0:
-        return len(core_pairs)
-    return processor_count if processor_count > 0 else None
-
-
-def _detect_physical_cpu_cores() -> int:
-    logical_cpu_count = os.cpu_count() or 1
-    try:
-        if sys.platform == "win32":
-            detected = _count_windows_physical_cpu_cores()
-        elif sys.platform == "darwin":
-            detected = int(subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True).strip())
-        else:
-            detected = _count_linux_physical_cpu_cores()
-    except Exception:
-        detected = None
-    return max(1, logical_cpu_count if detected is None else int(detected))
-
-
-def _resolve_viewer_image_io_threads(physical_cpu_cores: int | None = None) -> int:
-    resolved_physical_cpu_cores = physical_cpu_cores if physical_cpu_cores is not None and physical_cpu_cores > 0 else _detect_physical_cpu_cores()
-    return max(1, resolved_physical_cpu_cores // 2)
+def _resolve_viewer_image_io_threads(available_cpu_threads: int | None = None) -> int:
+    # Use one fewer than all available logical CPU threads so the dataset image /
+    # BC7 compression load saturates the machine while leaving a core for the UI.
+    resolved_threads = available_cpu_threads if available_cpu_threads is not None and available_cpu_threads > 0 else (os.cpu_count() or 1)
+    return max(1, int(resolved_threads) - 1)
 
 
 _VIEWER_IMAGE_IO_THREADS = _resolve_viewer_image_io_threads()
@@ -296,12 +227,12 @@ _normalized_selected_camera_ids = _normalized_selected_camera_ids_impl
 
 
 def _set_colmap_camera_preview(
-    viewer: object, recon: object, selected_camera_ids: tuple[int, ...] | None = None
+    viewer: object, recon: object, selected_camera_ids: tuple[int, ...] | None = None, point_stats: dict[str, int] | None = None
 ) -> tuple[int, ...]:
     rows = _camera_rows(recon)
     selected_ids = _normalized_selected_camera_ids(rows, selected_camera_ids)
     viewer.ui._values["_colmap_camera_rows"] = rows
-    viewer.ui._values["_colmap_point_stats"] = _point_preview_stats_impl(recon)
+    viewer.ui._values["_colmap_point_stats"] = _point_preview_stats_impl(recon) if point_stats is None else point_stats
     viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
     return selected_ids
 
@@ -327,7 +258,13 @@ def _compose_frame_relative_name(frame: ColmapFrame, images_root: Path) -> str:
 
 
 def _resolve_alpha_mask_path(frame: ColmapFrame, images_root: Path, alpha_mask_root: Path, alpha_mask_path_index: object | None) -> Path:
-    mask_path = resolve_colmap_image_path(alpha_mask_root, _compose_frame_relative_name(frame, images_root), image_path_index=alpha_mask_path_index)
+    relative_name = _compose_frame_relative_name(frame, images_root)
+    mask_path = resolve_colmap_image_path(alpha_mask_root, relative_name, image_path_index=alpha_mask_path_index)
+    if mask_path is None:
+        # Some datasets name masks after the full image filename plus an extension
+        # (e.g. "frame.jpg.png" for image "frame.jpg"). Appending a placeholder suffix
+        # makes the dropped-extension stem match those masks.
+        mask_path = resolve_colmap_image_path(alpha_mask_root, f"{relative_name}.mask", image_path_index=alpha_mask_path_index)
     if mask_path is None:
         raise FileNotFoundError(f"No alpha mask was found for {frame.image_path.name} in {Path(alpha_mask_root).resolve()}.")
     return mask_path
@@ -361,9 +298,10 @@ def _compress_dataset_frame_to_bc7_cache(
     images_root: Path,
     *,
     rgba8: np.ndarray | None = None,
+    cache_path: Path | None = None,
 ) -> Path:
     texconv_path = _ensure_dataset_bc7_texconv()
-    cache_path = _dataset_bc7_cache_path(images_root, frame)
+    cache_path = _dataset_bc7_cache_path(images_root, frame) if cache_path is None else Path(cache_path)
     if cache_path.exists() and rgba8 is None:
         return cache_path
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -431,6 +369,42 @@ def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path) -
         raise RuntimeError(
             f"BC7 cache size mismatch for {frame.image_path.name}: expected {int(frame.width)}x{int(frame.height)}, "
             f"got {int(payload.width)}x{int(payload.height)}"
+        )
+    return payload
+
+
+def _alpha_mask_cache_token(mask_path: Path | None) -> str:
+    """Stable per-mask cache token (size + mtime) so masked caches invalidate on edit."""
+    if mask_path is None:
+        return "nomask"
+    try:
+        stat = Path(mask_path).stat()
+        return f"m{int(stat.st_size)}-{int(stat.st_mtime_ns)}"
+    except OSError:
+        return "nomask"
+
+
+def _load_or_create_masked_bc7_dataset_texture(
+    frame: ColmapFrame,
+    images_root: Path,
+    alpha_mask_root: Path,
+    alpha_mask_path_index: object | None,
+) -> _CompressedDatasetTexture:
+    """BC7 texture with the alpha mask baked in, cached separately and keyed by mask identity."""
+    mask_path = _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
+    cache_path = _dataset_bc7_cache_path(images_root, frame, alpha_mask_token=_alpha_mask_cache_token(mask_path))
+    if cache_path.exists():
+        payload = _parse_compressed_dataset_texture(cache_path)
+        if payload.format == spy.Format.bc7_unorm_srgb and payload.width == int(frame.width) and payload.height == int(frame.height):
+            return payload
+        cache_path.unlink(missing_ok=True)
+    rgba8 = _apply_alpha_mask_to_rgba8(load_training_frame_rgba8(frame), frame, images_root, alpha_mask_root, alpha_mask_path_index)
+    cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8, cache_path=cache_path)
+    payload = _parse_compressed_dataset_texture(cache_path)
+    if payload.format != spy.Format.bc7_unorm_srgb or payload.width != int(frame.width) or payload.height != int(frame.height):
+        raise RuntimeError(
+            f"Masked BC7 cache mismatch for {frame.image_path.name}: expected {int(frame.width)}x{int(frame.height)} BC7 UNORM SRGB, "
+            f"got {int(payload.width)}x{int(payload.height)} {payload.format}"
         )
     return payload
 
@@ -615,18 +589,11 @@ def _load_dataset_texture(
     alpha_mask_root: Path | None = None,
     alpha_mask_path_index: object | None = None,
 ) -> np.ndarray | _CompressedDatasetTexture:
-    if bool(compress_dataset_using_bc7) and alpha_mask_root is None:
-        return _load_or_create_bc7_dataset_texture(frame, images_root)
-    rgba8 = _apply_alpha_mask_to_rgba8(load_training_frame_rgba8(frame), frame, images_root, alpha_mask_root, alpha_mask_path_index)
-    if not bool(compress_dataset_using_bc7):
-        return rgba8
-    cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8)
-    payload = _parse_compressed_dataset_texture(cache_path)
-    if payload.format != spy.Format.bc7_unorm_srgb or payload.width != int(frame.width) or payload.height != int(frame.height):
-        cache_path.unlink(missing_ok=True)
-        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8)
-        payload = _parse_compressed_dataset_texture(cache_path)
-    return payload
+    if bool(compress_dataset_using_bc7):
+        if alpha_mask_root is None:
+            return _load_or_create_bc7_dataset_texture(frame, images_root)
+        return _load_or_create_masked_bc7_dataset_texture(frame, images_root, alpha_mask_root, alpha_mask_path_index)
+    return _apply_alpha_mask_to_rgba8(load_training_frame_rgba8(frame), frame, images_root, alpha_mask_root, alpha_mask_path_index)
 
 
 def _load_dataset_texture_with_depth_payload(
@@ -639,7 +606,14 @@ def _load_dataset_texture_with_depth_payload(
         payload.rgba8 = rgba8
     if not bool(compress_dataset_using_bc7):
         return rgba8, payload
-    cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8)
+    # Bake the (already alpha-composited) rgba8 into a BC7 cache; use the masked cache
+    # key when a mask is applied so it never clobbers the unmasked cache.
+    if alpha_mask_root is not None:
+        mask_path = _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
+        cache_path = _dataset_bc7_cache_path(images_root, frame, alpha_mask_token=_alpha_mask_cache_token(mask_path))
+    else:
+        cache_path = None
+    cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8, cache_path=cache_path)
     return _parse_compressed_dataset_texture(cache_path), payload
 
 
@@ -845,7 +819,9 @@ def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     _reset_dataset_metrics_state(viewer)
     root = Path(dataset_root).resolve()
     colmap_root = _resolve_colmap_root_from_selection(root)
-    recon = load_colmap_reconstruction(colmap_root)
+    # Folder-selection preview only needs camera poses + image names; skip the
+    # expensive 3D points and per-image observations (the import reloads them later).
+    recon = load_colmap_reconstruction(colmap_root, load_points3d=False, load_observations=False)
     db_path = _find_optional_colmap_database(root)
     image_names = [str(image.name).strip() for _, image in sorted(recon.images.items()) if str(image.name).strip()] if db_path is None else _database_image_names(db_path)
     images_root = _suggest_images_root_from_dataset_root(root, image_names)
@@ -855,7 +831,8 @@ def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     alpha_mask_root = _suggest_alpha_mask_root_from_dataset_root(root, images_root, image_names)
     _set_ui_path(viewer, "colmap_alpha_mask_root", alpha_mask_root)
     viewer.ui._values["colmap_use_alpha_masks"] = bool(alpha_mask_root is not None)
-    _set_colmap_camera_preview(viewer, recon)
+    total_points, tracked_points = count_colmap_points3d(recon.sparse_dir)
+    _set_colmap_camera_preview(viewer, recon, point_stats={"total_points": total_points, "tracked_points_min2": tracked_points})
     viewer.s.last_error = ""
 
 
@@ -955,13 +932,16 @@ def _concat_gaussian_scenes(scenes: list[GaussianScene]) -> GaussianScene:
         raise RuntimeError("Enable at least one initialization source before building the training scene.")
     if len(scenes) == 1:
         return scenes[0]
+    # Sources may carry different SH coefficient counts (e.g. a DC-only point cloud
+    # alongside full-SH scenes); pad them all to the largest so concatenation aligns.
+    target_sh_coeffs = max(int(np.asarray(scene.sh_coeffs).shape[1]) for scene in scenes)
     return GaussianScene(
         positions=np.ascontiguousarray(np.concatenate([np.asarray(scene.positions, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         scales=np.ascontiguousarray(np.concatenate([np.asarray(scene.scales, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         rotations=np.ascontiguousarray(np.concatenate([np.asarray(scene.rotations, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         opacities=np.ascontiguousarray(np.concatenate([np.asarray(scene.opacities, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         colors=np.ascontiguousarray(np.concatenate([np.asarray(scene.colors, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
-        sh_coeffs=np.ascontiguousarray(np.concatenate([np.asarray(scene.sh_coeffs, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
+        sh_coeffs=np.ascontiguousarray(np.concatenate([pad_sh_coeffs(np.asarray(scene.sh_coeffs, dtype=np.float32), target_sh_coeffs) for scene in scenes], axis=0), dtype=np.float32),
     )
 
 
@@ -3063,7 +3043,7 @@ def advance_colmap_import(viewer: object) -> None:
             progress.phase = "scan_frames"
             return
         if progress.phase == "scan_frames":
-            for _ in range(_COLMAP_IMPORT_IMAGES_PER_TICK):
+            for _ in range(_COLMAP_IMPORT_SCAN_FRAMES_PER_TICK):
                 if progress.current >= len(progress.image_items):
                     break
                 image_id, image = progress.image_items[progress.current]
