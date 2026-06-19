@@ -18,10 +18,10 @@
     "raster_grad_distance_power": 0.5,
     "raster_grad_distance_bias": 0.01,
     "scale_l2_weight": 0.0,
-    "scale_abs_reg_weight": 0.05000000074505806,
+    "scale_abs_reg_weight": 0.003000000026077032,
     "sh1_reg_weight": 0.30000001192092896,
-    "opacity_reg_weight": 1.5,
-    "opacity_reg_weight_stage1": 0.5,
+    "opacity_reg_weight": 0.10000000149011612,
+    "opacity_reg_weight_stage1": 0.05000000074505806,
     "opacity_reg_weight_stage2": 0.0,
     "opacity_reg_weight_stage3": 0.0,
     "opacity_reg_weight_stage4": 0.0,
@@ -51,7 +51,7 @@
     "position_random_step_noise_lr": 0.0,
     "position_random_step_opacity_gate_center": 0.005,
     "position_random_step_opacity_gate_sharpness": 100.0,
-    "max_gaussians": 1500000,
+    "max_gaussians": 2500000,
     "background_mode": 1,
     "target_alpha_mode": 2,
     "use_target_alpha_mask": false,
@@ -70,7 +70,7 @@
     "lr_schedule_stage3_step": 30058,
     "refinement_interval": 200,
     "refinement_growth_start_step": 1000,
-    "refinement_target_splat_ratio": 0.25,
+    "refinement_target_splat_ratio": 0.3499999940395355,
     "refinement_target_splat_ratio_stage1": 0.5,
     "refinement_target_splat_ratio_stage2": 0.8999999761581421,
     "refinement_target_splat_ratio_stage3": 1.0,
@@ -156,8 +156,8 @@
     "lr_rot_stage4_mul": 1.0,
     "lr_color_stage4_mul": 1.0,
     "lr_opacity_stage4_mul": 1.0,
-    "max_opacity_stage0": 0.5,
-    "max_opacity_stage1": 0.5,
+    "max_opacity_stage0": 1.0,
+    "max_opacity_stage1": 1.0,
     "max_opacity_stage2": 1.0,
     "max_opacity_stage3": 1.0,
     "max_opacity_stage4": 1.0
@@ -230,7 +230,7 @@
       "loss_debug_view": 0,
       "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 2.1787567061640876,
+      "move_speed": 36.13006806772534,
       "fov": 57.79999923706055,
       "render_background_mode": 1,
       "render_background_color": [
@@ -312,7 +312,7 @@
     "import": {
       "colmap_depth_value_mode": 1,
       "colmap_init_mode": 0,
-      "colmap_rotation_mode": 2,
+      "colmap_rotation_mode": 0,
       "colmap_custom_rotation_deg": [
         0.0,
         0.0,
@@ -320,7 +320,8 @@
       ],
       "compress_dataset_using_bc7": true,
       "colmap_training_image_color_init": true,
-      "colmap_photometric_compensation_enabled": false,
+      "colmap_photometric_compensation_enabled": true,
+      "colmap_use_alpha_masks": false,
       "colmap_image_downscale_mode": 0,
       "colmap_image_max_size": 2048,
       "colmap_image_scale": 1.0,
@@ -332,7 +333,7 @@
       "colmap_pointcloud_enabled": false,
       "colmap_pointcloud_nn_radius_scale_coef": 0.4708000123500824,
       "colmap_diffused_enabled": true,
-      "colmap_diffused_point_count": 1004001,
+      "colmap_diffused_point_count": 2477001,
       "colmap_diffused_diffusion_radius": 0.9417999982833862,
       "colmap_diffused_nn_radius_scale_coef": 0.95169997215271,
       "colmap_custom_ply_enabled": false,
@@ -342,7 +343,7 @@
       "colmap_custom_mesh_nn_radius_scale_coef": 1.0260000228881836,
       "target_alpha_mode": 2,
       "target_alpha_threshold": 0.18199999630451202,
-      "colmap_fibonacci_sphere_enabled": false,
+      "colmap_fibonacci_sphere_enabled": true,
       "colmap_fibonacci_sphere_point_count": 124001,
       "colmap_fibonacci_sphere_radius_multiplier": 2.0,
       "colmap_fibonacci_sphere_color": [
@@ -350,7 +351,7 @@
         0.800000011920929,
         0.800000011920929
       ],
-      "colmap_fibonacci_sphere_upper_hemisphere_only": true,
+      "colmap_fibonacci_sphere_upper_hemisphere_only": false,
       "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.0
     },
     "ui": {
@@ -358,7 +359,7 @@
       "show_histograms": false,
       "show_training_metrics": false,
       "show_training_views": false,
-      "show_camera_overlays": false,
+      "show_camera_overlays": true,
       "show_camera_labels": false,
       "show_training_cameras": false,
       "show_camera_min_dist_spheres": false,
@@ -392,8 +393,8 @@
       "photometric_crf_l1_weight": 0.0,
       "photometric_gamma_l1_weight": 0.0,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band_stage2",
-      "viewport_sh_stage_label": "Stage 2"
+      "viewport_sh_control_key": "sh_band",
+      "viewport_sh_stage_label": "Stage 0"
     },
     "state": {
       "list_capacity_multiplier": 8,
