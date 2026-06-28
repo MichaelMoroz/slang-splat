@@ -111,6 +111,7 @@ def _cli_arg(*flags: str, dest: str, build_arg: str | None = None, **kwargs: obj
 TRAIN_SETUP_CONTROL_DEFS = (
     _control("max_gaussians", "input_int", "Max Gaussians", {"value": _default("max_gaussians"), "step": 1000, "step_fast": 10000}, group=TRAINING_SETUP_GROUP, build_args=("max_gaussians",)),
     _control("training_steps_per_frame", "input_int", "Steps / Frame", {"value": int(_VIEWER_CONTROL_DEFAULTS["training_steps_per_frame"]), "step": 1, "step_fast": 2}, group=TRAINING_SETUP_GROUP),
+    _control("training_dataset_pool_size", "input_int", "Dataset Pool Size", {"value": int(_VIEWER_CONTROL_DEFAULTS["training_dataset_pool_size"]), "step": 1, "step_fast": 4}, group=TRAINING_SETUP_GROUP),
     _control("background_mode", "combo", "Train Background", {"value": _default("background_mode"), "options": TRAIN_BACKGROUND_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("background_mode",)),
     _control("target_alpha_mode", "combo", "Target Alpha", {"value": int(_default("target_alpha_mode")), "options": TARGET_ALPHA_MODE_LABELS}, group=TRAINING_SETUP_GROUP, build_args=("target_alpha_mode",)),
     _control("target_alpha_threshold", "slider_float", "Target Alpha Threshold", {"value": _default("target_alpha_threshold"), "min": 0.0, "max": 1.0, "format": "%.3f"}, group=TRAINING_SETUP_GROUP, build_args=("target_alpha_threshold",)),
@@ -369,6 +370,7 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--background-mode", dest="background_mode", build_arg="background_mode", type=int, default=_default("background_mode")),
     _cli_arg("--train-downscale-mode", dest="train_downscale_mode", build_arg="train_downscale_mode", type=int, default=_default("train_downscale_mode")),
     _cli_arg("--train-subsample-factor", dest="train_subsample_factor", build_arg="train_subsample_factor", type=int, default=_default("train_subsample_factor")),
+    _cli_arg("--training-dataset-pool-size", dest="training_dataset_pool_size", type=int, default=int(_VIEWER_CONTROL_DEFAULTS["training_dataset_pool_size"])),
     _cli_arg("--train-auto-start-downscale", dest="train_auto_start_downscale", build_arg="train_auto_start_downscale", type=int, default=_default("train_auto_start_downscale")),
     _cli_arg("--train-downscale-base-iters", dest="train_downscale_base_iters", build_arg="train_downscale_base_iters", type=int, default=_default("train_downscale_base_iters")),
     _cli_arg("--train-downscale-iter-step", dest="train_downscale_iter_step", build_arg="train_downscale_iter_step", type=int, default=_default("train_downscale_iter_step")),

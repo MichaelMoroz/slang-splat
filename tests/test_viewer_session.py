@@ -274,6 +274,42 @@ def test_create_native_dataset_textures_uses_viewer_image_io_threads(tmp_path: P
     assert calls == [(5, "viewer-target")]
 
 
+def test_advance_colmap_import_streaming_load_textures_skips_gpu_upload(tmp_path: Path, monkeypatch) -> None:
+    frames = [
+        ColmapFrame(1, tmp_path / "a.png", _identity_q(), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.5, 0.5, 2, 2),
+        ColmapFrame(2, tmp_path / "b.png", _identity_q(), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.5, 0.5, 2, 2),
+    ]
+    progress = ColmapImportProgress(
+        dataset_root=tmp_path,
+        colmap_root=tmp_path,
+        database_path=None,
+        images_root=tmp_path,
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=2048,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.5,
+        frames=frames,
+        phase="load_textures",
+        current=0,
+        total=len(frames),
+        native_rgba8_iter=iter([np.zeros((2, 2, 4), dtype=np.uint8), np.ones((2, 2, 4), dtype=np.uint8)]),
+        dataset_pool_size=1,
+    )
+    viewer = SimpleNamespace(s=SimpleNamespace(colmap_import_progress=progress))
+    uploads: list[object] = []
+    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda _viewer, rgba8: uploads.append(rgba8) or "tex")
+    monkeypatch.setattr(session, "_close_colmap_texture_loader", lambda _progress: None)
+
+    while progress.phase == "load_textures":
+        session.advance_colmap_import(viewer)
+
+    assert progress.phase == "finalize"
+    assert progress.native_textures == []
+    assert uploads == []
+
+
 def test_load_dataset_texture_bakes_masked_alpha_into_bc7_cache(tmp_path: Path, monkeypatch) -> None:
     images_root = (tmp_path / "images").resolve()
     mask_root = (tmp_path / "masks").resolve()
@@ -3064,6 +3100,41 @@ def test_training_image_color_init_runs_only_when_enabled_with_native_targets(mo
     assert calls == [
         ("create", "device"),
         ("apply", "encoder", "renderer", ("frame",), ("tex",), 4),
+    ]
+
+
+def test_training_image_color_init_uses_streaming_path(monkeypatch) -> None:
+    calls: list[object] = []
+
+    class _Initializer:
+        def __init__(self, device) -> None:
+            calls.append(("create", device))
+
+        def apply_streaming(self, renderer, frames, texture_provider, mark_submitted, splat_count) -> None:
+            calls.append(("stream", renderer, tuple(frames), splat_count))
+            texture = texture_provider(1, "frame-encoder")
+            mark_submitted(1, 42)
+            calls.append(("texture", texture))
+
+    viewer = SimpleNamespace(device="device", s=SimpleNamespace(colmap_import=SimpleNamespace(training_image_color_init=True)))
+    trainer = SimpleNamespace(
+        dataset_targets_streaming=True,
+        renderer="renderer",
+        frames=["frame0", "frame1"],
+        scene=SimpleNamespace(count=4),
+        get_frame_target_texture=lambda frame_index, native_resolution=True, encoder=None: calls.append(("get", frame_index, native_resolution, encoder)) or "tex1",
+        mark_dataset_submitted=lambda frame_indices, submission: calls.append(("mark", tuple(frame_indices), submission)),
+    )
+    monkeypatch.setattr(session, "TrainingImageColorInitializer", _Initializer)
+
+    session._apply_training_image_color_init(viewer, trainer, "unused-encoder")
+
+    assert calls == [
+        ("create", "device"),
+        ("stream", "renderer", ("frame0", "frame1"), 4),
+        ("get", 1, True, "frame-encoder"),
+        ("mark", (1,), 42),
+        ("texture", "tex1"),
     ]
 
 
