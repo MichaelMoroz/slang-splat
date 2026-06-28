@@ -109,7 +109,6 @@ class DatasetTexturePool:
             for _ in range(self.pool_size)
         ]
         self._frame_to_slot: dict[int, int] = {}
-        self._payloads: OrderedDict[int, Any] = OrderedDict()
         self._futures: OrderedDict[int, Future[Any]] = OrderedDict()
         self._executor = ThreadPoolExecutor(max_workers=max(int(prefetch_threads), 1), thread_name_prefix="dataset-pool")
         self._clock = 0
@@ -142,10 +141,10 @@ class DatasetTexturePool:
     def prefetch(self, frame_indices: object) -> None:
         for raw_index in frame_indices:
             frame_index = int(raw_index)
-            if frame_index in self._frame_to_slot or frame_index in self._payloads or frame_index in self._futures:
+            if frame_index in self._frame_to_slot or frame_index in self._futures:
                 continue
             self._futures[frame_index] = self._executor.submit(self.payload_provider, frame_index)
-            self._trim_payloads()
+            self._trim_futures()
 
     def mark_submitted(self, frame_indices: object, submission: int | None) -> None:
         for raw_index in frame_indices:
@@ -158,7 +157,6 @@ class DatasetTexturePool:
 
     def release(self, *, preserve_frame_targets: bool = False) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
-        self._payloads.clear()
         self._futures.clear()
         if preserve_frame_targets:
             return
@@ -198,28 +196,11 @@ class DatasetTexturePool:
     def _consume_payload(self, frame_index: int) -> Any:
         future = self._futures.pop(frame_index, None)
         if future is not None:
-            payload = future.result()
-        else:
-            payload = self._payloads.pop(frame_index, None)
-            if payload is None:
-                payload = self.payload_provider(frame_index)
-        self._collect_finished_futures()
-        self._trim_payloads()
-        return payload
+            return future.result()
+        return self.payload_provider(frame_index)
 
-    def _collect_finished_futures(self) -> None:
-        for frame_index in list(self._futures.keys()):
-            future = self._futures[frame_index]
-            if not future.done():
-                continue
-            self._payloads[frame_index] = future.result()
-            self._futures.pop(frame_index, None)
-
-    def _trim_payloads(self) -> None:
-        self._collect_finished_futures()
-        while len(self._payloads) + len(self._futures) > self.prefetch_depth and self._payloads:
-            self._payloads.popitem(last=False)
-        while len(self._payloads) + len(self._futures) > self.prefetch_depth and self._futures:
+    def _trim_futures(self) -> None:
+        while len(self._futures) > self.prefetch_depth:
             _, future = self._futures.popitem(last=False)
             future.cancel()
 

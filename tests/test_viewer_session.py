@@ -50,6 +50,16 @@ def _viewer() -> SimpleNamespace:
     )
 
 
+def test_training_dataset_pool_size_prefers_finalized_import_settings() -> None:
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(colmap_import=SimpleNamespace(dataset_pool_size=3)),
+        ui=SimpleNamespace(_values={"training_dataset_pool_size": 9}),
+    )
+
+    assert session._training_dataset_pool_size(viewer) == 3
+    assert session._training_dataset_pool_size_from_ui(viewer) == 9
+
+
 def test_resolve_viewer_image_io_threads_uses_all_but_one_thread() -> None:
     assert session._resolve_viewer_image_io_threads(16) == 15
     assert session._resolve_viewer_image_io_threads(7) == 6

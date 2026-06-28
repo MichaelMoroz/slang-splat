@@ -550,7 +550,7 @@ class GaussianTrainer:
             self._refresh_train_target(local_encoder, frame_index, step)
             self.device.submit_command_buffer(local_encoder.finish())
             self.device.wait()
-            self._mark_dataset_submitted([frame_index], None)
+            self.mark_dataset_submitted([frame_index], None)
         else:
             self._refresh_train_target(encoder, frame_index, step)
         return self._require_train_target_texture()
@@ -1020,7 +1020,6 @@ class GaussianTrainer:
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
         self.target_tonemap_provider = target_tonemap_provider
-        self._frame_targets_native: list[spy.Texture] = []
         self._dataset_targets: DatasetTexturePool | PreloadedDatasetTextures | None = None
         self._dataset_pool_size = max(int(pool_size), 0)
         self._training_steps_per_frame = max(int(training_steps_per_frame), 1)
@@ -1062,7 +1061,6 @@ class GaussianTrainer:
                 if self._dataset_targets is not None:
                     self._dataset_targets.release(preserve_frame_targets=False)
                     self._dataset_targets = None
-                self._frame_targets_native = []
             self._compensated_native_target = None
             self._compensated_native_target_frame_index = -1
             self._compensated_native_target_version = -1
@@ -1075,7 +1073,6 @@ class GaussianTrainer:
             self._dataset_targets.release(preserve_frame_targets=preserve_frame_targets)
             if not preserve_frame_targets:
                 self._dataset_targets = None
-        self._frame_targets_native = []
         _defer_owned_resources(self._compensated_native_target, seen)
         self._compensated_native_target = None
         self._compensated_native_target_frame_index = -1
@@ -1619,8 +1616,8 @@ class GaussianTrainer:
 
     def _effective_batch_request(self, requested: int) -> int:
         count = max(int(requested), 0)
-        if self._dataset_targets is not None and bool(getattr(self._dataset_targets, "is_streaming", False)):
-            count = min(count, max(int(getattr(self._dataset_targets, "pool_size", 1)), 1))
+        if self._dataset_targets is not None and self._dataset_targets.is_streaming:
+            count = min(count, max(int(self._dataset_targets.pool_size), 1))
         return count
 
     def _bind_or_upload_init_pointcloud(
@@ -1695,7 +1692,6 @@ class GaussianTrainer:
 
     def _set_preloaded_dataset_textures(self, textures: list[spy.Texture]) -> None:
         self._dataset_targets = PreloadedDatasetTextures(textures)
-        self._frame_targets_native = self._dataset_targets.frame_targets_native
 
     def _create_preloaded_dataset_textures(self) -> None:
         textures: list[spy.Texture] = []
@@ -1729,7 +1725,6 @@ class GaussianTrainer:
             max_height=max_height,
             prefetch_depth=max(clamped_batch * 2, 1),
         )
-        self._frame_targets_native = self._dataset_targets.frame_targets_native
 
     def _dataset_target(self, frame_index: int, encoder: spy.CommandEncoder | None = None) -> spy.Texture:
         if self._dataset_targets is None:
@@ -1743,16 +1738,17 @@ class GaussianTrainer:
         self._dataset_targets.mark_submitted([frame_index], None)
         return texture
 
-    def _mark_dataset_submitted(self, frame_indices: list[int] | tuple[int, ...], submission: int | None) -> None:
+    def mark_dataset_submitted(self, frame_indices: list[int] | tuple[int, ...], submission: int | None) -> None:
         if self._dataset_targets is not None:
             self._dataset_targets.mark_submitted(frame_indices, submission)
 
     @property
     def dataset_targets_streaming(self) -> bool:
-        return self._dataset_targets is not None and bool(getattr(self._dataset_targets, "is_streaming", False))
+        return self._dataset_targets is not None and self._dataset_targets.is_streaming
 
-    def mark_dataset_submitted(self, frame_indices: list[int] | tuple[int, ...], submission: int | None) -> None:
-        self._mark_dataset_submitted(frame_indices, submission)
+    @property
+    def _frame_targets_native(self) -> list[spy.Texture]:
+        return [] if self._dataset_targets is None else self._dataset_targets.frame_targets_native
 
     @property
     def observed_contribution_pixel_count(self) -> int:
@@ -1900,7 +1896,7 @@ class GaussianTrainer:
             texture = self._refresh_compensated_native_target(local_encoder, frame_index)
             self.device.submit_command_buffer(local_encoder.finish())
             self.device.wait()
-            self._mark_dataset_submitted([frame_index], None)
+            self.mark_dataset_submitted([frame_index], None)
             return texture
         return self._refresh_compensated_native_target(encoder, frame_index)
 
@@ -2358,7 +2354,8 @@ class GaussianTrainer:
         self._ensure_training_buffers(self._scene_count, batch_steps)
         frame_indices: list[int] = []
         if self._dataset_targets is not None:
-            self._dataset_targets.prefetch(self._upcoming_frame_indices(batch_steps * 2))
+            prefetch_count = self._dataset_targets.prefetch_depth if self._dataset_targets.is_streaming else batch_steps
+            self._dataset_targets.prefetch(self._upcoming_frame_indices(prefetch_count))
         enc = self.device.create_command_encoder()
         with debug_region(enc, "Trainer Batch", 48):
             for batch_index in range(batch_steps):
@@ -2381,7 +2378,7 @@ class GaussianTrainer:
                     self._dispatch_position_random_steps(enc, self.state.step + batch_index + 1)
                     self._dispatch_cache_step_info(enc, batch_index)
         submission = self.device.submit_command_buffer(enc.finish())
-        self._mark_dataset_submitted(frame_indices, submission)
+        self.mark_dataset_submitted(frame_indices, submission)
         self._observed_contribution_pixel_count += batch_steps * max(int(self.renderer.width) * int(self.renderer.height), 0)
 
         step_metrics = self._read_batch_step_metrics(batch_steps)
@@ -2482,7 +2479,7 @@ class GaussianTrainer:
             )
             self._dispatch_cache_step_info(enc, 0)
         submission = self.device.submit_command_buffer(enc.finish())
-        self._mark_dataset_submitted([resolved_frame_index], submission)
+        self.mark_dataset_submitted([resolved_frame_index], submission)
         step_metrics = self._read_batch_step_metrics(1)
         if step_metrics.size == 0:
             raise RuntimeError("Frame evaluation did not produce any metrics.")

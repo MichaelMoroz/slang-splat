@@ -685,9 +685,16 @@ def _create_native_dataset_textures(
     return textures
 
 
-def _training_dataset_pool_size(viewer: object) -> int:
+def _training_dataset_pool_size_from_ui(viewer: object) -> int:
     values = getattr(getattr(viewer, "ui", None), "_values", {})
     return max(int(values.get("training_dataset_pool_size", 16)), 0)
+
+
+def _training_dataset_pool_size(viewer: object) -> int:
+    import_cfg = getattr(getattr(viewer, "s", None), "colmap_import", None)
+    if import_cfg is not None and hasattr(import_cfg, "dataset_pool_size"):
+        return max(int(import_cfg.dataset_pool_size), 0)
+    return _training_dataset_pool_size_from_ui(viewer)
 
 
 def _training_steps_per_frame_value(viewer: object) -> int:
@@ -2669,6 +2676,7 @@ def _finish_import_colmap_dataset(
 ) -> None:
     if recon is None or training_frames is None:
         raise RuntimeError("COLMAP import finalize requires reconstruction and training frames.")
+    resolved_dataset_pool_size = _training_dataset_pool_size(viewer) if dataset_pool_size is None else max(int(dataset_pool_size), 0)
     resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
     xyz, _ = _point_tables(recon, min_track_length)
     _reset_loaded_runtime(viewer)
@@ -2689,6 +2697,7 @@ def _finish_import_colmap_dataset(
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         training_image_color_init=training_image_color_init,
         photometric_compensation_enabled=photometric_compensation_enabled,
+        dataset_pool_size=resolved_dataset_pool_size,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
@@ -2746,7 +2755,7 @@ def _finish_import_colmap_dataset(
             _ensure_cached_init_source(viewer, init_params_fn())
     apply_live_params(viewer)
     reset_main_camera(viewer)
-    initialize_training_scene(viewer, frame_targets_native=frame_targets_native)
+    initialize_training_scene(viewer, frame_targets_native=frame_targets_native, dataset_pool_size=resolved_dataset_pool_size)
     viewer.s.last_error = ""
     print(
         f"Loaded COLMAP: db={None if database_path is None else Path(database_path).resolve()} root={colmap_root} "
@@ -2807,6 +2816,7 @@ def import_colmap_dataset(
     resolved_rotation_mode = min(max(int(rotation_mode), COLMAP_ROTATION_MODE_NONE), COLMAP_ROTATION_MODE_AUTO)
     resolved_custom_rotation_deg = tuple(float(v) for v in np.asarray(custom_rotation_deg, dtype=np.float32).reshape(3))
     recon = _load_aligned_colmap_reconstruction(root, rotation_mode=resolved_rotation_mode, custom_rotation_deg=resolved_custom_rotation_deg)
+    pool_size = _training_dataset_pool_size_from_ui(viewer)
     viewer.s.colmap_import = ColmapImportSettings(
         images_root=Path(images_root).resolve(),
         alpha_mask_root=None if alpha_mask_root is None else Path(alpha_mask_root).resolve(),
@@ -2816,7 +2826,7 @@ def import_colmap_dataset(
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         training_image_color_init=bool(training_image_color_init),
         photometric_compensation_enabled=bool(photometric_compensation_enabled),
-        dataset_pool_size=_training_dataset_pool_size(viewer),
+        dataset_pool_size=pool_size,
         nn_radius_scale_coef=float(nn_radius_scale_coef),
         init_neighbor_count=max(int(init_neighbor_count), 2),
         init_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
@@ -2849,7 +2859,6 @@ def import_colmap_dataset(
         downscale_max_size=image_downscale_max_size,
         downscale_scale=image_downscale_scale,
     )
-    pool_size = _training_dataset_pool_size(viewer)
     stream_dataset = _streaming_dataset_enabled(pool_size, training_frames)
     frame_targets_native = None if stream_dataset else _create_native_dataset_textures(viewer, training_frames)
     photometric_trainer = None
@@ -3062,7 +3071,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         custom_mesh_nn_radius_scale_coef=float(max(custom_mesh_nn_radius_scale_coef, 1e-4)),
         fibonacci_sphere_enabled=fibonacci_sphere_enabled,
         fibonacci_sphere_nn_radius_scale_coef=float(max(fibonacci_sphere_nn_radius_scale_coef, 1e-4)),
-        dataset_pool_size=_training_dataset_pool_size(viewer),
+        dataset_pool_size=_training_dataset_pool_size_from_ui(viewer),
     )
     viewer.s.last_error = ""
 
@@ -3300,6 +3309,7 @@ def initialize_training_scene(
     viewer: object,
     frame_targets_native: list[spy.Texture] | None = None,
     *,
+    dataset_pool_size: int | None = None,
     preserve_session_state: bool = False,
 ) -> None:
     if viewer.s.colmap_recon is None and viewer.s.colmap_root is None:
@@ -3326,6 +3336,7 @@ def initialize_training_scene(
     renderer = ensure_renderer(viewer, "training_renderer", width, height, allow_debug_overlays=False)
     scene, scale_reg_reference = _build_initial_training_scene(viewer, init, params, init_hparams)
     apply_live_params(viewer)
+    pool_size = _training_dataset_pool_size(viewer) if dataset_pool_size is None else max(int(dataset_pool_size), 0)
     trainer_kwargs = dict(
         device=viewer.device,
         renderer=renderer,
@@ -3335,12 +3346,11 @@ def initialize_training_scene(
         stability_hparams=params.stability,
         training_hparams=params.training,
         seed=init.seed,
-        pool_size=_training_dataset_pool_size(viewer),
+        pool_size=pool_size,
         training_steps_per_frame=_training_steps_per_frame_value(viewer),
     )
     if scale_reg_reference is not None:
         trainer_kwargs["scale_reg_reference"] = scale_reg_reference
-    pool_size = _training_dataset_pool_size(viewer)
     import_cfg = getattr(viewer.s, "colmap_import", None)
     if frame_targets_native is not None:
         trainer_kwargs["frame_targets_native"] = frame_targets_native

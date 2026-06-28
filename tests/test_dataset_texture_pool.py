@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from threading import Event
 from types import SimpleNamespace
 
 import numpy as np
 import slangpy as spy
 
 from src.training.dataset_texture_pool import DatasetTexturePool
+from src.training.gaussian_trainer import GaussianTrainer
 
 
 class _FakeTexture:
@@ -91,3 +93,40 @@ def test_pool_reuses_slot_only_after_submission_finishes() -> None:
 
     assert second_texture is first_texture
     assert device.wait_count == 1
+
+
+def test_prefetch_trims_oldest_futures_to_depth() -> None:
+    release_provider = Event()
+
+    def provider(frame_index: int) -> np.ndarray:
+        if frame_index == 0:
+            release_provider.wait(timeout=1.0)
+        return np.full((2, 2, 4), int(frame_index), dtype=np.uint8)
+
+    pool = DatasetTexturePool(
+        _FakeDevice(),
+        [(2, 2)] * 4,
+        provider,
+        texture_format=spy.Format.rgba8_unorm_srgb,
+        pool_size=2,
+        max_width=2,
+        max_height=2,
+        prefetch_depth=2,
+        prefetch_threads=1,
+    )
+    try:
+        pool.prefetch([0, 1, 2, 3])
+        assert list(pool._futures.keys()) == [2, 3]
+    finally:
+        release_provider.set()
+        pool.release()
+
+
+def test_effective_batch_request_clamps_only_streaming_dataset_pool() -> None:
+    trainer = object.__new__(GaussianTrainer)
+
+    trainer._dataset_targets = SimpleNamespace(is_streaming=True, pool_size=2)
+    assert trainer._effective_batch_request(5) == 2
+
+    trainer._dataset_targets = SimpleNamespace(is_streaming=False, pool_size=2)
+    assert trainer._effective_batch_request(5) == 5
