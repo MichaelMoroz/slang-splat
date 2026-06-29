@@ -778,6 +778,19 @@ def test_colmap_camera_selection_table_shows_point_stats(monkeypatch) -> None:
     assert "Points: 12 total | 9 tracked (>=2 obs)" in disabled_texts
 
 
+def test_colmap_vram_capacity_queries_toolkit_device_when_uncached(monkeypatch) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(ui, "query_total_device_vram_capacity", lambda device: calls.append(device) or (12_884_901_888, "test"))
+    viewer_ui = SimpleNamespace(_values={}, _texts={})
+    toolkit = SimpleNamespace(device="gpu0")
+
+    capacity = ui.ToolkitWindow._colmap_gpu_vram_capacity_bytes(toolkit, viewer_ui)
+
+    assert capacity == 12_884_901_888
+    assert calls == ["gpu0"]
+    assert viewer_ui._values["_gpu_vram_capacity_bytes"] == 12_884_901_888
+
+
 def test_help_windows_dock_into_toolkit_tabs(monkeypatch) -> None:
     dock_calls: list[tuple[int, int]] = []
     monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))

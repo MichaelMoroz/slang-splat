@@ -36,7 +36,7 @@ from ..app.training_controls import (
 from ..training.photometric_compensation import PhotometricCompensationHyperParams
 from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
 from ..training.ppisp import PPISP_FIELD_SPECS
-from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
+from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, query_total_device_vram_capacity, write_resource_debug_log
 from .state import (
     COLMAP_ROTATION_MODE_AUTO,
     COLMAP_ROTATION_MODE_CUSTOM,
@@ -3060,6 +3060,22 @@ class ToolkitWindow:
         ToolkitWindow._set_tooltip("Auto keeps the whole dataset resident in VRAM when it fits this GPU and otherwise streams a rotating pool. Full forces all frames resident; Stream forces the pool.")
         self._draw_colmap_vram_estimate(ui, str(ui._values["colmap_dataset_residency"]))
 
+    def _colmap_gpu_vram_capacity_bytes(self, ui: ViewerUI) -> int | None:
+        capacity = ui._values.get("_gpu_vram_capacity_bytes", None)
+        if capacity is not None:
+            try:
+                return max(int(capacity), 0) or None
+            except (TypeError, ValueError):
+                ui._values["_gpu_vram_capacity_bytes"] = None
+        try:
+            capacity, _ = query_total_device_vram_capacity(self.device)
+        except Exception:
+            capacity = None
+        if capacity:
+            ui._values["_gpu_vram_capacity_bytes"] = int(capacity)
+            return int(capacity)
+        return None
+
     def _draw_colmap_vram_estimate(self, ui: ViewerUI, residency: str) -> None:
         from . import vram_estimate
 
@@ -3071,8 +3087,7 @@ class ToolkitWindow:
         band = min(max(int(ui._values.get("max_sh_band", 3)), 0), 3)
         compress = bool(ui._values.get("compress_dataset_using_bc7", False))
         pool = max(int(ui._values.get("training_dataset_pool_size", 16)), 0)
-        capacity = ui._values.get("_gpu_vram_capacity_bytes", None)
-        capacity_bytes = None if capacity is None else int(capacity)
+        capacity_bytes = self._colmap_gpu_vram_capacity_bytes(ui)
         train_w, train_h = vram_estimate.representative_train_resolution(frame_sizes)
         resolved_pool, report = vram_estimate.resolve_import_residency(
             residency=residency,
@@ -3092,9 +3107,9 @@ class ToolkitWindow:
         imgui.text_disabled(f"Dataset  full: {gib(report.dataset.full_bytes):.1f} GiB   stream x{report.dataset.pool_size}: {gib(report.dataset.streaming_bytes):.1f} GiB")
         chosen = vram_estimate.RESIDENCY_STREAM if 0 < int(resolved_pool) < len(frame_sizes) else vram_estimate.RESIDENCY_FULL
         chosen_total = report.streaming_total_bytes if chosen == vram_estimate.RESIDENCY_STREAM else report.full_total_bytes
-        if capacity:
-            line = f"Total ({chosen}): {gib(chosen_total):.1f} / {gib(capacity):.1f} GiB GPU"
-            if chosen_total > int(capacity):
+        if capacity_bytes:
+            line = f"Total ({chosen}): {gib(chosen_total):.1f} / {gib(capacity_bytes):.1f} GiB GPU"
+            if chosen_total > int(capacity_bytes):
                 imgui.text_colored(warn, line + "  - may not fit")
             else:
                 imgui.text_disabled(line)
