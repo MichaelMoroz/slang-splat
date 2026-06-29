@@ -102,6 +102,10 @@ _COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
 _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
+_COLMAP_CAMERA_TABLE_MIN_HEIGHT = 120.0
+_COLMAP_CAMERA_TABLE_ROW_HEIGHT = 28.0
+_COLMAP_CAMERA_TABLE_PADDING = 8.0
+_COLMAP_CAMERA_TABLE_MAX_HEIGHT = 300.0
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_COLORBAR_HEIGHT = 28.0
 _DEBUG_COLORBAR_MIN_WIDTH = 320.0
@@ -2696,7 +2700,11 @@ class ToolkitWindow:
         if imgui.button("All Models"): selected = set(camera_ids)
         imgui.same_line()
         if imgui.button("No Models"): selected.clear()
-        table_height = min(max(120.0, 28.0 * float(len(camera_rows)) + 8.0), 300.0)
+        scale = max(float(getattr(self, "_applied_interface_scale", 1.0)), 0.25)
+        table_height = min(
+            max(_COLMAP_CAMERA_TABLE_MIN_HEIGHT, _COLMAP_CAMERA_TABLE_ROW_HEIGHT * float(len(camera_rows)) + _COLMAP_CAMERA_TABLE_PADDING),
+            _COLMAP_CAMERA_TABLE_MAX_HEIGHT,
+        ) * scale
         child_opened = _imgui_opened(imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True))
         if child_opened:
             flags = (
