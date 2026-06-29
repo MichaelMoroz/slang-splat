@@ -104,6 +104,7 @@ def run_train_colmap(args: argparse.Namespace) -> int:
         training_hparams=params.training,
         seed=int(args.seed),
         scale_reg_reference=float(max(resolved_init.base_scale, 1e-8)),
+        pool_size=max(int(getattr(args, "training_dataset_pool_size", 16)), 0),
     )
     print(f"Training start: scene={root} images={args.images_subdir} profile={profile.name} frames={len(frames)} gaussians={scene.count} size={width}x{height}")
     background, start = np.asarray(args.bg, dtype=np.float32), time.perf_counter()

@@ -57,6 +57,8 @@ class ColmapImportSettings:
     compress_dataset_using_bc7: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
     training_image_color_init: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_training_image_color_init", False))
     photometric_compensation_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
+    dataset_pool_size: int = 16
+    dataset_residency: str = str(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_residency", "auto"))
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
     image_downscale_max_size: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_max_size"])
@@ -114,6 +116,7 @@ class ColmapImportProgress:
     training_image_color_init: bool = False
     photometric_compensation_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
     selected_camera_ids: tuple[int, ...] = ()
+    dataset_residency: str = str(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_residency", "auto"))
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH
@@ -162,6 +165,7 @@ class ColmapImportProgress:
     native_textures: list[spy.Texture] = field(default_factory=list)
     native_rgba8_loader: object | None = None
     native_rgba8_iter: object | None = None
+    dataset_pool_size: int = 16
     photometric_trainer: PhotometricCompensationTrainer | None = None
 
     @property

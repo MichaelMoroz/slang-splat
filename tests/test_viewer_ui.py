@@ -778,6 +778,35 @@ def test_colmap_camera_selection_table_shows_point_stats(monkeypatch) -> None:
     assert "Points: 12 total | 9 tracked (>=2 obs)" in disabled_texts
 
 
+def test_colmap_camera_selection_table_height_scales_with_interface(monkeypatch) -> None:
+    child_sizes: list[tuple[float, float]] = []
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "same_line", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_child", lambda _name, size, *_args: child_sizes.append((float(size.x), float(size.y))) or False)
+    monkeypatch.setattr(ui.imgui, "end_child", lambda: None)
+    viewer_ui = SimpleNamespace(_values={"colmap_selected_camera_ids": (1,)}, _texts={})
+    camera_rows = ({"camera_id": 1, "frame_count": 4},)
+    toolkit = SimpleNamespace(_applied_interface_scale=2.0)
+
+    ui.ToolkitWindow._draw_colmap_camera_selection_table(toolkit, viewer_ui, camera_rows)
+
+    assert child_sizes == [(0.0, 240.0)]
+
+
+def test_colmap_vram_capacity_queries_toolkit_device_when_uncached(monkeypatch) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(ui, "query_total_device_vram_capacity", lambda device: calls.append(device) or (12_884_901_888, "test"))
+    viewer_ui = SimpleNamespace(_values={}, _texts={})
+    toolkit = SimpleNamespace(device="gpu0")
+
+    capacity = ui.ToolkitWindow._colmap_gpu_vram_capacity_bytes(toolkit, viewer_ui)
+
+    assert capacity == 12_884_901_888
+    assert calls == ["gpu0"]
+    assert viewer_ui._values["_gpu_vram_capacity_bytes"] == 12_884_901_888
+
+
 def test_help_windows_dock_into_toolkit_tabs(monkeypatch) -> None:
     dock_calls: list[tuple[int, int]] = []
     monkeypatch.setattr(ui.imgui, "set_next_window_dock_id", lambda dock_id, cond: dock_calls.append((int(dock_id), int(cond))))

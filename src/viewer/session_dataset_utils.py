@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 import struct
 
@@ -29,8 +30,21 @@ class _CompressedDatasetTexture:
     payload: np.ndarray
 
 
+@lru_cache(maxsize=8192)
+def _resolved_path(path_str: str) -> Path:
+    """Cache ``Path.resolve()`` results.
+
+    On Windows ``Path.resolve()`` invokes ``nt._getfinalpathname``, a filesystem
+    round-trip that costs ~25 ms per call. The streaming dataset texture pool
+    resolves the same immutable dataset paths on every frame, so memoizing on the
+    string form keeps that off the per-frame hot path. Keyed on the string so
+    equal paths share an entry regardless of ``Path`` identity.
+    """
+    return Path(path_str).resolve()
+
+
 def _dataset_cache_root(images_root: Path) -> Path:
-    return Path(images_root).resolve() / "cache"
+    return _resolved_path(str(images_root)) / "cache"
 
 
 def _dataset_bc7_cache_dir(images_root: Path, width: int, height: int, *, subdir: str = "bc7") -> Path:
@@ -38,7 +52,7 @@ def _dataset_bc7_cache_dir(images_root: Path, width: int, height: int, *, subdir
 
 
 def _dataset_bc7_cache_path(images_root: Path, frame: ColmapFrame, *, alpha_mask_token: str | None = None) -> Path:
-    relative = Path(frame.image_path).resolve().relative_to(Path(images_root).resolve())
+    relative = _resolved_path(str(frame.image_path)).relative_to(_resolved_path(str(images_root)))
     if alpha_mask_token is None:
         return (_dataset_bc7_cache_dir(images_root, frame.width, frame.height) / relative).with_suffix(".dds")
     # Alpha-masked textures live in a separate cache keyed by the mask's identity so
@@ -58,7 +72,11 @@ def _bc_payload_byte_count(width: int, height: int, format: spy.Format) -> int:
 
 
 def _parse_compressed_dataset_texture(dds_path: Path) -> _CompressedDatasetTexture:
-    blob = dds_path.read_bytes()
+    # Read straight into a uint8 ndarray: struct.unpack_from works on it via the
+    # buffer protocol, and the payload becomes a zero-copy writable slice view
+    # (vs. read_bytes + blob[offset:].copy(), which copied the ~42 MiB payload
+    # twice per streamed frame). The view keeps `blob` alive through `.base`.
+    blob = np.fromfile(dds_path, dtype=np.uint8)
     if len(blob) < 128:
         raise RuntimeError(f"DDS file is too small: {dds_path}")
     magic, header_size = struct.unpack_from("<II", blob, 0)
@@ -88,7 +106,7 @@ def _parse_compressed_dataset_texture(dds_path: Path) -> _CompressedDatasetTextu
             raise RuntimeError(f"Unsupported DDS DXGI format {dxgi_format} in {dds_path}")
     else:
         raise RuntimeError(f"Unsupported DDS FOURCC 0x{fourcc:08x} in {dds_path}")
-    payload = np.frombuffer(blob[payload_offset:], dtype=np.uint8).copy()
+    payload = blob[payload_offset:]
     expected_bytes = _bc_payload_byte_count(int(width), int(height), texture_format)
     if int(payload.size) != expected_bytes:
         raise RuntimeError(f"DDS payload size mismatch in {dds_path}: expected {expected_bytes} bytes, got {int(payload.size)}")

@@ -36,7 +36,7 @@ from ..app.training_controls import (
 from ..training.photometric_compensation import PhotometricCompensationHyperParams
 from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
 from ..training.ppisp import PPISP_FIELD_SPECS
-from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
+from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, query_total_device_vram_capacity, write_resource_debug_log
 from .state import (
     COLMAP_ROTATION_MODE_AUTO,
     COLMAP_ROTATION_MODE_CUSTOM,
@@ -102,6 +102,10 @@ _COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
 _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
+_COLMAP_CAMERA_TABLE_MIN_HEIGHT = 120.0
+_COLMAP_CAMERA_TABLE_ROW_HEIGHT = 28.0
+_COLMAP_CAMERA_TABLE_PADDING = 8.0
+_COLMAP_CAMERA_TABLE_MAX_HEIGHT = 300.0
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_COLORBAR_HEIGHT = 28.0
 _DEBUG_COLORBAR_MIN_WIDTH = 320.0
@@ -2696,7 +2700,11 @@ class ToolkitWindow:
         if imgui.button("All Models"): selected = set(camera_ids)
         imgui.same_line()
         if imgui.button("No Models"): selected.clear()
-        table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
+        scale = max(float(getattr(self, "_applied_interface_scale", 1.0)), 0.25)
+        table_height = min(
+            max(_COLMAP_CAMERA_TABLE_MIN_HEIGHT, _COLMAP_CAMERA_TABLE_ROW_HEIGHT * float(len(camera_rows)) + _COLMAP_CAMERA_TABLE_PADDING),
+            _COLMAP_CAMERA_TABLE_MAX_HEIGHT,
+        ) * scale
         child_opened = _imgui_opened(imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True))
         if child_opened:
             flags = (
@@ -3013,6 +3021,111 @@ class ToolkitWindow:
 
             imgui.end_table()
 
+    def _colmap_estimate_frame_sizes(self, ui: ViewerUI) -> list[tuple[int, int]]:
+        """Downscaled (training) frame sizes derived from the COLMAP camera rows."""
+        from ..scene._internal.colmap_ops import resolve_training_frame_image_size
+
+        rows = tuple(ui._values.get("_colmap_camera_rows", ()))
+        if not rows:
+            return []
+        mode = ("original", "max_size", "scale")[min(max(int(ui._values.get("colmap_image_downscale_mode", 1)), 0), 2)]
+        max_size = int(ui._values.get("colmap_image_max_size", 2048))
+        scale = float(ui._values.get("colmap_image_scale", 1.0))
+        sizes: list[tuple[int, int]] = []
+        for row in rows:
+            try:
+                width_text, height_text = str(row.get("resolution_text", "")).lower().split("x")
+                width, height = int(width_text), int(height_text)
+            except (ValueError, AttributeError):
+                continue
+            dw, dh = resolve_training_frame_image_size(width, height, downscale_mode=mode, downscale_max_size=max_size, downscale_scale=scale)
+            sizes.extend([(dw, dh)] * max(int(row.get("frame_count", 0)), 0))
+        return sizes
+
+    def _draw_colmap_memory_controls(self, ui: ViewerUI) -> None:
+        from . import vram_estimate
+
+        imgui.separator()
+        imgui.text_disabled("Training memory & dataset residency")
+        ToolkitWindow._draw_clamped_int(
+            ui,
+            key="max_gaussians",
+            label="Max Gaussians (splat budget)",
+            default=2500000,
+            speed=1000.0,
+            min_value=0,
+            max_value=100000000,
+            tooltip="Target splat count. Caps point-cloud initialization (used as a fraction of the available points) and is the refinement growth target; also drives the VRAM estimate below. 0 keeps all available points.",
+        )
+        sh_band = min(max(int(ui._values.get("max_sh_band", 3)), 0), len(_SH_BAND_LABELS) - 1)
+        ui._values["max_sh_band"] = ToolkitWindow._draw_combo("Max SH Band", _SH_BAND_LABELS, sh_band)
+        ToolkitWindow._set_tooltip("Maximum spherical-harmonics band stored per splat (1/4/9/16 coefficients for band 0/1/2/3). Higher bands store more color and cost more VRAM.")
+        residency_options = ("Auto (fit to VRAM)", "Full (all resident)", "Stream")
+        residency_keys = (vram_estimate.RESIDENCY_AUTO, vram_estimate.RESIDENCY_FULL, vram_estimate.RESIDENCY_STREAM)
+        current = str(ui._values.get("colmap_dataset_residency", "auto")).lower()
+        res_idx = residency_keys.index(current) if current in residency_keys else 0
+        ui._values["colmap_dataset_residency"] = residency_keys[ToolkitWindow._draw_combo("Dataset Residency", residency_options, res_idx)]
+        ToolkitWindow._set_tooltip("Auto keeps the whole dataset resident in VRAM when it fits this GPU and otherwise streams a rotating pool. Full forces all frames resident; Stream forces the pool.")
+        self._draw_colmap_vram_estimate(ui, str(ui._values["colmap_dataset_residency"]))
+
+    def _colmap_gpu_vram_capacity_bytes(self, ui: ViewerUI) -> int | None:
+        capacity = ui._values.get("_gpu_vram_capacity_bytes", None)
+        if capacity is not None:
+            try:
+                return max(int(capacity), 0) or None
+            except (TypeError, ValueError):
+                ui._values["_gpu_vram_capacity_bytes"] = None
+        try:
+            capacity, _ = query_total_device_vram_capacity(self.device)
+        except Exception:
+            capacity = None
+        if capacity:
+            ui._values["_gpu_vram_capacity_bytes"] = int(capacity)
+            return int(capacity)
+        return None
+
+    def _draw_colmap_vram_estimate(self, ui: ViewerUI, residency: str) -> None:
+        from . import vram_estimate
+
+        frame_sizes = self._colmap_estimate_frame_sizes(ui)
+        if not frame_sizes:
+            imgui.text_disabled("VRAM estimate appears after a COLMAP root is loaded.")
+            return
+        splat_count = max(int(ui._values.get("max_gaussians", 0)), 0) or 2_000_000
+        band = min(max(int(ui._values.get("max_sh_band", 3)), 0), 3)
+        compress = bool(ui._values.get("compress_dataset_using_bc7", False))
+        pool = max(int(ui._values.get("training_dataset_pool_size", 16)), 0)
+        capacity_bytes = self._colmap_gpu_vram_capacity_bytes(ui)
+        train_w, train_h = vram_estimate.representative_train_resolution(frame_sizes)
+        resolved_pool, report = vram_estimate.resolve_import_residency(
+            residency=residency,
+            splat_count=splat_count,
+            max_sh_band=band,
+            frame_sizes=frame_sizes,
+            compress_bc7=compress,
+            requested_pool_size=pool,
+            capacity_bytes=capacity_bytes,
+            train_width=train_w,
+            train_height=train_h,
+            refinement_growth_per_step=float(ui._values.get("refinement_max_growth_per_step", 0.30)),
+        )
+        gib = lambda value: float(value) / float(vram_estimate.GIB)
+        warn = imgui.ImVec4(1.0, 0.55, 0.3, 1.0)
+        imgui.text_disabled(f"Est. training: {gib(report.training.total):.1f} GiB  ({len(frame_sizes)} frames)")
+        imgui.text_disabled(f"Dataset  full: {gib(report.dataset.full_bytes):.1f} GiB   stream x{report.dataset.pool_size}: {gib(report.dataset.streaming_bytes):.1f} GiB")
+        chosen = vram_estimate.RESIDENCY_STREAM if 0 < int(resolved_pool) < len(frame_sizes) else vram_estimate.RESIDENCY_FULL
+        chosen_total = report.streaming_total_bytes if chosen == vram_estimate.RESIDENCY_STREAM else report.full_total_bytes
+        if capacity_bytes:
+            line = f"Total ({chosen}): {gib(chosen_total):.1f} / {gib(capacity_bytes):.1f} GiB GPU"
+            if chosen_total > int(capacity_bytes):
+                imgui.text_colored(warn, line + "  - may not fit")
+            else:
+                imgui.text_disabled(line)
+            if chosen == vram_estimate.RESIDENCY_FULL and not report.dataset_fits_full:
+                imgui.text_colored(warn, "Full residency exceeds VRAM; Auto would stream this dataset.")
+        else:
+            imgui.text_disabled(f"Total ({chosen}): {gib(chosen_total):.1f} GiB  (GPU capacity unknown)")
+
     def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
         if not self._show_colmap_import:
             return
@@ -3056,6 +3169,8 @@ class ToolkitWindow:
                 ui._values["colmap_use_alpha_masks"] = bool(use_alpha_masks)
             imgui.end_disabled()
             ToolkitWindow._set_tooltip("Enable or disable importing alpha from the selected Alpha Mask Folder. When disabled, the source image alpha channel is used instead.")
+            imgui.spacing()
+            self._draw_colmap_memory_controls(ui)
             imgui.spacing()
             camera_rows = tuple(ui._values.get("_colmap_camera_rows", ()))
             if len(camera_rows) > 0:
@@ -3102,7 +3217,7 @@ class ToolkitWindow:
             for label, key, tooltip in (
                 ("Compress Dataset using BC7", "compress_dataset_using_bc7", "Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads."),
                 ("Initialize Colors From Images", "colmap_training_image_color_init", "After initialization, project each splat into all imported training images and use the nearest valid sampled color."),
-                ("Photometric Compensation", "colmap_photometric_compensation_enabled", "After image loading, build the photometric dataset and optimize photometric compensation for 1000 iterations before opening the scene. Import progress shows both the dataset build phase and the live loss."),
+                ("Photometric Compensation", "colmap_photometric_compensation_enabled", "After image loading, build the photometric dataset and optimize photometric compensation for 1000 iterations before opening the scene. Import progress shows both the dataset build phase and the live loss. Currently keeps a full native target set resident even when dataset streaming is enabled."),
             ):
                 changed, value = imgui.checkbox(label, bool(ui._values.get(key, False)))
                 if changed:

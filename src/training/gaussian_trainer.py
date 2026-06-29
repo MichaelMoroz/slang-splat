@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +20,7 @@ from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORT
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
+from .dataset_texture_pool import DatasetTexturePool, PreloadedDatasetTextures
 from .defaults import (
     DEFAULT_DEBUG_CONTRIBUTION_RANGE,
     DEFAULT_MAX_OPACITY_STAGE0,
@@ -549,6 +550,7 @@ class GaussianTrainer:
             self._refresh_train_target(local_encoder, frame_index, step)
             self.device.submit_command_buffer(local_encoder.finish())
             self.device.wait()
+            self.mark_dataset_submitted([frame_index], None)
         else:
             self._refresh_train_target(encoder, frame_index, step)
         return self._require_train_target_texture()
@@ -956,6 +958,10 @@ class GaussianTrainer:
         init_point_count: int = 0,
         scale_reg_reference: float | None = None,
         frame_targets_native: list[spy.Texture] | None = None,
+        dataset_payload_provider: Callable[[int], object] | None = None,
+        dataset_texture_format: spy.Format = spy.Format.rgba8_unorm_srgb,
+        pool_size: int = 16,
+        training_steps_per_frame: int = 8,
         target_tonemap_provider: PPISPTonemapProvider | None = None,
     ) -> None:
         if not frames:
@@ -1014,7 +1020,9 @@ class GaussianTrainer:
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
         self.target_tonemap_provider = target_tonemap_provider
-        self._frame_targets_native: list[spy.Texture] = []
+        self._dataset_targets: DatasetTexturePool | PreloadedDatasetTextures | None = None
+        self._dataset_pool_size = max(int(pool_size), 0)
+        self._training_steps_per_frame = max(int(training_steps_per_frame), 1)
         self._compensated_native_target: spy.Texture | None = None
         self._compensated_native_target_frame_index = -1
         self._compensated_native_target_version = -1
@@ -1037,12 +1045,12 @@ class GaussianTrainer:
         self._ensure_refinement_buffers(self._scene_count)
         self._reset_splat_ages()
         self._zero_optimizer_moments()
-        if frame_targets_native is None:
-            self._create_dataset_textures()
-        else:
+        if frame_targets_native is not None:
             if len(frame_targets_native) != len(self.frames):
                 raise ValueError("frame_targets_native must match the number of training frames.")
-            self._frame_targets_native = list(frame_targets_native)
+            self._set_preloaded_dataset_textures(list(frame_targets_native))
+        else:
+            self._create_dataset_textures(dataset_payload_provider, dataset_texture_format, self._dataset_pool_size)
         self._bind_or_upload_init_pointcloud(init_point_positions, init_point_colors, init_point_positions_buffer, init_point_colors_buffer, init_point_count)
         self._clear_clone_counts()
         self._reset_frame_order()
@@ -1050,7 +1058,9 @@ class GaussianTrainer:
     def release_resources(self, *, preserve_frame_targets: bool = False) -> None:
         if self._resources_released:
             if not preserve_frame_targets:
-                self._frame_targets_native = []
+                if self._dataset_targets is not None:
+                    self._dataset_targets.release(preserve_frame_targets=False)
+                    self._dataset_targets = None
             self._compensated_native_target = None
             self._compensated_native_target_frame_index = -1
             self._compensated_native_target_version = -1
@@ -1059,9 +1069,10 @@ class GaussianTrainer:
             return
 
         seen: set[int] = set()
-        if not preserve_frame_targets:
-            _defer_owned_resources(self._frame_targets_native, seen)
-        self._frame_targets_native = []
+        if self._dataset_targets is not None:
+            self._dataset_targets.release(preserve_frame_targets=preserve_frame_targets)
+            if not preserve_frame_targets:
+                self._dataset_targets = None
         _defer_owned_resources(self._compensated_native_target, seen)
         self._compensated_native_target = None
         self._compensated_native_target_frame_index = -1
@@ -1597,6 +1608,18 @@ class GaussianTrainer:
         self._frame_cursor += 1
         return frame_index
 
+    def _upcoming_frame_indices(self, count: int) -> list[int]:
+        if count <= 0 or len(self.frames) <= 0:
+            return []
+        end = min(int(self._frame_cursor) + int(count), len(self.frames))
+        return [int(index) for index in self._frame_order[int(self._frame_cursor) : end]]
+
+    def _effective_batch_request(self, requested: int) -> int:
+        count = max(int(requested), 0)
+        if self._dataset_targets is not None and self._dataset_targets.is_streaming:
+            count = min(count, max(int(self._dataset_targets.pool_size), 1))
+        return count
+
     def _bind_or_upload_init_pointcloud(
         self,
         positions: np.ndarray | None,
@@ -1667,11 +1690,65 @@ class GaussianTrainer:
         tex.copy_from_numpy(np.ascontiguousarray(rgba8, dtype=np.uint8))
         return tex
 
-    def _create_dataset_textures(self) -> None:
-        self._frame_targets_native = []
+    def _set_preloaded_dataset_textures(self, textures: list[spy.Texture]) -> None:
+        self._dataset_targets = PreloadedDatasetTextures(textures)
+
+    def _create_preloaded_dataset_textures(self) -> None:
+        textures: list[spy.Texture] = []
         with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="trainer-target") as executor:
             for rgba8 in executor.map(load_training_frame_rgba8, self.frames):
-                self._frame_targets_native.append(self._create_gpu_texture(rgba8))
+                textures.append(self._create_gpu_texture(rgba8))
+        self._set_preloaded_dataset_textures(textures)
+
+    def _create_dataset_textures(
+        self,
+        payload_provider: Callable[[int], object] | None = None,
+        texture_format: spy.Format = spy.Format.rgba8_unorm_srgb,
+        pool_size: int = 16,
+    ) -> None:
+        requested_pool_size = max(int(pool_size), 0)
+        if requested_pool_size <= 0 or requested_pool_size >= len(self.frames):
+            self._create_preloaded_dataset_textures()
+            return
+        frame_sizes = [(int(frame.width), int(frame.height)) for frame in self.frames]
+        max_width = max(width for width, _ in frame_sizes)
+        max_height = max(height for _, height in frame_sizes)
+        provider = payload_provider if payload_provider is not None else lambda frame_index: load_training_frame_rgba8(self.frames[int(frame_index)])
+        clamped_batch = min(max(int(self._training_steps_per_frame), 1), requested_pool_size)
+        self._dataset_targets = DatasetTexturePool(
+            self.device,
+            frame_sizes,
+            provider,
+            texture_format=texture_format,
+            pool_size=requested_pool_size,
+            max_width=max_width,
+            max_height=max_height,
+            prefetch_depth=max(clamped_batch * 2, 1),
+        )
+
+    def _dataset_target(self, frame_index: int, encoder: spy.CommandEncoder | None = None) -> spy.Texture:
+        if self._dataset_targets is None:
+            raise RuntimeError("Dataset targets are not initialized.")
+        if encoder is not None:
+            return self._dataset_targets.acquire(frame_index, encoder)
+        local_encoder = self.device.create_command_encoder()
+        texture = self._dataset_targets.acquire(frame_index, local_encoder)
+        self.device.submit_command_buffer(local_encoder.finish())
+        self.device.wait()
+        self._dataset_targets.mark_submitted([frame_index], None)
+        return texture
+
+    def mark_dataset_submitted(self, frame_indices: list[int] | tuple[int, ...], submission: int | None) -> None:
+        if self._dataset_targets is not None:
+            self._dataset_targets.mark_submitted(frame_indices, submission)
+
+    @property
+    def dataset_targets_streaming(self) -> bool:
+        return self._dataset_targets is not None and self._dataset_targets.is_streaming
+
+    @property
+    def _frame_targets_native(self) -> list[spy.Texture]:
+        return [] if self._dataset_targets is None else self._dataset_targets.frame_targets_native
 
     @property
     def observed_contribution_pixel_count(self) -> int:
@@ -1787,7 +1864,7 @@ class GaussianTrainer:
     def _refresh_compensated_native_target(self, encoder: spy.CommandEncoder, frame_index: int) -> spy.Texture:
         provider = getattr(self, "target_tonemap_provider", None)
         if provider is None:
-            return self._frame_targets_native[frame_index]
+            return self._dataset_target(frame_index, encoder)
         version = self._target_tonemap_version()
         texture = self._ensure_compensated_native_target_texture(frame_index)
         if self._compensated_native_target_frame_index == int(frame_index) and self._compensated_native_target_version == version:
@@ -1798,7 +1875,7 @@ class GaussianTrainer:
             encoder,
             thread_count_2d(int(frame.width), int(frame.height)),
             {
-                "g_PhotometricSourceTarget": self._frame_targets_native[frame_index],
+                "g_PhotometricSourceTarget": self._dataset_target(frame_index, encoder),
                 "g_PhotometricTarget": texture,
                 "g_PhotometricSourceWidth": int(frame.width),
                 "g_PhotometricSourceHeight": int(frame.height),
@@ -1813,12 +1890,13 @@ class GaussianTrainer:
 
     def _native_target_texture(self, frame_index: int, encoder: spy.CommandEncoder | None = None, *, apply_target_tonemap: bool = True) -> spy.Texture:
         if not apply_target_tonemap or getattr(self, "target_tonemap_provider", None) is None:
-            return self._frame_targets_native[frame_index]
+            return self._dataset_target(frame_index, encoder)
         if encoder is None:
             local_encoder = self.device.create_command_encoder()
             texture = self._refresh_compensated_native_target(local_encoder, frame_index)
             self.device.submit_command_buffer(local_encoder.finish())
             self.device.wait()
+            self.mark_dataset_submitted([frame_index], None)
             return texture
         return self._refresh_compensated_native_target(encoder, frame_index)
 
@@ -1878,7 +1956,7 @@ class GaussianTrainer:
             encoder,
             self._pixel_thread_count(),
             {
-                "g_SourceTarget": self._frame_targets_native[frame_index],
+                "g_SourceTarget": self._dataset_target(frame_index, encoder),
                 "g_DownscaledTarget": self._require_psnr_target_texture(),
                 **self._downscale_vars(frame_index, step),
             },
@@ -1890,7 +1968,7 @@ class GaussianTrainer:
         if getattr(self, "target_tonemap_provider", None) is None:
             return target_texture
         if target_texture is self._compensated_native_target:
-            return self._frame_targets_native[frame_index]
+            return self._dataset_target(frame_index, encoder)
         if target_texture is self._train_target_texture:
             return self._refresh_psnr_target(encoder, frame_index, step)
         return target_texture
@@ -2257,7 +2335,7 @@ class GaussianTrainer:
         self.renderer.sync_prepass_capacity_for_current_scene(frame_camera)
 
     def step_batch(self, step_count: int) -> int:
-        requested = max(int(step_count), 0)
+        requested = self._effective_batch_request(step_count)
         if requested <= 0:
             return 0
 
@@ -2275,6 +2353,9 @@ class GaussianTrainer:
         self.training.train_downscale_factor = first_factor
         self._ensure_training_buffers(self._scene_count, batch_steps)
         frame_indices: list[int] = []
+        if self._dataset_targets is not None:
+            prefetch_count = self._dataset_targets.prefetch_depth if self._dataset_targets.is_streaming else batch_steps
+            self._dataset_targets.prefetch(self._upcoming_frame_indices(prefetch_count))
         enc = self.device.create_command_encoder()
         with debug_region(enc, "Trainer Batch", 48):
             for batch_index in range(batch_steps):
@@ -2296,7 +2377,8 @@ class GaussianTrainer:
                     self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1, frame_camera)
                     self._dispatch_position_random_steps(enc, self.state.step + batch_index + 1)
                     self._dispatch_cache_step_info(enc, batch_index)
-        self.device.submit_command_buffer(enc.finish())
+        submission = self.device.submit_command_buffer(enc.finish())
+        self.mark_dataset_submitted(frame_indices, submission)
         self._observed_contribution_pixel_count += batch_steps * max(int(self.renderer.width) * int(self.renderer.height), 0)
 
         step_metrics = self._read_batch_step_metrics(batch_steps)
@@ -2346,6 +2428,7 @@ class GaussianTrainer:
             raise RuntimeError("No training frames are available for evaluation.")
         resolved_frame_index = clamp_index(frame_index, len(self.frames))
         resolved_step = self.state.step if step is None else int(step)
+        enc = self.device.create_command_encoder()
         training_sample_vars = None
         if native_resolution:
             width, height = self.frame_size(resolved_frame_index)
@@ -2358,7 +2441,7 @@ class GaussianTrainer:
                 self._refinement_camera_signature = None
             frame_camera = self.make_frame_camera(resolved_frame_index, width, height)
             native_camera = frame_camera
-            target_texture = self.get_frame_target_texture(resolved_frame_index, native_resolution=True, step=resolved_step)
+            target_texture = self.get_frame_target_texture(resolved_frame_index, native_resolution=True, encoder=enc, step=resolved_step)
             training_sample_vars = self._native_training_sample_vars(resolved_frame_index, resolved_step)
         else:
             self._ensure_frame_render_resolution(resolved_frame_index, resolved_step)
@@ -2367,6 +2450,7 @@ class GaussianTrainer:
             target_texture = self.get_frame_target_texture(
                 resolved_frame_index,
                 native_resolution=self.effective_train_subsample_factor(resolved_frame_index, resolved_step) > 1,
+                encoder=enc,
                 step=resolved_step,
             )
             width, height = int(self.renderer.width), int(self.renderer.height)
@@ -2375,7 +2459,6 @@ class GaussianTrainer:
         self._apply_renderer_training_hparams(resolved_step)
         self._maybe_sync_prepass_capacity(frame_camera, resolved_step)
         sort_dither = self.sorting_dither(resolved_frame_index, resolved_step, frame_camera)
-        enc = self.device.create_command_encoder()
         with debug_region(enc, "Trainer Eval", 53):
             self.renderer.record_prepass_for_current_scene(
                 enc,
@@ -2395,7 +2478,8 @@ class GaussianTrainer:
                 training_sample_vars,
             )
             self._dispatch_cache_step_info(enc, 0)
-        self.device.submit_command_buffer(enc.finish())
+        submission = self.device.submit_command_buffer(enc.finish())
+        self.mark_dataset_submitted([resolved_frame_index], submission)
         step_metrics = self._read_batch_step_metrics(1)
         if step_metrics.size == 0:
             raise RuntimeError("Frame evaluation did not produce any metrics.")

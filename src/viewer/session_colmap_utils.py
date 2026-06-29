@@ -241,6 +241,17 @@ def _set_colmap_camera_preview(viewer: object, recon: object, selected_camera_id
     viewer.ui._values["_colmap_camera_rows"] = rows
     viewer.ui._values["_colmap_point_stats"] = _point_preview_stats(recon) if point_stats is None else point_stats
     viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
+    # Cache the GPU VRAM capacity once so the importer's residency estimate can
+    # show how the chosen config fits this device (query is relatively expensive).
+    if viewer.ui._values.get("_gpu_vram_capacity_bytes") is None:
+        try:
+            from .buffer_debug import query_total_device_vram_capacity
+
+            capacity, _ = query_total_device_vram_capacity(getattr(viewer, "device", None))
+            if capacity:
+                viewer.ui._values["_gpu_vram_capacity_bytes"] = int(capacity)
+        except Exception:
+            pass
     return selected_ids
 
 
@@ -261,6 +272,8 @@ def _update_import_settings(
     compress_dataset_using_bc7: bool,
     training_image_color_init: bool,
     photometric_compensation_enabled: bool,
+    dataset_pool_size: int,
+    dataset_residency: str,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
@@ -324,6 +337,8 @@ def _update_import_settings(
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         training_image_color_init=bool(training_image_color_init),
         photometric_compensation_enabled=bool(photometric_compensation_enabled),
+        dataset_pool_size=max(int(dataset_pool_size), 0),
+        dataset_residency=str(dataset_residency).lower(),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
         image_downscale_mode=str(image_downscale_mode),
         image_downscale_max_size=max(int(image_downscale_max_size), 1),
@@ -371,6 +386,8 @@ def _update_import_settings(
     viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)
     viewer.ui._values["colmap_training_image_color_init"] = bool(training_image_color_init)
     viewer.ui._values["colmap_photometric_compensation_enabled"] = bool(photometric_compensation_enabled)
+    viewer.ui._values["training_dataset_pool_size"] = max(int(dataset_pool_size), 0)
+    viewer.ui._values["colmap_dataset_residency"] = str(dataset_residency).lower()
     _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
     viewer.ui._values["colmap_image_downscale_mode"] = 1 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE else 2 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_SCALE else 0
     viewer.ui._values["colmap_image_max_size"] = max(int(image_downscale_max_size), 1)
