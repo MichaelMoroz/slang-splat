@@ -2696,7 +2696,7 @@ class ToolkitWindow:
         if imgui.button("All Models"): selected = set(camera_ids)
         imgui.same_line()
         if imgui.button("No Models"): selected.clear()
-        table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
+        table_height = min(max(120.0, 28.0 * float(len(camera_rows)) + 8.0), 300.0)
         child_opened = _imgui_opened(imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True))
         if child_opened:
             flags = (
@@ -3147,6 +3147,8 @@ class ToolkitWindow:
             imgui.end_disabled()
             ToolkitWindow._set_tooltip("Enable or disable importing alpha from the selected Alpha Mask Folder. When disabled, the source image alpha channel is used instead.")
             imgui.spacing()
+            self._draw_colmap_memory_controls(ui)
+            imgui.spacing()
             camera_rows = tuple(ui._values.get("_colmap_camera_rows", ()))
             if len(camera_rows) > 0:
                 self._draw_colmap_camera_selection_table(ui, camera_rows)
@@ -3214,8 +3216,6 @@ class ToolkitWindow:
             self._draw_colmap_downscale_controls(ui)
             imgui.spacing()
             self._draw_colmap_init_mode_controls(ui)
-            imgui.spacing()
-            self._draw_colmap_memory_controls(ui)
             imgui.spacing()
             if imgui.button("Importing..." if import_active else "Import", imgui.ImVec2(imgui.get_content_region_avail().x, 0.0)):
                 self.callbacks.import_colmap()
