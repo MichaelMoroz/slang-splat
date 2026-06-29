@@ -322,6 +322,7 @@
       "compress_dataset_using_bc7": true,
       "colmap_training_image_color_init": true,
       "colmap_photometric_compensation_enabled": true,
+      "colmap_dataset_residency": "auto",
       "colmap_use_alpha_masks": false,
       "colmap_image_downscale_mode": 0,
       "colmap_image_max_size": 2048,

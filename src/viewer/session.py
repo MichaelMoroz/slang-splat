@@ -88,6 +88,7 @@ from .session_colmap_utils import (
     _suggest_images_root_from_dataset_root,
     _update_import_settings as _update_import_settings_impl,
 )
+from .buffer_debug import query_total_device_vram_capacity
 from .session_dataset_utils import (
     _CompressedDatasetTexture,
     _bc_payload_byte_count,
@@ -96,6 +97,12 @@ from .session_dataset_utils import (
     _dataset_bc7_cache_path,
     _parse_compressed_dataset_texture,
 )
+from .vram_estimate import resolve_import_residency
+
+# When max_gaussians is "unbounded" (<=0) we still need a splat count for the
+# residency VRAM estimate; the dataset term dominates the decision so a typical
+# scene size is sufficient here.
+_COLMAP_RESIDENCY_FALLBACK_SPLATS = 2_000_000
 from .state import (
     COLMAP_ROTATION_MODE_AUTO,
     COLMAP_ROTATION_MODE_NONE,
@@ -284,10 +291,11 @@ def _apply_alpha_mask_to_rgba8(
     images_root: Path,
     alpha_mask_root: Path | None,
     alpha_mask_path_index: object | None,
+    mask_path: Path | None = None,
 ) -> np.ndarray:
     if alpha_mask_root is None:
         return rgba8
-    mask_path = _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
+    mask_path = Path(mask_path) if mask_path is not None else _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
     composed = np.ascontiguousarray(rgba8, dtype=np.uint8).copy()
     composed[:, :, 3] = _load_alpha_mask_u8(mask_path, (max(int(frame.width), 1), max(int(frame.height), 1)))
     return composed
@@ -354,14 +362,16 @@ def _compress_dataset_frame_to_bc7_cache(
     return cache_path
 
 
-def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path) -> _CompressedDatasetTexture:
-    cache_path = _dataset_bc7_cache_path(images_root, frame)
+def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path, cache_path: Path | None = None) -> _CompressedDatasetTexture:
+    # `cache_path` may be precomputed by the caller (e.g. the streaming payload
+    # provider) so the per-frame load does no path resolution at all.
+    cache_path = _dataset_bc7_cache_path(images_root, frame) if cache_path is None else Path(cache_path)
     if not cache_path.exists():
-        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root)
+        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, cache_path=cache_path)
     payload = _parse_compressed_dataset_texture(cache_path)
     if payload.format != spy.Format.bc7_unorm_srgb or payload.width != int(frame.width) or payload.height != int(frame.height):
         cache_path.unlink(missing_ok=True)
-        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root)
+        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, cache_path=cache_path)
         payload = _parse_compressed_dataset_texture(cache_path)
     if payload.format != spy.Format.bc7_unorm_srgb:
         raise RuntimeError(f"Expected BC7 UNORM SRGB cache for {frame.image_path.name}, got {payload.format}")
@@ -389,16 +399,23 @@ def _load_or_create_masked_bc7_dataset_texture(
     images_root: Path,
     alpha_mask_root: Path,
     alpha_mask_path_index: object | None,
+    *,
+    mask_path: Path | None = None,
+    cache_path: Path | None = None,
 ) -> _CompressedDatasetTexture:
     """BC7 texture with the alpha mask baked in, cached separately and keyed by mask identity."""
-    mask_path = _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
-    cache_path = _dataset_bc7_cache_path(images_root, frame, alpha_mask_token=_alpha_mask_cache_token(mask_path))
+    mask_path = Path(mask_path) if mask_path is not None else _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
+    cache_path = (
+        _dataset_bc7_cache_path(images_root, frame, alpha_mask_token=_alpha_mask_cache_token(mask_path))
+        if cache_path is None
+        else Path(cache_path)
+    )
     if cache_path.exists():
         payload = _parse_compressed_dataset_texture(cache_path)
         if payload.format == spy.Format.bc7_unorm_srgb and payload.width == int(frame.width) and payload.height == int(frame.height):
             return payload
         cache_path.unlink(missing_ok=True)
-    rgba8 = _apply_alpha_mask_to_rgba8(load_training_frame_rgba8(frame), frame, images_root, alpha_mask_root, alpha_mask_path_index)
+    rgba8 = _apply_alpha_mask_to_rgba8(load_training_frame_rgba8(frame), frame, images_root, alpha_mask_root, alpha_mask_path_index, mask_path=mask_path)
     cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8, cache_path=cache_path)
     payload = _parse_compressed_dataset_texture(cache_path)
     if payload.format != spy.Format.bc7_unorm_srgb or payload.width != int(frame.width) or payload.height != int(frame.height):
@@ -690,6 +707,11 @@ def _training_dataset_pool_size_from_ui(viewer: object) -> int:
     return max(int(values.get("training_dataset_pool_size", 16)), 0)
 
 
+def _dataset_residency_from_ui(viewer: object) -> str:
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    return str(values.get("colmap_dataset_residency", "auto")).lower()
+
+
 def _training_dataset_pool_size(viewer: object) -> int:
     import_cfg = getattr(getattr(viewer, "s", None), "colmap_import", None)
     if import_cfg is not None and hasattr(import_cfg, "dataset_pool_size"):
@@ -706,6 +728,41 @@ def _streaming_dataset_enabled(pool_size: int, frames: list[ColmapFrame]) -> boo
     return int(pool_size) > 0 and int(pool_size) < len(frames)
 
 
+def _resolve_import_dataset_pool_size(
+    viewer: object,
+    frames: list[ColmapFrame],
+    *,
+    requested_pool_size: int,
+    dataset_residency: str,
+    compress_dataset_using_bc7: bool,
+) -> int:
+    if not frames:
+        return max(int(requested_pool_size), 0)
+    estimate_capacity = None
+    estimate_device = getattr(viewer, "device", None)
+    if estimate_device is not None:
+        try:
+            estimate_capacity, _ = query_total_device_vram_capacity(estimate_device)
+        except Exception:
+            estimate_capacity = None
+    try:
+        values = getattr(getattr(viewer, "ui", None), "_values", {})
+        estimate_splat_count = max(int(values.get("max_gaussians", 0)), 0) or _COLMAP_RESIDENCY_FALLBACK_SPLATS
+        pool_size, _ = resolve_import_residency(
+            residency=dataset_residency,
+            frame_sizes=[(int(frame.width), int(frame.height)) for frame in frames],
+            splat_count=estimate_splat_count,
+            max_sh_band=int(values.get("max_sh_band", 3)),
+            compress_bc7=bool(compress_dataset_using_bc7),
+            requested_pool_size=max(int(requested_pool_size), 0),
+            capacity_bytes=estimate_capacity,
+            refinement_growth_per_step=float(values.get("refinement_max_growth_per_step", 0.30)),
+        )
+        return max(int(pool_size), 0)
+    except Exception:
+        return max(int(requested_pool_size), 0)
+
+
 def _dataset_texture_format(compress_dataset_using_bc7: bool) -> spy.Format:
     return spy.Format.bc7_unorm_srgb if bool(compress_dataset_using_bc7) else spy.Format.rgba8_unorm_srgb
 
@@ -719,6 +776,26 @@ def _make_dataset_payload_provider(
 ):
     resolved_images_root = Path(images_root).resolve()
     active_alpha_mask_root = None if alpha_mask_root is None else Path(alpha_mask_root).resolve()
+    # Precompute the BC7 cache path for every frame once (provider-local) for the
+    # common unmasked path, so streaming loads never resolve paths at runtime and
+    # don't depend on the process-global resolver staying valid.
+    if bool(compress_dataset_using_bc7) and active_alpha_mask_root is None:
+        cache_paths = [_dataset_bc7_cache_path(resolved_images_root, frame) for frame in frames]
+        return lambda frame_index: _load_or_create_bc7_dataset_texture(frames[int(frame_index)], resolved_images_root, cache_path=cache_paths[int(frame_index)])
+    if bool(compress_dataset_using_bc7):
+        mask_paths = [_resolve_alpha_mask_path(frame, resolved_images_root, active_alpha_mask_root, alpha_mask_path_index) for frame in frames]
+        cache_paths = [
+            _dataset_bc7_cache_path(resolved_images_root, frame, alpha_mask_token=_alpha_mask_cache_token(mask_path))
+            for frame, mask_path in zip(frames, mask_paths, strict=False)
+        ]
+        return lambda frame_index: _load_or_create_masked_bc7_dataset_texture(
+            frames[int(frame_index)],
+            resolved_images_root,
+            active_alpha_mask_root,
+            alpha_mask_path_index,
+            mask_path=mask_paths[int(frame_index)],
+            cache_path=cache_paths[int(frame_index)],
+        )
     return lambda frame_index: _load_dataset_texture(frames[int(frame_index)], resolved_images_root, bool(compress_dataset_using_bc7), active_alpha_mask_root, alpha_mask_path_index)
 
 
@@ -2673,10 +2750,12 @@ def _finish_import_colmap_dataset(
     cached_init_point_positions: np.ndarray | None = None,
     cached_init_point_colors: np.ndarray | None = None,
     dataset_pool_size: int | None = None,
+    dataset_residency: str | None = None,
 ) -> None:
     if recon is None or training_frames is None:
         raise RuntimeError("COLMAP import finalize requires reconstruction and training frames.")
     resolved_dataset_pool_size = _training_dataset_pool_size(viewer) if dataset_pool_size is None else max(int(dataset_pool_size), 0)
+    resolved_dataset_residency = _dataset_residency_from_ui(viewer) if dataset_residency is None else str(dataset_residency).lower()
     resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
     xyz, _ = _point_tables(recon, min_track_length)
     _reset_loaded_runtime(viewer)
@@ -2698,6 +2777,7 @@ def _finish_import_colmap_dataset(
         training_image_color_init=training_image_color_init,
         photometric_compensation_enabled=photometric_compensation_enabled,
         dataset_pool_size=resolved_dataset_pool_size,
+        dataset_residency=resolved_dataset_residency,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
@@ -2817,6 +2897,7 @@ def import_colmap_dataset(
     resolved_custom_rotation_deg = tuple(float(v) for v in np.asarray(custom_rotation_deg, dtype=np.float32).reshape(3))
     recon = _load_aligned_colmap_reconstruction(root, rotation_mode=resolved_rotation_mode, custom_rotation_deg=resolved_custom_rotation_deg)
     pool_size = _training_dataset_pool_size_from_ui(viewer)
+    dataset_residency = _dataset_residency_from_ui(viewer)
     viewer.s.colmap_import = ColmapImportSettings(
         images_root=Path(images_root).resolve(),
         alpha_mask_root=None if alpha_mask_root is None else Path(alpha_mask_root).resolve(),
@@ -2827,6 +2908,7 @@ def import_colmap_dataset(
         training_image_color_init=bool(training_image_color_init),
         photometric_compensation_enabled=bool(photometric_compensation_enabled),
         dataset_pool_size=pool_size,
+        dataset_residency=dataset_residency,
         nn_radius_scale_coef=float(nn_radius_scale_coef),
         init_neighbor_count=max(int(init_neighbor_count), 2),
         init_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
@@ -2859,6 +2941,14 @@ def import_colmap_dataset(
         downscale_max_size=image_downscale_max_size,
         downscale_scale=image_downscale_scale,
     )
+    pool_size = _resolve_import_dataset_pool_size(
+        viewer,
+        training_frames,
+        requested_pool_size=pool_size,
+        dataset_residency=dataset_residency,
+        compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
+    )
+    viewer.s.colmap_import.dataset_pool_size = pool_size
     stream_dataset = _streaming_dataset_enabled(pool_size, training_frames)
     frame_targets_native = None if stream_dataset else _create_native_dataset_textures(viewer, training_frames)
     photometric_trainer = None
@@ -2930,6 +3020,7 @@ def import_colmap_dataset(
         cached_init_point_positions=cached_init_point_positions,
         cached_init_point_colors=cached_init_point_colors,
         dataset_pool_size=pool_size,
+        dataset_residency=dataset_residency,
     )
     if photometric_trainer is not None:
         viewer.s.photometric_trainer = photometric_trainer
@@ -3004,6 +3095,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     training_image_color_init = bool(viewer.ui._values.get("colmap_training_image_color_init", False))
     photometric_compensation_enabled = bool(viewer.ui._values.get("colmap_photometric_compensation_enabled", False))
+    dataset_residency = _dataset_residency_from_ui(viewer)
     if not colmap_root.exists():
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
     if not _has_colmap_sparse(colmap_root):
@@ -3072,6 +3164,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         fibonacci_sphere_enabled=fibonacci_sphere_enabled,
         fibonacci_sphere_nn_radius_scale_coef=float(max(fibonacci_sphere_nn_radius_scale_coef, 1e-4)),
         dataset_pool_size=_training_dataset_pool_size_from_ui(viewer),
+        dataset_residency=dataset_residency,
     )
     viewer.s.last_error = ""
 
@@ -3108,6 +3201,13 @@ def advance_colmap_import(viewer: object) -> None:
                 return
             if not progress.frames:
                 raise RuntimeError(f"No training frames were found in {progress.images_root}.")
+            progress.dataset_pool_size = _resolve_import_dataset_pool_size(
+                viewer,
+                progress.frames,
+                requested_pool_size=getattr(progress, "dataset_pool_size", 16),
+                dataset_residency=getattr(progress, "dataset_residency", "auto"),
+                compress_dataset_using_bc7=bool(progress.compress_dataset_using_bc7),
+            )
             _start_colmap_texture_loader(progress)
             progress.phase = "load_textures"
             progress.total = len(progress.frames)
@@ -3204,6 +3304,7 @@ def advance_colmap_import(viewer: object) -> None:
                 cached_init_point_positions=cached_init_point_positions,
                 cached_init_point_colors=cached_init_point_colors,
                 dataset_pool_size=getattr(progress, "dataset_pool_size", 16),
+                dataset_residency=getattr(progress, "dataset_residency", "auto"),
             )
             viewer.toolkit.close_colmap_import_window()
             return
@@ -3292,6 +3393,7 @@ def advance_colmap_import(viewer: object) -> None:
                 cached_init_point_positions=cached_init_point_positions,
                 cached_init_point_colors=cached_init_point_colors,
                 dataset_pool_size=getattr(progress, "dataset_pool_size", 16),
+                dataset_residency=getattr(progress, "dataset_residency", "auto"),
             )
             _attach_colmap_import_photometric_trainer(viewer, progress)
             viewer.toolkit.close_colmap_import_window()

@@ -3013,6 +3013,96 @@ class ToolkitWindow:
 
             imgui.end_table()
 
+    def _colmap_estimate_frame_sizes(self, ui: ViewerUI) -> list[tuple[int, int]]:
+        """Downscaled (training) frame sizes derived from the COLMAP camera rows."""
+        from ..scene._internal.colmap_ops import resolve_training_frame_image_size
+
+        rows = tuple(ui._values.get("_colmap_camera_rows", ()))
+        if not rows:
+            return []
+        mode = ("original", "max_size", "scale")[min(max(int(ui._values.get("colmap_image_downscale_mode", 1)), 0), 2)]
+        max_size = int(ui._values.get("colmap_image_max_size", 2048))
+        scale = float(ui._values.get("colmap_image_scale", 1.0))
+        sizes: list[tuple[int, int]] = []
+        for row in rows:
+            try:
+                width_text, height_text = str(row.get("resolution_text", "")).lower().split("x")
+                width, height = int(width_text), int(height_text)
+            except (ValueError, AttributeError):
+                continue
+            dw, dh = resolve_training_frame_image_size(width, height, downscale_mode=mode, downscale_max_size=max_size, downscale_scale=scale)
+            sizes.extend([(dw, dh)] * max(int(row.get("frame_count", 0)), 0))
+        return sizes
+
+    def _draw_colmap_memory_controls(self, ui: ViewerUI) -> None:
+        from . import vram_estimate
+
+        imgui.separator()
+        imgui.text_disabled("Training memory & dataset residency")
+        ToolkitWindow._draw_clamped_int(
+            ui,
+            key="max_gaussians",
+            label="Max Gaussians (splat budget)",
+            default=2500000,
+            speed=1000.0,
+            min_value=0,
+            max_value=100000000,
+            tooltip="Target splat count. Caps point-cloud initialization (used as a fraction of the available points) and is the refinement growth target; also drives the VRAM estimate below. 0 keeps all available points.",
+        )
+        sh_band = min(max(int(ui._values.get("max_sh_band", 3)), 0), len(_SH_BAND_LABELS) - 1)
+        ui._values["max_sh_band"] = ToolkitWindow._draw_combo("Max SH Band", _SH_BAND_LABELS, sh_band)
+        ToolkitWindow._set_tooltip("Maximum spherical-harmonics band stored per splat (1/4/9/16 coefficients for band 0/1/2/3). Higher bands store more color and cost more VRAM.")
+        residency_options = ("Auto (fit to VRAM)", "Full (all resident)", "Stream")
+        residency_keys = (vram_estimate.RESIDENCY_AUTO, vram_estimate.RESIDENCY_FULL, vram_estimate.RESIDENCY_STREAM)
+        current = str(ui._values.get("colmap_dataset_residency", "auto")).lower()
+        res_idx = residency_keys.index(current) if current in residency_keys else 0
+        ui._values["colmap_dataset_residency"] = residency_keys[ToolkitWindow._draw_combo("Dataset Residency", residency_options, res_idx)]
+        ToolkitWindow._set_tooltip("Auto keeps the whole dataset resident in VRAM when it fits this GPU and otherwise streams a rotating pool. Full forces all frames resident; Stream forces the pool.")
+        self._draw_colmap_vram_estimate(ui, str(ui._values["colmap_dataset_residency"]))
+
+    def _draw_colmap_vram_estimate(self, ui: ViewerUI, residency: str) -> None:
+        from . import vram_estimate
+
+        frame_sizes = self._colmap_estimate_frame_sizes(ui)
+        if not frame_sizes:
+            imgui.text_disabled("VRAM estimate appears after a COLMAP root is loaded.")
+            return
+        splat_count = max(int(ui._values.get("max_gaussians", 0)), 0) or 2_000_000
+        band = min(max(int(ui._values.get("max_sh_band", 3)), 0), 3)
+        compress = bool(ui._values.get("compress_dataset_using_bc7", False))
+        pool = max(int(ui._values.get("training_dataset_pool_size", 16)), 0)
+        capacity = ui._values.get("_gpu_vram_capacity_bytes", None)
+        capacity_bytes = None if capacity is None else int(capacity)
+        train_w, train_h = vram_estimate.representative_train_resolution(frame_sizes)
+        resolved_pool, report = vram_estimate.resolve_import_residency(
+            residency=residency,
+            splat_count=splat_count,
+            max_sh_band=band,
+            frame_sizes=frame_sizes,
+            compress_bc7=compress,
+            requested_pool_size=pool,
+            capacity_bytes=capacity_bytes,
+            train_width=train_w,
+            train_height=train_h,
+            refinement_growth_per_step=float(ui._values.get("refinement_max_growth_per_step", 0.30)),
+        )
+        gib = lambda value: float(value) / float(vram_estimate.GIB)
+        warn = imgui.ImVec4(1.0, 0.55, 0.3, 1.0)
+        imgui.text_disabled(f"Est. training: {gib(report.training.total):.1f} GiB  ({len(frame_sizes)} frames)")
+        imgui.text_disabled(f"Dataset  full: {gib(report.dataset.full_bytes):.1f} GiB   stream x{report.dataset.pool_size}: {gib(report.dataset.streaming_bytes):.1f} GiB")
+        chosen = vram_estimate.RESIDENCY_STREAM if 0 < int(resolved_pool) < len(frame_sizes) else vram_estimate.RESIDENCY_FULL
+        chosen_total = report.streaming_total_bytes if chosen == vram_estimate.RESIDENCY_STREAM else report.full_total_bytes
+        if capacity:
+            line = f"Total ({chosen}): {gib(chosen_total):.1f} / {gib(capacity):.1f} GiB GPU"
+            if chosen_total > int(capacity):
+                imgui.text_colored(warn, line + "  - may not fit")
+            else:
+                imgui.text_disabled(line)
+            if chosen == vram_estimate.RESIDENCY_FULL and not report.dataset_fits_full:
+                imgui.text_colored(warn, "Full residency exceeds VRAM; Auto would stream this dataset.")
+        else:
+            imgui.text_disabled(f"Total ({chosen}): {gib(chosen_total):.1f} GiB  (GPU capacity unknown)")
+
     def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
         if not self._show_colmap_import:
             return
@@ -3124,6 +3214,8 @@ class ToolkitWindow:
             self._draw_colmap_downscale_controls(ui)
             imgui.spacing()
             self._draw_colmap_init_mode_controls(ui)
+            imgui.spacing()
+            self._draw_colmap_memory_controls(ui)
             imgui.spacing()
             if imgui.button("Importing..." if import_active else "Import", imgui.ImVec2(imgui.get_content_region_avail().x, 0.0)):
                 self.callbacks.import_colmap()

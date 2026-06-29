@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -10,7 +11,12 @@ import slangpy as spy
 
 from ..utility import RO_BUFFER_USAGE, alloc_buffer, alloc_texture_2d, defer_resource_release
 
-PREFETCH_THREADS = 2
+# A training batch consumes several frames; with only 2 loader threads the main
+# thread blocks in acquire() waiting on future.result(). Measured throughput on a
+# 42 MiB-per-frame BC7 cache saturates around 6 threads (~39 ms to stage an
+# 8-frame batch vs ~160 ms at 2 threads), keeping loads under the frame budget.
+# Cap by core count so low-core machines are not oversubscribed.
+PREFETCH_THREADS = min(6, os.cpu_count() or 1)
 BC7_BLOCK_BYTES = 16
 BC_BLOCK_SIZE = 4
 
