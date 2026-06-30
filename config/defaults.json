@@ -406,6 +406,28 @@
         0.0,
         0.0
       ]
+    },
+    "run": {
+      "source": "colmap",
+      "ply_path": null,
+      "colmap_root_path": null,
+      "colmap_database_path": null,
+      "colmap_images_root": null,
+      "colmap_depth_root": null,
+      "colmap_alpha_mask_root": null,
+      "colmap_custom_ply_path": null,
+      "colmap_custom_mesh_path": null,
+      "colmap_selected_camera_ids": [],
+      "seed": 1234,
+      "train_iters": 0,
+      "photometric": null,
+      "reinitialize": false,
+      "metrics": null,
+      "render": null,
+      "edit": null,
+      "output_ply": null,
+      "stats": null,
+      "schedule": []
     }
   },
   "cli": {

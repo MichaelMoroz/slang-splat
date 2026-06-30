@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - imguizmo is part of imgui_bundle but gua
     _IM_GUIZMO = None
 
 from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10
-from ..repo_defaults import json_value
+from ..repo_defaults import json_value, viewer_defaults
 from ..app.training_controls import (
     SH_BAND_LABELS as _SH_BAND_LABELS,
     SCHEDULE_STAGE_CONTROL_DEFS,
@@ -82,6 +82,7 @@ from .ui_schema import (
 from .ui_pretty import draw_struct_sections, measure_struct_sections
 from .ui_text import _build_about_text, _build_documentation_text, _draw_disabled_wrapped_text, _draw_markdown_text, _status_suffix
 from ..renderer.render_params import RendererParams
+from .config import RUN_UI_VALUE_FIELDS, exported_run_values
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
 _TOOLKIT_MIN_WIDTH = 280.0
@@ -181,6 +182,8 @@ _RESOURCE_DEBUG_WINDOW_WIDTH = 1120.0
 _RESOURCE_DEBUG_WINDOW_HEIGHT = 620.0
 _PHOTOMETRIC_UI_DEFAULTS = PhotometricCompensationHyperParams()
 _GRAPHICS_API_MENU_OPTIONS = (("vulkan", "Vulkan"), ("dx12", "DX12"))
+_VIEWER_STATE_DEFAULTS = viewer_defaults()["state"]
+_VIEWER_RUN_DEFAULTS = viewer_defaults().get("run", {})
 
 
 def _normalize_graphics_api_name(value: object) -> str:
@@ -638,6 +641,14 @@ def _export_fields(values: dict[str, object], fields: tuple[tuple[str, object], 
     return {key: cast(values[key]) for key, cast in fields}
 
 
+def _export_state_fields(values: dict[str, object]) -> dict[str, object]:
+    return {
+        "list_capacity_multiplier": int(values.get("list_capacity_multiplier", _VIEWER_STATE_DEFAULTS["list_capacity_multiplier"])),
+        "max_prepass_memory_mb": int(values.get("max_prepass_memory_mb", _VIEWER_STATE_DEFAULTS["max_prepass_memory_mb"])),
+        "background": tuple(float(v) for v in _VIEWER_STATE_DEFAULTS.get("background", (0.0, 0.0, 0.0))),
+    }
+
+
 def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, dict[str, object]]:
     renderer_params = RendererParams.from_ui_values(values, _RENDERER_DEBUG_MODE_VALUES, _threshold_band_range)
     return {
@@ -654,6 +665,8 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 "viewport_sh_control_key": str(values["_viewport_sh_control_key"]),
                 "viewport_sh_stage_label": str(values["_viewport_sh_stage_label"]),
             }),
+            "state": json_value(_export_state_fields(values)),
+            "run": json_value(exported_run_values(values)),
         },
     }
 
@@ -4494,6 +4507,16 @@ def build_ui(renderer) -> ViewerUI:
     for key in ("colmap_root_path", "colmap_database_path", "colmap_images_root", "colmap_alpha_mask_root", "colmap_depth_root", "colmap_custom_ply_path", "colmap_custom_mesh_path"):
         values[key] = ""
     values["colmap_selected_camera_ids"] = ()
+    for key in RUN_UI_VALUE_FIELDS:
+        if key in values:
+            continue
+        default = _VIEWER_RUN_DEFAULTS.get(key, "")
+        if key == "colmap_selected_camera_ids":
+            values[key] = tuple(int(camera_id) for camera_id in default) if isinstance(default, (list, tuple)) else ()
+        elif key in {"seed", "train_iters"}:
+            values[key] = int(default) if default not in (None, "") else 0
+        else:
+            values[key] = "" if default is None else default
     for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:
         default_value = False if cast is bool else 0 if cast is int else () if cast is tuple else 20.0
         values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, default_value))

@@ -214,8 +214,8 @@ def _renderdoc_capture_stem(frame_index: int | None = None, now: datetime | None
     return f"renderdoc_frame_capture_{timestamp}{frame_suffix}"
 
 
-def _renderdoc_capture_template(frame_index: int | None = None, now: datetime | None = None) -> Path:
-    output_dir = _repo_root() / "temp"
+def _renderdoc_capture_template(frame_index: int | None = None, now: datetime | None = None, directory: Path | str | None = None) -> Path:
+    output_dir = _repo_root() / "temp" if directory is None else Path(directory)
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir / _renderdoc_capture_stem(frame_index, now)
 
@@ -549,10 +549,11 @@ def begin_renderdoc_frame_capture(
     device: spy.Device,
     window: spy.Window | None = None,
     frame_index: int | None = None,
+    directory: Path | str | None = None,
 ) -> RenderDocCaptureSession:
     runtime_api = _get_runtime_renderdoc_api()
     use_runtime_trigger = False
-    capture_template = _renderdoc_capture_template(frame_index)
+    capture_template = _renderdoc_capture_template(frame_index, directory=directory)
     target_port: int | None = None
     slangpy_renderdoc_ready = renderdoc is not None and bool(renderdoc.is_available())
     if not slangpy_renderdoc_ready:

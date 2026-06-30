@@ -16,6 +16,7 @@ from src.viewer.state import (
     COLMAP_ROTATION_MODE_NONE,
     ColmapImportProgress,
     ColmapImportSettings,
+    DEFAULT_COLMAP_ROTATION_MODE,
 )
 from tests.viewer_test_harness import (
     _DebugTrainingRenderer,
@@ -2354,7 +2355,7 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
     monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: xyz)
-    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None, **kwargs: None)
     calls: list[str] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
@@ -2391,7 +2392,7 @@ def test_finish_import_colmap_dataset_uses_training_camera_position_only(monkeyp
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
     monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: SimpleNamespace(center=np.zeros((3,), dtype=np.float32), radius=2.0))
-    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None, **kwargs: None)
     calls: list[object] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
@@ -2433,7 +2434,7 @@ def test_finish_import_colmap_dataset_falls_back_to_bounds_fit_without_training_
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
     monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: ("bounds", xyz.shape[0]))
-    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None, **kwargs: None)
     calls: list[object] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
@@ -2487,7 +2488,7 @@ def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkey
     monkeypatch.setattr(session, "_set_colmap_camera_preview", lambda viewer_obj, recon_obj, camera_ids: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: calls.append("apply_live"))
     monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: ("bounds", xyz.shape[0]))
-    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: calls.append(("initialize", frame_targets_native)))
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None, **kwargs: calls.append(("initialize", frame_targets_native)))
 
     def _ensure_cached(viewer_obj, init) -> None:
         calls.append(("ensure_cached", init.seed, viewer_obj.s.colmap_import.init_mode, viewer_obj.s.colmap_import.fibonacci_sphere_point_count, viewer_obj.s.colmap_import.fibonacci_sphere_upper_hemisphere_only))
@@ -2653,7 +2654,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     defaults = ColmapImportSettings()
 
     assert defaults.init_mode == "pointcloud"
-    assert defaults.rotation_mode == COLMAP_ROTATION_MODE_AUTO
+    assert defaults.rotation_mode == DEFAULT_COLMAP_ROTATION_MODE
     assert defaults.custom_rotation_deg == (0.0, 0.0, 0.0)
     assert isinstance(defaults.training_image_color_init, bool)
     assert defaults.nn_radius_scale_coef == 0.5

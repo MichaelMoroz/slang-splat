@@ -2042,12 +2042,19 @@ def ensure_training_runtime_resolution(viewer: object) -> bool:
     return True
 
 
-def _dataset_metrics_output_path(dataset_root: Path | None) -> Path:
-    _DATASET_METRICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def _dataset_metrics_output_path(dataset_root: Path | None, output_path: Path | str | None = None) -> Path:
+    output = None if output_path is None else Path(output_path)
     dataset_name = "dataset" if dataset_root is None else str(dataset_root.name).strip() or "dataset"
     safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in dataset_name).strip("_") or "dataset"
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-    return _DATASET_METRICS_OUTPUT_DIR / f"{safe_name}_{timestamp}.txt"
+    if output is None:
+        _DATASET_METRICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        return _DATASET_METRICS_OUTPUT_DIR / f"{safe_name}_{timestamp}.txt"
+    if output.suffix.lower() == ".txt":
+        output.parent.mkdir(parents=True, exist_ok=True)
+        return output
+    output.mkdir(parents=True, exist_ok=True)
+    return output / f"{safe_name}_{timestamp}.txt"
 
 
 def _dataset_metrics_numeric_values(rows: tuple[object, ...], key: str) -> np.ndarray:
@@ -2120,8 +2127,8 @@ def _dataset_metrics_report_lines(report: DatasetMetricsReport) -> tuple[str, ..
     return tuple(lines)
 
 
-def _write_dataset_metrics_report(report: DatasetMetricsReport) -> Path:
-    report_path = _dataset_metrics_output_path(report.dataset_root)
+def _write_dataset_metrics_report(report: DatasetMetricsReport, output_path: Path | str | None = None) -> Path:
+    report_path = _dataset_metrics_output_path(report.dataset_root, output_path)
     report_with_path = replace(report, report_path=report_path)
     report_path.write_text("\n".join(_dataset_metrics_report_lines(report_with_path)) + "\n", encoding="utf-8")
     return report_path
@@ -2163,7 +2170,7 @@ def _reset_dataset_metrics_state(viewer: object, *, clear_report: bool = True, s
     viewer.s.dataset_metrics_status = str(status)
 
 
-def start_dataset_metrics_logging(viewer: object) -> None:
+def start_dataset_metrics_logging(viewer: object, output_path: Path | str | None = None) -> None:
     def _fail(message: str) -> None:
         viewer.s.dataset_metrics_status = message
         raise RuntimeError(message)
@@ -2198,6 +2205,7 @@ def start_dataset_metrics_logging(viewer: object) -> None:
         requested_frame_count=len(frames),
         splat_count=int(getattr(getattr(viewer.s.trainer, "scene", None), "count", 0)),
         dataset_root=getattr(viewer.s, "colmap_root", None),
+        report_output_path=None if output_path is None else Path(output_path),
         previous_force_prepass_count_readback=previous_force_prepass_count_readback,
         previous_renderer_size=previous_size,
         previous_renderer_capacity=previous_capacity,
@@ -2223,7 +2231,7 @@ def _complete_dataset_metrics_logging(viewer: object) -> None:
     )
     report_path = None
     try:
-        report_path = _write_dataset_metrics_report(report)
+        report_path = _write_dataset_metrics_report(report, getattr(task, "report_output_path", None))
     except Exception as exc:
         viewer.s.last_error = str(exc)
         viewer.s.dataset_metrics_status = f"Dataset metrics finished, but report write failed: {exc}"

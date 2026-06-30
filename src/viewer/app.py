@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from dataclasses import replace
 import math
@@ -474,8 +475,7 @@ def _initial_renderer_params(state: object) -> RendererParams:
     )
 
 
-class SplatViewer(_ViewerWindowHost):
-
+class ViewerCore:
     def c(self, key: str):
         return self.ui.control(key)
 
@@ -573,6 +573,33 @@ class SplatViewer(_ViewerWindowHost):
 
     def _training_control_value(self, control: str) -> object:
         return self.c(control).value
+
+    def _export_source_scene(self) -> GaussianScene:
+        if self.s.trainer is not None:
+            return self.s.trainer.read_live_scene()
+        if isinstance(self.s.scene, GaussianScene):
+            return self.s.scene
+        raise RuntimeError("No gaussian scene is available to export.")
+
+    def _export_should_include_sh(self) -> bool:
+        if self.s.trainer is not None:
+            return resolve_sh_band(self.s.trainer.training, self.s.trainer.state.step) > 0
+        training = self.training_params().training
+        return int(getattr(training, "sh_band", 3 if bool(getattr(training, "use_sh", False)) else 0)) > 0
+
+    def _run_action(self, action, *, close_colmap_import: bool = False) -> None:
+        try:
+            action()
+        except Exception as exc:
+            self.s.last_error = str(exc)
+            traceback.print_exc()
+        else:
+            self.s.last_error = ""
+            if close_colmap_import:
+                self.toolkit.close_colmap_import_window()
+
+
+class SplatViewer(_ViewerWindowHost, ViewerCore):
 
     def _apply_resize(self, width: int, height: int) -> None:
         target_width, target_height = int(width), int(height)
@@ -682,34 +709,10 @@ class SplatViewer(_ViewerWindowHost):
     def _cancel_exit_callback(self) -> None:
         _cancel_exit_confirmation(self)
 
-    def _run_action(self, action, *, close_colmap_import: bool = False) -> None:
-        try:
-            action()
-        except Exception as exc:
-            self.s.last_error = str(exc)
-            traceback.print_exc()
-        else:
-            self.s.last_error = ""
-            if close_colmap_import:
-                self.toolkit.close_colmap_import_window()
-
     def _load_ply_callback(self) -> None:
         path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
         if path:
             self._run_action(lambda: session.load_scene(self, Path(path)))
-
-    def _export_source_scene(self) -> GaussianScene:
-        if self.s.trainer is not None:
-            return self.s.trainer.read_live_scene()
-        if isinstance(self.s.scene, GaussianScene):
-            return self.s.scene
-        raise RuntimeError("No gaussian scene is available to export.")
-
-    def _export_should_include_sh(self) -> bool:
-        if self.s.trainer is not None:
-            return resolve_sh_band(self.s.trainer.training, self.s.trainer.state.step) > 0
-        training = self.training_params().training
-        return int(getattr(training, "sh_band", 3 if bool(getattr(training, "use_sh", False)) else 0)) > 0
 
     def _export_ply_callback(self) -> None:
         path = spy.platform.save_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
@@ -1001,9 +1004,26 @@ def _compute_view_geometry() -> tuple[int, int]:
         return max(min(int(screen_width * 0.9), 1920), 1280), max(min(int(screen_height * 0.9), 1200), 720)
     return 1600, 900
 
+
+def _build_main_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Slang Splat viewer.", add_help=True)
+    parser.add_argument("--headless", action="store_true", help="Run the viewer automation pipeline without creating a window.")
+    parser.add_argument("--config", type=Path, default=None, help="JSON config overlay. Required with --headless; in GUI mode this is reserved for config preselection.")
+    parser.add_argument("--graphics-api", type=str, default=None, choices=("vulkan", "dx12"), help="Override the graphics API selected from config/defaults.")
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
+    args, _unknown = _build_main_parser().parse_known_args(argv)
+    if bool(args.headless):
+        if args.config is None:
+            print("--headless requires --config")
+            return 2
+        from .headless import run_headless_from_config
+
+        return run_headless_from_config(args.config, graphics_api=args.graphics_api)
     view_w, view_h = _compute_view_geometry()
-    graphics_api = _preferred_graphics_api_name()
+    graphics_api = _preferred_graphics_api_name() if args.graphics_api is None else str(args.graphics_api)
     try:
         frame_capture.prepare_renderdoc_startup()
     except Exception as exc:

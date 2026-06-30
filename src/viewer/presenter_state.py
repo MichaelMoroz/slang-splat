@@ -939,13 +939,19 @@ def _camera_overlay_segments(
     )
 
 
-def _run_training_batch(viewer: object) -> int:
+def _run_training_batch(viewer: object, max_steps: int | None = None) -> int:
     if not viewer.s.training_active or viewer.s.trainer is None:
         viewer.s.training_runtime_factor_changed = False
         viewer.s.last_training_batch_steps = 0
         return 0
     factor_before = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
     steps = _training_steps_per_frame(viewer)
+    if max_steps is not None:
+        steps = min(steps, max(int(max_steps), 0))
+    if steps <= 0:
+        viewer.s.training_runtime_factor_changed = False
+        viewer.s.last_training_batch_steps = 0
+        return 0
     if hasattr(viewer.s.trainer, "step_batch"):
         steps = int(viewer.s.trainer.step_batch(steps))
     else:
@@ -957,11 +963,15 @@ def _run_training_batch(viewer: object) -> int:
     return steps
 
 
-def _run_photometric_batch(viewer: object) -> int:
+def _run_photometric_batch(viewer: object, max_steps: int | None = None) -> int:
     trainer = getattr(viewer.s, "photometric_trainer", None)
     if not getattr(viewer.s, "photometric_active", False) or trainer is None:
         return 0
     steps = max(int(viewer.ui._values.get("photometric_steps_per_frame", 1)), 1)
+    if max_steps is not None:
+        steps = min(steps, max(int(max_steps), 0))
+    if steps <= 0:
+        return 0
     for _ in range(steps):
         trainer.train_step()
     return steps
