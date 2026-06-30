@@ -8,7 +8,7 @@ import sys
 import lizard
 
 ROOT = Path(__file__).resolve().parent.parent
-ENTRYPOINTS = ("cli.py", "render.py", "viewer.py")
+ENTRYPOINTS = ("viewer.py",)
 EXCLUDED_PARTS = {".venv", "tests", "__pycache__"}
 TARGET_NLOC = 2263
 TARGET_TOTAL_CCN = 340

@@ -8,9 +8,9 @@ Training profiles sit above the raw optimizer and stability parameters and provi
   - This is the active training path: fixed gaussian count, CPU COLMAP-point initialization, fused L1 image loss, raster backward replay, and fused ADAM updates with scale/opacity regularization.
 - `auto`
   - Resolves to `legacy`.
-  - It remains as the CLI/viewer default so future profile additions can reuse the same interface without changing user-facing flags.
+  - It remains as the viewer/headless default so future profile additions can reuse the same interface without changing user-facing config fields.
 
 ## Host Integration
 - Profile resolution lives in `src/training/profiles.py`.
 - `src/app/shared.py` applies profile overrides onto the `AdamHyperParams`, `StabilityHyperParams`, and `TrainingHyperParams` dataclasses.
-- `src/app/cli.py` resolves the active profile before scene initialization so the selected hyperparameters and the uploaded scene stay in sync.
+- `src/viewer/session.py` resolves the active profile before scene initialization so the selected hyperparameters and the uploaded scene stay in sync.

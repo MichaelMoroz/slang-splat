@@ -549,7 +549,7 @@ def test_format_struct_sections_text_uses_stable_float_layout() -> None:
     )
 
 
-def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults() -> None:
+def test_export_repo_defaults_writes_cached_raster_grad_render_defaults() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     viewer_ui._values["cached_raster_grad_atomic_mode"] = 0
@@ -574,13 +574,7 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     assert exported["renderer"]["cached_raster_grad_fixed_quat_range"] == 0.125
     assert exported["renderer"]["cached_raster_grad_fixed_color_range"] == 9.0
     assert exported["renderer"]["cached_raster_grad_fixed_opacity_range"] == 10.0
-    assert exported["cli"]["common_render"]["cached_raster_grad_atomic_mode"] == "float"
-    assert exported["cli"]["common_render"]["cached_raster_grad_include_depth"] is True
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_ro_local_range"] == 3.0
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_scale_range"] == 512.0
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_quat_range"] == 0.125
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_color_range"] == 9.0
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_opacity_range"] == 10.0
+    assert "cli" not in exported
     assert exported["renderer"]["debug_mode"] is None
     assert "ppisp_enabled" not in exported["viewer"]["controls"]
     assert exported["viewer"]["controls"]["ppisp_exposure_ev"] == 0.75

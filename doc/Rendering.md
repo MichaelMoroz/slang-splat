@@ -18,7 +18,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Stored gaussian scale follows 3DGS semantics (`log(sigma)` per axis). Rendering decodes `exp(log_scale)` and converts sigma to finite-support ellipsoid radius with `radius_scale * 3.0`.
 
 ## Renderer Settings API
-- `src/renderer/renderer_context.py` exposes `GaussianRenderSettings` as the immutable render-configuration object used by the viewer, CLI, and torch wrapper.
+- `src/renderer/renderer_context.py` exposes `GaussianRenderSettings` as the immutable render-configuration object used by the viewer, headless runner, and torch wrapper.
 - `GaussianRenderSettings.renderer_kwargs()` mirrors the public `GaussianRenderer` constructor arguments so cached renderer reuse stays keyed by the full behaviorally relevant configuration.
 - Debug overlay toggles are part of that settings surface:
   - `debug_show_ellipses`

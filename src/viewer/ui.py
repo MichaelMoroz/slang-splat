@@ -653,9 +653,6 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
     renderer_params = RendererParams.from_ui_values(values, _RENDERER_DEBUG_MODE_VALUES, _threshold_band_range)
     return {
         "renderer": json_value(renderer_params.renderer_kwargs()),
-        "cli": {
-            "common_render": json_value(renderer_params.cli_common_render_defaults_dict())
-        },
         "viewer": {
             "controls": json_value(_export_fields(values, _VIEWER_CONTROL_EXPORT_FIELDS)),
             "import": json_value(_export_fields(values, _VIEWER_IMPORT_EXPORT_FIELDS)),

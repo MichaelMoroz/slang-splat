@@ -892,7 +892,6 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
             ui_values = _viewer_ui_values(self)
             defaults = load_defaults()
             training_build_args = defaults.setdefault("training_build_args", {})
-            cli_defaults = defaults.setdefault("cli", {})
             viewer_defaults = defaults.setdefault("viewer", {})
             defaults["training_build_args"] = {
                 **training_build_args,
@@ -904,7 +903,6 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
             }
             exported = export_repo_defaults_from_ui_values(ui_values)
             defaults["renderer"] = exported.get("renderer", {})
-            cli_defaults["common_render"] = exported.get("cli", {}).get("common_render", {})
             viewer_export = exported.get("viewer", {})
             viewer_defaults["controls"] = viewer_export.get("controls", {})
             viewer_defaults["import"] = viewer_export.get("import", {})

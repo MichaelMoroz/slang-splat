@@ -341,12 +341,11 @@ def test_viewer_init_precompiles_runtime_shaders_before_renderer_setup(monkeypat
     assert calls[:2] == [("precompile", "device"), ("renderer", "device")]
 
 
-def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
+def test_save_defaults_callback_updates_renderer_defaults(monkeypatch) -> None:
     written: dict[str, object] = {}
     viewer = SimpleNamespace(ui=SimpleNamespace(_values={}))
     exported = {
         "renderer": {"radius_scale": 1.25},
-        "cli": {"common_render": {"cached_raster_grad_atomic_mode": "fixed", "cached_raster_grad_fixed_scale_range": 512.0}},
         "viewer": {"controls": {}, "import": {}, "ui": {"graphics_api": "dx12"}},
     }
 
@@ -356,7 +355,6 @@ def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
         lambda: {
             "training_build_args": {},
             "renderer": {},
-            "cli": {"common_render": {}},
             "viewer": {"controls": {}, "import": {}, "ui": {}},
         },
     )
@@ -366,7 +364,7 @@ def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
     app.SplatViewer._save_defaults_callback(viewer)
 
     assert written["defaults"]["renderer"] == exported["renderer"]
-    assert written["defaults"]["cli"]["common_render"] == exported["cli"]["common_render"]
+    assert "cli" not in written["defaults"]
     assert written["defaults"]["viewer"]["ui"]["graphics_api"] == "dx12"
 
 
@@ -379,7 +377,7 @@ def test_set_graphics_api_callback_updates_viewer_defaults(monkeypatch) -> None:
         t=lambda _key: status,
         s=SimpleNamespace(last_error="stale"),
     )
-    defaults = {"viewer": {"ui": {}}, "cli": {}, "renderer": {}, "training_build_args": {}}
+    defaults = {"viewer": {"ui": {}}, "renderer": {}, "training_build_args": {}}
 
     monkeypatch.setattr(app, "load_defaults", lambda: defaults)
     monkeypatch.setattr(app, "write_defaults", lambda data: written.setdefault("defaults", data))

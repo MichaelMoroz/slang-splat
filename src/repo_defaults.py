@@ -80,11 +80,6 @@ def viewer_defaults() -> dict[str, dict[str, object]]:
     return {key: dict(value) for key, value in viewer.items()}
 
 
-def cli_defaults() -> dict[str, dict[str, object]]:
-    cli = load_defaults()["cli"]
-    return {key: dict(value) for key, value in cli.items()}
-
-
 def json_value(value: object) -> object:
     if isinstance(value, dict):
         return {str(key): json_value(item) for key, item in value.items()}

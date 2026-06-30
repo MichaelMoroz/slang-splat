@@ -1,6 +1,6 @@
 # COLMAP Training Pipeline
 
-`cli.py train-colmap` and the viewer both feed the same core trainer in `src/training/gaussian_trainer.py`.
+The interactive viewer and `viewer.py --headless --config ...` both feed the same core trainer in `src/training/gaussian_trainer.py`.
 
 The main training modules are:
 
@@ -47,7 +47,7 @@ Import and training can optionally honor the image alpha channel as a per-pixel 
 
 ## Initialization
 
-The trainer consumes a prepared `GaussianScene`, but the viewer import path and CLI share the same initialization parameter model.
+The trainer consumes a prepared `GaussianScene`, but interactive and headless imports share the same initialization parameter model.
 
 Current scene-seeding paths include:
 
@@ -66,7 +66,7 @@ For point-based COLMAP initialization:
 - opacity starts from the configured constant,
 - the stored runtime scene keeps scale as 3DGS log-scale.
 
-Viewer and CLI both use the same resolved initialization hyperparameters, so count caps, scale coefficients, and opacity overrides stay aligned between the two entry points.
+Interactive and headless runs both use the same resolved initialization hyperparameters, so count caps, scale coefficients, and opacity overrides stay aligned between entry points.
 
 ## Training Schedule
 
@@ -271,13 +271,13 @@ Packed runtime facts:
 - ADAM moments are stored as packed `float2` buffers (`m`, `v`),
 - raster backward uses cached raster-field intermediates before writing final float parameter gradients.
 
-## CLI And Viewer Integration
+## Viewer And Headless Integration
 
-The CLI and viewer share the same training/init abstractions.
+Interactive and headless viewer runs share the same training/init abstractions.
 
-- `src/app/cli.py` resolves the active training profile and initialization path before trainer construction.
 - `src/app/shared.py` applies training-profile overrides to the `AdamHyperParams`, `StabilityHyperParams`, and `TrainingHyperParams` dataclasses.
-- the viewer creates `GaussianTrainer` through the same core parameter objects and can reinitialize a training scene without rebuilding the dataset textures.
+- `src/viewer/session.py` creates `GaussianTrainer` through the same core parameter objects and can reinitialize a training scene without rebuilding the dataset textures.
+- `src/viewer/headless.py` drives the same session/import actions without creating a window.
 
 The default training profile interface remains:
 
@@ -291,8 +291,7 @@ The default training profile interface remains:
 The training path is covered primarily by:
 
 - `tests/test_training_kernels.py`
-- `tests/test_training_cli_smoke.py`
 - `tests/test_optimizer_module.py`
 - viewer/session integration tests covering import and training setup
 
-These tests cover the fixed-count trainer kernels, YCbCr SSIM feature path, blur integration, optimizer behavior, and the current CLI/viewer orchestration.
+These tests cover the fixed-count trainer kernels, YCbCr SSIM feature path, blur integration, optimizer behavior, and the current viewer/headless orchestration.
