@@ -1,0 +1,18 @@
+{
+  "viewer": {
+    "run": {
+      "source": "colmap",
+      "colmap_root_path": "dataset/garden",
+      "colmap_images_root": "dataset/garden/images_4",
+      "seed": 1234,
+      "train_iters": 30000,
+      "stats": {
+        "log_interval": 500,
+        "output": "outputs/garden/stats.csv",
+        "per_view_output": "outputs/garden/per_view.csv"
+      },
+      "metrics": { "output": "outputs/garden/metrics.txt" },
+      "output_ply": "outputs/garden/garden.ply"
+    }
+  }
+}

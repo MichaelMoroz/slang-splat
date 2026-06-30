@@ -1032,6 +1032,7 @@ class GaussianTrainer:
         self._psnr_target_key: tuple[int, int, int, int] | None = None
         self._ssim_blur: SeparableGaussianBlur | None = None
         self._ssim_resolution: tuple[int, int] | None = None
+        self._max_native_frame_size_cache: tuple[int, int] | None = None
         self._observed_contribution_pixel_count = 0
         self._resources_released = False
         self._frame_rng = np.random.default_rng(self._seed)
@@ -1169,10 +1170,10 @@ class GaussianTrainer:
         self._renderer_workspace_packed_param_count = 0
         self._renderer_workspace_raster_param_count = 0
 
-    def _ensure_renderer_workspace(self, splat_count: int | None = None) -> None:
+    def _ensure_renderer_workspace(self, splat_count: int | None = None, min_width: int = 0, min_height: int = 0) -> None:
         required_splats = max(int(self._scene_count if splat_count is None else splat_count), 1)
-        required_width = max(int(self.renderer.width), 1)
-        required_height = max(int(self.renderer.height), 1)
+        required_width = max(int(self.renderer.width), 1, int(min_width))
+        required_height = max(int(self.renderer.height), 1, int(min_height))
         packed_param_count = int(self.renderer.packed_trainable_param_count)
         raster_param_count = int(getattr(self.renderer, "_RASTER_CACHE_PARAM_COUNT", packed_param_count))
         target_splat_capacity = self._renderer_workspace_splat_capacity
@@ -1240,11 +1241,13 @@ class GaussianTrainer:
     def renderer_training_workspace(self) -> Mapping[str, object]:
         return self._renderer_training_workspace(self._scene_count)
 
-    def _ensure_ssim_buffers(self) -> None:
+    def _ensure_ssim_buffers(self, min_width: int = 0, min_height: int = 0) -> None:
         active_width = max(int(self.renderer.width), 1)
         active_height = max(int(self.renderer.height), 1)
-        capacity_width = max(active_width, int(self._ssim_resolution[0]) if self._ssim_resolution is not None else 0)
-        capacity_height = max(active_height, int(self._ssim_resolution[1]) if self._ssim_resolution is not None else 0)
+        prev_width = int(self._ssim_resolution[0]) if self._ssim_resolution is not None else 0
+        prev_height = int(self._ssim_resolution[1]) if self._ssim_resolution is not None else 0
+        capacity_width = max(active_width, int(min_width), prev_width)
+        capacity_height = max(active_height, int(min_height), prev_height)
         resolution = (capacity_width, capacity_height)
         if self._ssim_resolution == resolution and self._ssim_blur is not None and all(name in self._buffers for name in ("ssim_moments", "ssim_blurred_moments", "ssim_blurred_feature_grads", "ssim_feature_grads")):
             self._ssim_blur.set_active_size(active_width, active_height)
@@ -1839,13 +1842,16 @@ class GaussianTrainer:
     def target_texture_is_linear(self, target_texture: spy.Texture | None = None) -> bool:
         return self._target_texture_is_linear(target_texture)
 
-    def _ensure_compensated_native_target_texture(self, frame_index: int) -> spy.Texture:
+    def _ensure_compensated_native_target_texture(self, frame_index: int, min_width: int = 0, min_height: int = 0) -> spy.Texture:
         frame = self._frame(frame_index)
         texture = self._compensated_native_target
-        width = max(int(frame.width), 1)
-        height = max(int(frame.height), 1)
-        if texture is not None and int(texture.width) == width and int(texture.height) == height:
+        width = max(int(frame.width), 1, int(min_width))
+        height = max(int(frame.height), 1, int(min_height))
+        if texture is not None and int(texture.width) >= width and int(texture.height) >= height:
             return texture
+        if texture is not None:
+            width = max(width, int(texture.width))
+            height = max(height, int(texture.height))
         defer_resource_release(texture)
         texture = alloc_texture_2d(
             self.device,
@@ -1900,9 +1906,9 @@ class GaussianTrainer:
             return texture
         return self._refresh_compensated_native_target(encoder, frame_index)
 
-    def _ensure_train_target_texture(self) -> None:
-        width = max(int(self.renderer.width), 1)
-        height = max(int(self.renderer.height), 1)
+    def _ensure_train_target_texture(self, min_width: int = 0, min_height: int = 0) -> None:
+        width = max(int(self.renderer.width), 1, int(min_width))
+        height = max(int(self.renderer.height), 1, int(min_height))
         texture = self._train_target_texture
         if texture is not None and int(texture.width) >= width and int(texture.height) >= height:
             return
@@ -1925,9 +1931,9 @@ class GaussianTrainer:
             raise RuntimeError("PSNR target texture is not initialized.")
         return self._psnr_target_texture
 
-    def _ensure_psnr_target_texture(self) -> None:
-        width = max(int(self.renderer.width), 1)
-        height = max(int(self.renderer.height), 1)
+    def _ensure_psnr_target_texture(self, min_width: int = 0, min_height: int = 0) -> None:
+        width = max(int(self.renderer.width), 1, int(min_width))
+        height = max(int(self.renderer.height), 1, int(min_height))
         texture = self._psnr_target_texture
         if texture is not None and int(texture.width) >= width and int(texture.height) >= height:
             return
@@ -2334,6 +2340,44 @@ class GaussianTrainer:
             return
         self.renderer.sync_prepass_capacity_for_current_scene(frame_camera)
 
+    def _batch_max_training_resolution(self, start_step: int, batch_steps: int) -> tuple[int, int]:
+        max_width, max_height = 1, 1
+        for offset in range(max(int(batch_steps), 1)):
+            width, height = self._max_training_resolution(int(start_step) + offset)
+            max_width, max_height = max(max_width, int(width)), max(max_height, int(height))
+        return max_width, max_height
+
+    def _max_native_frame_size(self) -> tuple[int, int]:
+        if self._max_native_frame_size_cache is None:
+            max_width, max_height = 1, 1
+            for frame_index in range(len(self.frames)):
+                width, height = self.frame_size(frame_index)
+                max_width, max_height = max(max_width, int(width)), max(max_height, int(height))
+            self._max_native_frame_size_cache = (max_width, max_height)
+        return self._max_native_frame_size_cache
+
+    def _prewarm_batch_render_capacity(self, start_step: int, batch_steps: int) -> None:
+        """Grow frame-sized resources to the batch's largest training resolution up front.
+
+        A batch records several steps into one command buffer that share a single set of
+        frame-sized resources (the renderer work buffers, the SSIM blur, the PSNR target).
+        Each grows to a running capacity max and only reallocates when that max increases.
+        Reallocating mid-batch would orphan resources that already-recorded steps still
+        reference, so we size them for the largest frame before recording; per-frame
+        resolution changes during the batch then never trigger a reallocation.
+        """
+        max_width, max_height = self._batch_max_training_resolution(start_step, batch_steps)
+        ensure_capacity = getattr(self.renderer, "ensure_render_capacity", None)
+        if ensure_capacity is not None:
+            ensure_capacity(int(max_width), int(max_height))
+        self._ensure_renderer_workspace(self._scene_count, min_width=int(max_width), min_height=int(max_height))
+        self._ensure_psnr_target_texture(min_width=int(max_width), min_height=int(max_height))
+        self._ensure_train_target_texture(min_width=int(max_width), min_height=int(max_height))
+        self._ensure_ssim_buffers(min_width=int(max_width), min_height=int(max_height))
+        if getattr(self, "target_tonemap_provider", None) is not None and len(self.frames) > 0:
+            native_width, native_height = self._max_native_frame_size()
+            self._ensure_compensated_native_target_texture(0, min_width=native_width, min_height=native_height)
+
     def step_batch(self, step_count: int) -> int:
         requested = self._effective_batch_request(step_count)
         if requested <= 0:
@@ -2347,11 +2391,11 @@ class GaussianTrainer:
             batch_steps += 1
         if batch_steps <= 0:
             return 0
-        if batch_steps > 1 and self.training_resolutions_vary(self.state.step):
-            batch_steps = 1
 
         self.training.train_downscale_factor = first_factor
         self._ensure_training_buffers(self._scene_count, batch_steps)
+        if batch_steps > 1:
+            self._prewarm_batch_render_capacity(self.state.step, batch_steps)
         frame_indices: list[int] = []
         if self._dataset_targets is not None:
             prefetch_count = self._dataset_targets.prefetch_depth if self._dataset_targets.is_streaming else batch_steps
@@ -2365,6 +2409,7 @@ class GaussianTrainer:
                     frame_index = self._next_frame_index()
                     frame_indices.append(frame_index)
                     self._ensure_frame_render_resolution(frame_index, training_step)
+                    self._observed_contribution_pixel_count += max(int(self.renderer.width) * int(self.renderer.height), 0)
                     frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
                     native_camera = self._native_frame_camera(frame_index)
                     self._apply_renderer_training_hparams(training_step)
@@ -2379,7 +2424,6 @@ class GaussianTrainer:
                     self._dispatch_cache_step_info(enc, batch_index)
         submission = self.device.submit_command_buffer(enc.finish())
         self.mark_dataset_submitted(frame_indices, submission)
-        self._observed_contribution_pixel_count += batch_steps * max(int(self.renderer.width) * int(self.renderer.height), 0)
 
         step_metrics = self._read_batch_step_metrics(batch_steps)
         had_nonfinite = False

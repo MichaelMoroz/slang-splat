@@ -1053,6 +1053,75 @@ def test_training_step_batch_matches_two_single_steps(device, tmp_path: Path):
     )
 
 
+def test_training_step_batch_matches_single_steps_with_varying_frame_sizes(device, tmp_path: Path):
+    scene = _make_scene(count=8, seed=31)
+    frames = [
+        _make_frame(tmp_path, width=64, height=64, image_name="vary_batch_a.png", image_id=1),
+        _make_frame(tmp_path, width=48, height=32, image_name="vary_batch_b.png", image_id=2, green_value=120),
+    ]
+    renderer_seq = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    renderer_batch = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    trainer_seq = GaussianTrainer(device=device, renderer=renderer_seq, scene=scene, frames=list(frames), seed=123)
+    trainer_batch = GaussianTrainer(device=device, renderer=renderer_batch, scene=scene, frames=list(frames), seed=123)
+
+    # Frames have different native sizes, so training resolution varies between steps.
+    assert trainer_batch.training_resolutions_vary(0)
+
+    trainer_seq.step()
+    trainer_seq.step()
+    executed = trainer_batch.step_batch(2)
+
+    # Batching is no longer forced down to a single step when resolutions vary.
+    assert executed == 2
+    np.testing.assert_allclose(
+        _read_scene_groups(renderer_batch, scene.count)["positions"],
+        _read_scene_groups(renderer_seq, scene.count)["positions"],
+        rtol=1e-5,
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        _read_scene_groups(renderer_batch, scene.count)["scales"],
+        _read_scene_groups(renderer_seq, scene.count)["scales"],
+        rtol=1e-5,
+        atol=1e-7,
+    )
+
+
+def test_training_step_batch_matches_single_steps_with_varying_sizes_under_target_tonemap(device, tmp_path: Path):
+    frames = [
+        _make_frame(tmp_path, width=64, height=64, image_name="vary_tonemap_a.png", image_id=1),
+        _make_frame(tmp_path, width=48, height=32, image_name="vary_tonemap_b.png", image_id=2, green_value=120),
+    ]
+
+    def _make_trainer() -> GaussianTrainer:
+        return GaussianTrainer(
+            device=device,
+            renderer=GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32),
+            scene=_make_scene(count=8, seed=31),
+            frames=list(frames),
+            seed=123,
+            target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0)),
+        )
+
+    trainer_seq = _make_trainer()
+    trainer_batch = _make_trainer()
+
+    # Varying native sizes exercise the per-step compensated-target path inside one batch.
+    assert trainer_batch.training_resolutions_vary(0)
+
+    trainer_seq.step()
+    trainer_seq.step()
+    executed = trainer_batch.step_batch(2)
+
+    assert executed == 2
+    np.testing.assert_allclose(
+        _read_scene_groups(trainer_batch.renderer, 8)["positions"],
+        _read_scene_groups(trainer_seq.renderer, 8)["positions"],
+        rtol=1e-5,
+        atol=1e-7,
+    )
+
+
 def test_position_random_steps_move_low_opacity_splats(device, tmp_path: Path):
     scene = _make_scene(count=4, seed=41)
     scene.opacities[:] = np.full((scene.count,), 1e-4, dtype=np.float32)

@@ -87,7 +87,7 @@ Headless configs use the same defaults tree as the GUI. Set `viewer.run.source` 
 python viewer.py --headless --config configs\garden_train.json
 ```
 
-See `doc/HeadlessAutomation.md` for the run schema and scheduled actions.
+See `doc/Headless.md` for the full `viewer.run` schema and scheduled actions.
 
 ## COLMAP Import And Initialization
 
@@ -151,6 +151,7 @@ The test suite covers renderer kernels, optimizer behavior, COLMAP loading/init 
 ## Documentation Map
 
 - `doc/Viewer.md`: viewer lifecycle, import flow, debug windows, and training controls.
+- `doc/Headless.md`: headless automation entry point, `viewer.run` config schema, and scheduled actions.
 - `doc/PhotometricCompensation.md`: per-frame PPISP photometric trainer, pair-loss kernel, and viewer integration.
 - `doc/Training.md`: trainer architecture, optimization loop, schedules, and refinement notes.
 - `doc/Rendering.md`: renderer passes, debug paths, and raster behavior.
