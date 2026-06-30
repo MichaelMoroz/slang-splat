@@ -79,6 +79,7 @@ Recurring or point-in-time actions are a list, each keyed by training step:
 
 ## Notes and current limitations
 
+- Under WSL, `viewer.py` bootstraps into `.venv-wsl` instead of the Windows `.venv` so Linux runs never re-exec into `Scripts/python.exe`. If Vulkan reports `llvmpipe`, the run is using Mesa software rasterization; install/configure a WSL Vulkan GPU ICD before expecting training-scale performance.
 - The metrics stage requires a COLMAP source; `source: "ply"` clears the dataset frames, so it supports render/export only.
 - `viewer.run.edit` exists in the schema but is **not yet executed** by the headless pipeline.
 - There is no in-GUI config dropdown / "Save Config As"; author configs as files. The GUI's **Update Defaults** writes the current control state (including the `viewer.run` value keys) back into `config/defaults.json`.
