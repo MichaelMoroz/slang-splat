@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from src.app.training_controls import TRAINING_BUILD_ARG_UI_KEYS
@@ -119,6 +120,80 @@ def test_headless_training_stage_clamps_to_next_scheduled_step(monkeypatch) -> N
     assert batches == [3, 1, 4, 2]
     assert post_steps == [3, 4, 8]
     assert trainer.state.step == 10
+
+
+def test_plain_snapshot_crops_renderer_capacity_texture(monkeypatch, tmp_path: Path) -> None:
+    class _Texture:
+        def to_numpy(self):
+            pixels = np.zeros((720, 1280, 4), dtype=np.float32)
+            pixels[359, 639, 0] = 1.0
+            pixels[360, 640, 0] = 0.5
+            return pixels
+
+    class _Renderer:
+        width = 1280
+        height = 720
+
+        def set_render_resolution(self, width: int, height: int) -> None:
+            self.width = int(width)
+            self.height = int(height)
+
+        def render_to_texture(self, camera, *, background=None):
+            return _Texture(), None
+
+    renderer = _Renderer()
+    saved: list[np.ndarray] = []
+    viewer = SimpleNamespace(
+        camera=lambda: object(),
+        s=SimpleNamespace(training_renderer=None, renderer=renderer, trainer=None, background=None),
+    )
+
+    monkeypatch.setattr(headless, "save_snapshot", lambda _path, rgba: saved.append(np.asarray(rgba).copy()))
+
+    headless._render_plain_snapshot(viewer, tmp_path / "render.png", 640, 360)
+
+    assert saved[0].shape == (360, 640, 4)
+    assert saved[0][-1, -1, 0] == pytest.approx(1.0)
+
+
+def test_debug_snapshot_crops_texture_to_requested_size(monkeypatch, tmp_path: Path) -> None:
+    class _Texture:
+        def to_numpy(self):
+            pixels = np.zeros((480, 640, 4), dtype=np.float32)
+            pixels[99, 199, 1] = 1.0
+            pixels[100, 200, 1] = 0.5
+            return pixels
+
+    class _Encoder:
+        def finish(self):
+            return object()
+
+    class _Device:
+        def create_command_encoder(self):
+            return _Encoder()
+
+        def submit_command_buffer(self, _command_buffer) -> None:
+            pass
+
+    saved: list[np.ndarray] = []
+    viewer = SimpleNamespace(
+        device=_Device(),
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(render_frame_index=0),
+    )
+
+    def _render_debug_view(viewer_obj, _encoder, output_width: int, output_height: int, _frame_index: int):
+        assert viewer_obj is viewer
+        assert (output_width, output_height) == (200, 100)
+        return _Texture()
+
+    monkeypatch.setattr(headless.presenter, "_render_debug_view", _render_debug_view)
+    monkeypatch.setattr(headless, "save_snapshot", lambda _path, rgba: saved.append(np.asarray(rgba).copy()))
+
+    headless._render_debug_snapshot(viewer, tmp_path / "debug.png", 200, 100, "rendered")
+
+    assert saved[0].shape == (100, 200, 4)
+    assert saved[0][-1, -1, 1] == pytest.approx(1.0)
 
 
 def test_dataset_metrics_output_path_accepts_file_and_directory(tmp_path: Path) -> None:

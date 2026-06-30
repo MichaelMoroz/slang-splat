@@ -352,6 +352,10 @@ def _active_renderer(viewer: HeadlessViewer):
     return viewer.s.training_renderer if viewer.s.trainer is not None and viewer.s.training_renderer is not None else viewer.s.renderer
 
 
+def _texture_active_region(texture: object, width: int, height: int) -> np.ndarray:
+    return np.asarray(texture.to_numpy())[: int(height), : int(width)].copy()
+
+
 def _render_plain_snapshot(viewer: HeadlessViewer, path: Path, width: int, height: int) -> None:
     renderer = _active_renderer(viewer)
     if renderer is None:
@@ -360,7 +364,7 @@ def _render_plain_snapshot(viewer: HeadlessViewer, path: Path, width: int, heigh
     if callable(set_resolution):
         set_resolution(int(width), int(height))
     tex, _stats = renderer.render_to_texture(viewer.camera(), background=viewer.s.background)
-    save_snapshot(path, tex.to_numpy())
+    save_snapshot(path, _texture_active_region(tex, int(renderer.width), int(renderer.height)))
 
 
 def _render_debug_snapshot(viewer: HeadlessViewer, path: Path, width: int, height: int, view_name: str) -> None:
@@ -371,7 +375,7 @@ def _render_debug_snapshot(viewer: HeadlessViewer, path: Path, width: int, heigh
     encoder = viewer.device.create_command_encoder()
     tex = presenter._render_debug_view(viewer, encoder, int(width), int(height), int(getattr(viewer.s, "render_frame_index", 0)))
     viewer.device.submit_command_buffer(encoder.finish())
-    save_snapshot(path, tex.to_numpy())
+    save_snapshot(path, _texture_active_region(tex, int(width), int(height)))
 
 
 def _render_snapshots(viewer: HeadlessViewer, render_cfg: object, *, step: int | None = None) -> tuple[Path, ...]:
