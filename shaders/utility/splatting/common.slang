@@ -322,6 +322,31 @@ struct Ellipse
             && (centerPx.y - radiusPx) < viewport.y;
     }
 
+    float conicDeterminant()
+    {
+        return conic.x * conic.z - conic.y * conic.y;
+    }
+
+    bool hasAnalyticConic()
+    {
+        float det = conicDeterminant();
+        return all(isfinite(conic))
+            && conic.x > POSITIVE_CONIC_FLOOR
+            && conic.z > POSITIVE_CONIC_FLOOR
+            && det > CONIC_DETERMINANT_FLOOR;
+    }
+
+    float clippedBBoxAreaPx(float2 viewport)
+    {
+        if (!all(isfinite(centerPx)) || !isfinite(radiusPx) || !(radiusPx > 0.0)) return 0.0;
+        float2 halfExtent = all(isfinite(bboxExtent)) ? max(bboxExtent, float2(0.0)) : float2(radiusPx);
+        if (!(halfExtent.x > 0.0) || !(halfExtent.y > 0.0)) halfExtent = float2(radiusPx);
+        float2 clippedMin = max(centerPx - halfExtent, float2(0.0));
+        float2 clippedMax = min(centerPx + halfExtent, viewport);
+        float2 clippedExtent = max(clippedMax - clippedMin, float2(0.0));
+        return clippedExtent.x * clippedExtent.y;
+    }
+
     float clippedVerticalLength(float x, float2 viewport, float det)
     {
         float dx = x - centerPx.x;
@@ -345,10 +370,10 @@ struct Ellipse
     float clippedAreaPx(float2 viewport)
     {
         static const uint CLIPPED_AREA_SAMPLE_COUNT = 32u;
-        float det = conic.x * conic.z - conic.y * conic.y;
-        if (!all(isfinite(conic)) || !(conic.x > 0.0) || !(conic.z > 0.0) || !(det > CONIC_DETERMINANT_FLOOR)) return 0.0;
+        float det = conicDeterminant();
+        if (!hasAnalyticConic()) return clippedBBoxAreaPx(viewport);
         float2 extent = sqrt(float2(conic.z, conic.x) / det);
-        if (!all(isfinite(extent))) return 0.0;
+        if (!all(isfinite(extent))) return clippedBBoxAreaPx(viewport);
         bool integrateX = extent.x <= extent.y;
         float2 bounds = integrateX
             ? float2(max(centerPx.x - extent.x, 0.0), min(centerPx.x + extent.x, viewport.x))

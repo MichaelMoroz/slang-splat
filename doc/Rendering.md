@@ -36,6 +36,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - write projected splat state, raster cache data, visibility flags, and a visible-splat sort key.
 - Camera projection supports pinhole/OPENCV-style distorted views and COLMAP `EQUIRECTANGULAR` views through the shared camera math layer. Equirectangular projection stores a distance depth for sorting and visibility instead of rejecting negative camera-space `z`.
 - Equirectangular outlines that cross the left-right seam or touch the polar rows fall back to a fullscreen conservative ellipse. The current prepass stores one ellipse per splat, so this avoids missing seam-wrapped or pole-stretched support at the cost of extra tile work for those edge cases.
+- Very large or fullscreen fallback ellipses can have conic determinants below the analytic scanline floor at normal viewer resolutions. The prepass keeps those splats alive by binning their conservative radius/bbox and lets the 3D ray evaluator reject non-contributing pixels.
 - Equirectangular splats whose padded binning radius overlaps the left-right seam emit an additional wrapped scanline span with the screen center shifted by one viewport width. Normal raster evaluation still ray-traces the original splat; the duplicate span only prevents seam-edge tile culling.
 - Output buffers:
   - projected splat data for raster stage,

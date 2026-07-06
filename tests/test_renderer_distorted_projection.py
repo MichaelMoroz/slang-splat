@@ -19,6 +19,7 @@ _EQUIRECT_LIST_CAPACITY_MULTIPLIER = 64
 _EQUIRECT_SPLAT_COLOR = np.array([[0.8, 0.7, 0.6]], dtype=np.float32)
 _EQUIRECT_SPLAT_OPACITY = 0.8
 _EQUIRECT_ALPHA_CUTOFF = 1.0 / 255.0
+_EQUIRECT_BOUNDARY_SPLAT_SIGMA = 0.12
 
 
 def _equirectangular_camera() -> Camera:
@@ -72,6 +73,17 @@ def _scene_from_positions(positions: np.ndarray, sigma: float = _EQUIRECT_SPLAT_
         opacities=np.full((count,), _EQUIRECT_SPLAT_OPACITY, dtype=np.float32),
         colors=np.repeat(_EQUIRECT_SPLAT_COLOR, count, axis=0),
         sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
+    )
+
+
+def _is_fullscreen_fallback_ellipse(center_radius_depth: np.ndarray, conic: np.ndarray, width: int, height: int) -> bool:
+    radius = float(center_radius_depth[2])
+    expected_radius = float(max(width, height))
+    inv_radius_sq = 1.0 / max(expected_radius * expected_radius, 1e-12)
+    return (
+        np.allclose(center_radius_depth[:2], np.array((0.5 * width, 0.5 * height), dtype=np.float32), atol=1e-4)
+        and radius >= expected_radius
+        and np.allclose(conic[:3], np.array((inv_radius_sq, 0.0, inv_radius_sq), dtype=np.float32), atol=1e-7)
     )
 
 
@@ -220,3 +232,38 @@ def test_equirectangular_renderer_samples_seam_column_at_pixel_center(device):
     assert float(np.max(image[:, 0, :])) > 0.05
     assert int(tile_ranges[left_tile, 1]) > int(tile_ranges[left_tile, 0])
     assert int(tile_ranges[right_tile, 1]) > int(tile_ranges[right_tile, 0])
+
+
+def test_equirectangular_renderer_bins_splats_across_seam_and_poles(device):
+    width, height = 1024, 512
+    theta = np.array((np.pi - np.pi / np.float32(width), 0.0), dtype=np.float32)
+    phi = np.array((0.0, 0.5 * np.pi - 0.25 * np.pi / np.float32(height)), dtype=np.float32)
+    scene = _scene_from_positions(_equirectangular_rays(theta, phi) * _EQUIRECT_SPHERE_RADIUS, sigma=_EQUIRECT_BOUNDARY_SPLAT_SIGMA)
+    scene.sh_coeffs = rgb_to_sh0(scene.colors)[:, None, :].astype(np.float32)
+    camera = _equirectangular_camera()
+    renderer = GaussianRenderer(
+        device,
+        width=width,
+        height=height,
+        radius_scale=_EQUIRECT_RADIUS_SCALE,
+        alpha_cutoff=_EQUIRECT_ALPHA_CUTOFF,
+        list_capacity_multiplier=8192,
+        allocate_training_work_buffers=False,
+        allocate_grad_work_buffers=False,
+    )
+
+    debug = renderer.debug_pipeline_data(scene, camera)
+    center_radius_depth = np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)
+    conic = np.asarray(debug["screen_ellipse_conic"], dtype=np.float32)[:, :3]
+    visible_area = np.asarray(debug["splat_visible_area_px"], dtype=np.float32)
+    image = renderer.render(scene, camera, background=(0.0, 0.0, 0.0)).image[:, :, :3]
+
+    assert all(_is_fullscreen_fallback_ellipse(center_radius_depth[index], conic[index], width, height) for index in range(scene.count))
+    assert int(debug["generated_entries"]) >= scene.count * renderer.tile_count
+    assert int(debug["sorted_count"]) == int(debug["generated_entries"])
+    assert np.all(visible_area > np.float32(0.9 * width * height))
+    assert float(np.max(image[:, 0, :])) > 1e-3
+    assert float(np.max(image[:, -1, :])) > 1e-3
+    assert float(np.max(image[0, 0, :])) > 1e-3
+    assert float(np.max(image[0, width // 2, :])) > 1e-3
+    assert float(np.max(image[0, -1, :])) > 1e-3

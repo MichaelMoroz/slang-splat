@@ -168,6 +168,22 @@ def _equirectangular_centered_ellipse_needs_fallback(center: np.ndarray, conic: 
     )
 
 
+def _equirectangular_support_needs_fallback(camera_center: np.ndarray, support_radius: float, width: int, height: int) -> bool:
+    center = np.asarray(camera_center, dtype=np.float64).reshape(3)
+    radius = float(support_radius)
+    if not (np.isfinite(center).all() and math.isfinite(radius) and radius > 0.0):
+        return False
+    distance = float(np.linalg.norm(center))
+    if distance <= 1e-4 or radius >= distance:
+        return True
+    horizontal = float(np.linalg.norm(center[[0, 2]]))
+    theta = math.atan2(float(center[0]), float(center[2]))
+    phi = math.atan2(-float(center[1]), horizontal)
+    angular_radius = math.asin(np.clip(radius / distance, 0.0, 1.0))
+    angular_slack = 1e-8
+    return abs(theta) + angular_radius + angular_slack >= math.pi or abs(phi) + angular_radius + angular_slack >= 0.5 * math.pi
+
+
 def _support_sphere_intersects_view_frustum(camera_center: np.ndarray, camera: Camera, width: int, height: int, support_radius: float) -> bool:
     center = np.asarray(camera_center, dtype=np.float64).reshape(3)
     radius = float(support_radius)
@@ -231,6 +247,8 @@ def _compute_outline_ellipse(
 
     if camera.is_equirectangular:
         if not screen_ok:
+            return _init_fullscreen_fallback_ellipse(width, height) if support_intersects_frustum else None
+        if _equirectangular_support_needs_fallback(camera_center, float(np.max(scale)), width, height):
             return _init_fullscreen_fallback_ellipse(width, height) if support_intersects_frustum else None
         outline_points = np.zeros((EQUIRECTANGULAR_ELLIPSE_POINT_COUNT, 2), dtype=np.float32)
         outline_min = np.full((2,), 1e30, dtype=np.float32)

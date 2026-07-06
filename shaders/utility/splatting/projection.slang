@@ -48,6 +48,21 @@ bool equirectangular_outline_needs_fullscreen_fallback(PinholeCamera camera, flo
     return (outlineMax.x - outlineMin.x) > 0.5 * viewport.x || outlineMin.y <= 0.0 || outlineMax.y >= viewport.y;
 }
 
+bool equirectangular_support_needs_fullscreen_fallback(PinholeCamera camera, float3 cameraCenter, float supportRadius)
+{
+    if (!camera.is_equirectangular()) return false;
+    float distance = length(cameraCenter);
+    if (!(supportRadius > 0.0) || !all(isfinite(cameraCenter)) || !isfinite(supportRadius)) return false;
+    if (distance <= DEPTH_VISIBILITY_FLOOR || supportRadius >= distance) return true;
+
+    float horizontal = length(cameraCenter.xz);
+    float theta = atan2(cameraCenter.x, cameraCenter.z);
+    float phi = atan2(-cameraCenter.y, horizontal);
+    float angularRadius = asin(saturate(supportRadius / distance));
+    float angularSlack = TINY_VALUE;
+    return abs(theta) + angularRadius + angularSlack >= PI || abs(phi) + angularRadius + angularSlack >= 0.5 * PI;
+}
+
 bool solve_symmetric_3x3(
     float s00,
     float s01,
@@ -328,6 +343,12 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
             init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
             return true;
         }
+        if (equirectangular_support_needs_fullscreen_fallback(camera, cameraCenter, supportRadius))
+        {
+            if (!supportIntersectsFrustum) return false;
+            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+            return true;
+        }
         float2 outlinePoints[EQUIRECTANGULAR_ELLIPSE_POINT_COUNT];
         float2 outlineMin = float2(1e30, 1e30);
         float2 outlineMax = float2(-1e30, -1e30);
@@ -395,17 +416,22 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
 bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
 {
     ellipse.bboxExtent = float2(ellipse.radiusPx, ellipse.radiusPx);
+    if (!all(isfinite(ellipse.centerPx)) || !isfinite(ellipse.radiusPx) || !(ellipse.radiusPx > 0.0)) return false;
+    if (!ellipse.hasAnalyticConic())
+    {
+        ellipse.bboxExtent = max(float2(ellipse.radiusPx + BBOX_PAD_PX), float2(MIN_BBOX_EXTENT_PX));
+        return true;
+    }
     float3 conic = ellipse.conic;
-    float detConic = conic.x * conic.z - conic.y * conic.y;
-    bool useConic = all(isfinite(conic))
-        && conic.x > POSITIVE_CONIC_FLOOR
-        && conic.z > POSITIVE_CONIC_FLOOR
-        && detConic > CONIC_DETERMINANT_FLOOR;
-    if (!useConic) return false;
+    float detConic = ellipse.conicDeterminant();
     float level = 1.0 + CONIC_INTERSECTION_SLACK;
     float xExtent = sqrt(max(level * conic.z / detConic, 0.0));
     float yExtent = sqrt(max(level * conic.x / detConic, 0.0));
-    if (!all(isfinite(float2(xExtent, yExtent)))) return false;
+    if (!all(isfinite(float2(xExtent, yExtent))))
+    {
+        ellipse.bboxExtent = max(float2(ellipse.radiusPx + BBOX_PAD_PX), float2(MIN_BBOX_EXTENT_PX));
+        return true;
+    }
 
     ellipse.bboxExtent = max(float2(xExtent, yExtent) + BBOX_PAD_PX, float2(MIN_BBOX_EXTENT_PX));
     return true;
@@ -457,6 +483,14 @@ void merge_interval(float2 candidate, inout bool found, inout float2 interval)
 bool analytic_scanline_minor_interval(Ellipse ellipse, ScanlineLoopConfig cfg, float tileSize, uint lineCoord, out float2 interval)
 {
     interval = 0.0;
+    if (!ellipse.hasAnalyticConic())
+    {
+        int firstHit = max(cfg.minorMin, 0);
+        int lastHit = min(cfg.minorMax, int(cfg.minorLimit) - 1);
+        interval = float2(float(firstHit), float(lastHit));
+        return firstHit <= lastHit;
+    }
+
     float minorCoeff = cfg.scanAlongX ? ellipse.conic.x : ellipse.conic.z;
     float lineCoeff = cfg.scanAlongX ? ellipse.conic.z : ellipse.conic.x;
     float mixedCoeff = ellipse.conic.y;
