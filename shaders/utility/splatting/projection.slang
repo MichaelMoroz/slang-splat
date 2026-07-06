@@ -161,6 +161,17 @@ bool fit_centered_projected_outline_ellipse(float2 outlinePoints[EQUIRECTANGULAR
     float detNorm = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
     if (conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS || detNorm <= ELLIPSE_EPS) return false;
 
+    // The least-squares fit straddles the sampled outline; scale the conic so every
+    // sample lies inside the level-1 set, otherwise the far side of distorted
+    // outlines gets tile-clipped during binning.
+    float maxLevel = 1.0;
+    [unroll] for (uint i = 0u; i < EQUIRECTANGULAR_ELLIPSE_POINT_COUNT; i++)
+    {
+        float2 d = (outlinePoints[i] - screenCenter) / bboxHalfExtent;
+        maxLevel = max(maxLevel, conicNorm.x * d.x * d.x + 2.0 * conicNorm.y * d.x * d.y + conicNorm.z * d.y * d.y);
+    }
+    conicNorm /= maxLevel;
+
     float3 conic = float3(
         conicNorm.x / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS),
         conicNorm.y / max(bboxHalfExtent.x * bboxHalfExtent.y, ELLIPSE_EPS),

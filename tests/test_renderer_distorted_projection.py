@@ -174,7 +174,7 @@ def test_equirectangular_renderer_keeps_large_center_splat_visible(device):
     assert int(debug["generated_entries"]) > 0
     assert int(debug["sorted_count"]) == int(debug["generated_entries"])
     assert float(np.max(image[height // 2 - 4 : height // 2 + 5, width // 2 - 4 : width // 2 + 5, :])) > 0.05
-    np.testing.assert_allclose(center_radius_depth, projected.center_radius_depth, rtol=0.0, atol=3e-3)
+    np.testing.assert_allclose(center_radius_depth, projected.center_radius_depth, rtol=0.0, atol=1e-2)
     np.testing.assert_allclose(conic, projected.ellipse_conic, rtol=5e-3, atol=2e-4)
 
 

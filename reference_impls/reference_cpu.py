@@ -168,6 +168,7 @@ def _fit_centered_outline_ellipse(outline_points: np.ndarray, screen_center: np.
     det_norm = float(conic_norm[0] * conic_norm[2] - conic_norm[1] * conic_norm[1])
     if float(conic_norm[0]) <= ELLIPSE_EPS or float(conic_norm[2]) <= ELLIPSE_EPS or det_norm <= ELLIPSE_EPS:
         return None
+    conic_norm = conic_norm / max(float(np.max(design @ conic_norm.astype(np.float64))), 1.0)
     conic = np.array(
         (
             float(conic_norm[0]) / max(float(bbox_half_extent[0] * bbox_half_extent[0]), ELLIPSE_EPS),
