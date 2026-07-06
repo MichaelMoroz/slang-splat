@@ -18,6 +18,9 @@ _EQUIRECT_SHELL_RADIUS = np.float32(3.0)
 _EQUIRECT_SHELL_SIGMA = np.float32(0.006)
 _EQUIRECT_SHELL_OPACITY = np.float32(0.8)
 _EQUIRECT_RADIUS_SCALE = 1.6
+_EQUIRECT_LARGE_CENTER_WIDTH = 1536
+_EQUIRECT_LARGE_CENTER_HEIGHT = 768
+_EQUIRECT_LARGE_CENTER_SIGMA = np.float32(0.08)
 _EDGE_SAMPLE_COUNT = 8
 
 
@@ -184,6 +187,33 @@ def test_equirectangular_reference_keeps_side_splat_visible() -> None:
     assert ok
     np.testing.assert_allclose(screen, np.array((192.0, 64.0), dtype=np.float32), rtol=0.0, atol=1e-5)
     assert int(projected.valid[0]) == 1
+
+
+def test_equirectangular_reference_keeps_large_centered_fit_visible() -> None:
+    scene = GaussianScene(
+        positions=np.array(((0.0, 0.0, _EQUIRECT_SHELL_RADIUS),), dtype=np.float32),
+        scales=np.full((1, 3), np.log(_EQUIRECT_LARGE_CENTER_SIGMA), dtype=np.float32),
+        rotations=np.array(((1.0, 0.0, 0.0, 0.0),), dtype=np.float32),
+        opacities=np.array((_EQUIRECT_SHELL_OPACITY,), dtype=np.float32),
+        colors=np.array(((0.8, 0.7, 0.6),), dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(
+        position=(0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        near=0.1,
+        far=20.0,
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+
+    projected = project_splats(scene, camera, width=_EQUIRECT_LARGE_CENTER_WIDTH, height=_EQUIRECT_LARGE_CENTER_HEIGHT, radius_scale=_EQUIRECT_RADIUS_SCALE)
+    conic = projected.ellipse_conic[0]
+    det = float(conic[0] * conic[2] - conic[1] * conic[1])
+
+    assert int(projected.valid[0]) == 1
+    assert float(projected.center_radius_depth[0, 2]) > 32.0
+    assert 0.0 < det < 1e-6
+    assert not _is_fullscreen_fallback_ellipse(projected.center_radius_depth[0], conic, _EQUIRECT_LARGE_CENTER_WIDTH, _EQUIRECT_LARGE_CENTER_HEIGHT)
 
 
 def test_projection_outline_hits_alpha_cutoff() -> None:

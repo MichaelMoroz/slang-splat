@@ -111,9 +111,16 @@ bool fit_centered_projected_outline_ellipse(float2 outlinePoints[EQUIRECTANGULAR
     float s12 = 0.0;
     float s22 = 0.0;
     float3 rhs = 0.0;
+    float2 bboxHalfExtent = float2(ELLIPSE_EPS);
     [unroll] for (uint i = 0u; i < EQUIRECTANGULAR_ELLIPSE_POINT_COUNT; i++)
     {
         float2 d = outlinePoints[i] - screenCenter;
+        bboxHalfExtent = max(bboxHalfExtent, abs(d));
+    }
+
+    [unroll] for (uint i = 0u; i < EQUIRECTANGULAR_ELLIPSE_POINT_COUNT; i++)
+    {
+        float2 d = (outlinePoints[i] - screenCenter) / bboxHalfExtent;
         float3 row = float3(d.x * d.x, 2.0 * d.x * d.y, d.y * d.y);
         s00 += row.x * row.x;
         s01 += row.x * row.y;
@@ -124,15 +131,22 @@ bool fit_centered_projected_outline_ellipse(float2 outlinePoints[EQUIRECTANGULAR
         rhs += row;
     }
 
-    float3 conic;
-    if (!solve_symmetric_3x3(s00, s01, s02, s11, s12, s22, rhs, conic)) return false;
-    float detConic = conic.x * conic.z - conic.y * conic.y;
-    if (conic.x <= ELLIPSE_EPS || conic.z <= ELLIPSE_EPS || detConic <= ELLIPSE_EPS) return false;
+    float3 conicNorm;
+    if (!solve_symmetric_3x3(s00, s01, s02, s11, s12, s22, rhs, conicNorm)) return false;
+    float detNorm = conicNorm.x * conicNorm.z - conicNorm.y * conicNorm.y;
+    if (conicNorm.x <= ELLIPSE_EPS || conicNorm.z <= ELLIPSE_EPS || detNorm <= ELLIPSE_EPS) return false;
 
+    float3 conic = float3(
+        conicNorm.x / max(bboxHalfExtent.x * bboxHalfExtent.x, ELLIPSE_EPS),
+        conicNorm.y / max(bboxHalfExtent.x * bboxHalfExtent.y, ELLIPSE_EPS),
+        conicNorm.z / max(bboxHalfExtent.y * bboxHalfExtent.y, ELLIPSE_EPS)
+    );
+    float detConic = conic.x * conic.z - conic.y * conic.y;
+    if (conic.x <= 0.0 || conic.z <= 0.0 || detConic <= 0.0 || !all(isfinite(conic)) || !isfinite(detConic)) return false;
     float trace = conic.x + conic.z;
     float disc = sqrt(max(0.25 * trace * trace - detConic, 0.0));
-    float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
-    float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
+    float axis0 = rsqrt(max(0.5 * trace + disc, CONIC_AXIS_FLOOR));
+    float axis1 = rsqrt(max(0.5 * trace - disc, CONIC_AXIS_FLOOR));
     float radius = max(axis0, axis1);
     ellipse.centerPx = screenCenter;
     ellipse.radiusPx = radius;
@@ -144,9 +158,11 @@ bool fit_centered_projected_outline_ellipse(float2 outlinePoints[EQUIRECTANGULAR
 bool equirectangular_centered_ellipse_needs_fullscreen_fallback(PinholeCamera camera, Ellipse ellipse)
 {
     float detConic = ellipse.conic.x * ellipse.conic.z - ellipse.conic.y * ellipse.conic.y;
-    if (detConic <= ELLIPSE_EPS) return true;
+    if (detConic <= 0.0 || !isfinite(detConic)) return true;
     float2 extent = sqrt(max(float2(ellipse.conic.z, ellipse.conic.x) / detConic, 0.0));
     if (!all(isfinite(extent))) return true;
+    float detNorm = detConic * extent.x * extent.x * extent.y * extent.y;
+    if (detNorm <= ELLIPSE_EPS) return true;
     float2 centerMin = ellipse.centerPx - extent;
     float2 centerMax = ellipse.centerPx + extent;
     return centerMin.x <= 0.0 || centerMax.x >= camera.params.viewport.x || centerMin.y <= 0.0 || centerMax.y >= camera.params.viewport.y;

@@ -12,6 +12,7 @@ from src.renderer.camera import Camera
 ALPHA_CUTOFF_DEFAULT = np.float32(1.0 / 255.0)
 ELLIPSE_EPS = 1e-6
 MIN_CONIC_DET = 1e-12
+CONIC_AXIS_FLOOR = 1e-20
 GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(3.0)
 ELLIPSE_RADIUS_PAD_PX = np.float32(1.0)
 EQUIRECTANGULAR_ELLIPSE_POINT_COUNT = 8
@@ -132,32 +133,47 @@ def _init_fullscreen_fallback_ellipse(width: int, height: int) -> tuple[np.ndarr
 def _fit_centered_outline_ellipse(outline_points: np.ndarray, screen_center: np.ndarray) -> tuple[np.ndarray, float, np.ndarray] | None:
     center = np.asarray(screen_center, dtype=np.float32).reshape(2)
     d = (np.asarray(outline_points, dtype=np.float64).reshape(-1, 2) - center.astype(np.float64, copy=False))
+    bbox_half_extent = np.maximum(np.max(np.abs(d), axis=0), np.full((2,), ELLIPSE_EPS, dtype=np.float64))
+    d = d / bbox_half_extent[None, :]
     design = np.stack((d[:, 0] * d[:, 0], 2.0 * d[:, 0] * d[:, 1], d[:, 1] * d[:, 1]), axis=1)
     normal = design.T @ design
     rhs = np.sum(design, axis=0)
     try:
-        conic = np.linalg.solve(normal, rhs).astype(np.float32)
+        conic_norm = np.linalg.solve(normal, rhs).astype(np.float32)
     except np.linalg.LinAlgError:
         return None
-    if not np.isfinite(conic).all():
+    if not np.isfinite(conic_norm).all():
         return None
+    det_norm = float(conic_norm[0] * conic_norm[2] - conic_norm[1] * conic_norm[1])
+    if float(conic_norm[0]) <= ELLIPSE_EPS or float(conic_norm[2]) <= ELLIPSE_EPS or det_norm <= ELLIPSE_EPS:
+        return None
+    conic = np.array(
+        (
+            float(conic_norm[0]) / max(float(bbox_half_extent[0] * bbox_half_extent[0]), ELLIPSE_EPS),
+            float(conic_norm[1]) / max(float(bbox_half_extent[0] * bbox_half_extent[1]), ELLIPSE_EPS),
+            float(conic_norm[2]) / max(float(bbox_half_extent[1] * bbox_half_extent[1]), ELLIPSE_EPS),
+        ),
+        dtype=np.float32,
+    )
     det = float(conic[0] * conic[2] - conic[1] * conic[1])
-    if float(conic[0]) <= ELLIPSE_EPS or float(conic[2]) <= ELLIPSE_EPS or det <= ELLIPSE_EPS:
+    if float(conic[0]) <= 0.0 or float(conic[2]) <= 0.0 or det <= 0.0 or (not np.isfinite(det)):
         return None
     trace = float(conic[0] + conic[2])
     disc = math.sqrt(max(0.25 * trace * trace - det, 0.0))
-    axis0 = 1.0 / math.sqrt(max(0.5 * trace + disc, ELLIPSE_EPS))
-    axis1 = 1.0 / math.sqrt(max(0.5 * trace - disc, ELLIPSE_EPS))
+    axis0 = 1.0 / math.sqrt(max(0.5 * trace + disc, CONIC_AXIS_FLOOR))
+    axis1 = 1.0 / math.sqrt(max(0.5 * trace - disc, CONIC_AXIS_FLOOR))
     radius_px = float(max(axis0, axis1))
     return center, radius_px, conic.astype(np.float32, copy=False)
 
 
 def _equirectangular_centered_ellipse_needs_fallback(center: np.ndarray, conic: np.ndarray, width: int, height: int) -> bool:
     det = float(conic[0] * conic[2] - conic[1] * conic[1])
-    if det <= ELLIPSE_EPS:
+    if det <= 0.0 or not np.isfinite(det):
         return True
     extent = np.sqrt(np.maximum(np.array((conic[2], conic[0]), dtype=np.float64) / det, 0.0))
     if not np.isfinite(extent).all():
+        return True
+    if det * float(extent[0] * extent[0] * extent[1] * extent[1]) <= ELLIPSE_EPS:
         return True
     center = np.asarray(center, dtype=np.float64).reshape(2)
     return (

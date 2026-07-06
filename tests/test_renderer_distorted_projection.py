@@ -20,6 +20,9 @@ _EQUIRECT_SPLAT_COLOR = np.array([[0.8, 0.7, 0.6]], dtype=np.float32)
 _EQUIRECT_SPLAT_OPACITY = 0.8
 _EQUIRECT_ALPHA_CUTOFF = 1.0 / 255.0
 _EQUIRECT_BOUNDARY_SPLAT_SIGMA = 0.12
+_EQUIRECT_LARGE_CENTER_SIGMA = 0.08
+_EQUIRECT_PRODUCTION_TEST_WIDTH = 1536
+_EQUIRECT_PRODUCTION_TEST_HEIGHT = 768
 
 
 def _equirectangular_camera() -> Camera:
@@ -146,6 +149,40 @@ def test_projection_keeps_side_splat_for_equirectangular_camera(device):
     assert int(projected.valid[0]) == 1
     assert int(np.asarray(debug["splat_visible"], dtype=np.uint32)[0]) == 1
     assert int(debug["generated_entries"]) > 0
+
+
+def test_equirectangular_renderer_keeps_large_center_splat_visible(device):
+    width, height = _EQUIRECT_PRODUCTION_TEST_WIDTH, _EQUIRECT_PRODUCTION_TEST_HEIGHT
+    scene = _scene_from_positions(np.array(((0.0, 0.0, _EQUIRECT_SPHERE_RADIUS),), dtype=np.float32), sigma=_EQUIRECT_LARGE_CENTER_SIGMA)
+    scene.sh_coeffs = rgb_to_sh0(scene.colors)[:, None, :].astype(np.float32)
+    camera = _equirectangular_camera()
+    renderer = GaussianRenderer(
+        device,
+        width=width,
+        height=height,
+        radius_scale=_EQUIRECT_RADIUS_SCALE,
+        alpha_cutoff=_EQUIRECT_ALPHA_CUTOFF,
+        list_capacity_multiplier=512,
+        allocate_training_work_buffers=False,
+        allocate_grad_work_buffers=False,
+    )
+
+    projected = project_splats(scene, camera, width, height, renderer.radius_scale, alpha_cutoff=renderer.alpha_cutoff)
+    debug = renderer.debug_pipeline_data(scene, camera)
+    center_radius_depth = np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)
+    conic = np.asarray(debug["screen_ellipse_conic"], dtype=np.float32)[:, :3]
+    image = renderer.render(scene, camera, background=(0.0, 0.0, 0.0)).image[:, :, :3]
+
+    assert int(projected.valid[0]) == 1
+    assert int(np.asarray(debug["splat_visible"], dtype=np.uint32)[0]) == 1
+    assert float(projected.center_radius_depth[0, 2]) > 32.0
+    assert float(center_radius_depth[0, 2]) > 32.0
+    assert not _is_fullscreen_fallback_ellipse(center_radius_depth[0], conic[0], width, height)
+    assert int(debug["generated_entries"]) > 0
+    assert int(debug["sorted_count"]) == int(debug["generated_entries"])
+    assert float(np.max(image[height // 2 - 4 : height // 2 + 5, width // 2 - 4 : width // 2 + 5, :])) > 0.05
+    np.testing.assert_allclose(center_radius_depth, projected.center_radius_depth, rtol=0.0, atol=3e-3)
+    np.testing.assert_allclose(conic, projected.ellipse_conic, rtol=5e-3, atol=2e-4)
 
 
 def test_equirectangular_camera_projects_latlong_sphere_uniformly():
