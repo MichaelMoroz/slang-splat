@@ -133,6 +133,8 @@ def _support_sphere_intersects_view_frustum(camera_center: np.ndarray, camera: C
     radius = float(support_radius)
     if not (np.isfinite(center).all() and math.isfinite(radius) and radius > 0.0):
         return False
+    if camera.is_equirectangular:
+        return float(np.linalg.norm(center)) + radius > 1e-4
     if center[2] + radius <= 1e-4:
         return False
     if center[2] - radius >= float(camera.far):
@@ -201,6 +203,9 @@ def _compute_outline_ellipse(
         outline_points[index] = screen_point
         outline_min = np.minimum(outline_min, screen_point)
         outline_max = np.maximum(outline_max, screen_point)
+
+    if camera.is_equirectangular and ((float(outline_max[0] - outline_min[0]) > 0.5 * float(width)) or float(outline_min[1]) <= 0.0 or float(outline_max[1]) >= float(height)):
+        return _init_fullscreen_fallback_ellipse(width, height)
 
     if screen_ok:
         outline_min = np.minimum(outline_min, screen_center.astype(np.float32, copy=False))
@@ -307,8 +312,9 @@ def project_splats(
         radius_px = float(max(radius_px + float(ELLIPSE_RADIUS_PAD_PX), 1.0))
         center_radius_depth[index] = np.array((center_px[0], center_px[1], radius_px, cam_distance), dtype=np.float32)
         ellipse_conic[index] = conic
+        visible_depth = cam_distance > 1e-4 if camera.is_equirectangular else depth_value > 1e-4
         visible = (
-            depth_value > 1e-4
+            visible_depth
             and center_px[0] + radius_px >= 0.0
             and center_px[0] - radius_px < float(width)
             and center_px[1] + radius_px >= 0.0

@@ -9,9 +9,13 @@ from slangpy import math as smath
 from ..utility import VEC_EPS, as_float3, normalize3
 
 SPLAT_PIXEL_CLAMP_PX = 0.75
+PROJECTION_MODEL_PINHOLE = 0
+PROJECTION_MODEL_EQUIRECTANGULAR = 1
+PROJECTION_MODEL_VALUES = (PROJECTION_MODEL_PINHOLE, PROJECTION_MODEL_EQUIRECTANGULAR)
 _DISTORTION_COEFF_COUNT = 8
 _DISTORTION_EPS = 1e-12
 _DISTORTION_NEWTON_ITERS = 8
+_EQUIRECTANGULAR_EPS = 1e-12
 
 
 @dataclass(slots=True)
@@ -36,6 +40,7 @@ class Camera:
     distortion_k5: float | None = None
     distortion_k6: float | None = None
     basis_override: np.ndarray | None = None
+    projection_model: int = PROJECTION_MODEL_PINHOLE
 
     def focal_pixels(self, height: int) -> float:
         return float(self.fy) if self.fy is not None else float(0.5 * float(height) / np.tan(0.5 * np.deg2rad(self.fov_y_degrees)))
@@ -48,6 +53,9 @@ class Camera:
         return float(self.cx) if self.cx is not None else 0.5 * float(width), float(self.cy) if self.cy is not None else 0.5 * float(height)
 
     def pixel_world_size_max(self, depth: float, width: int, height: int) -> float:
+        if self.is_equirectangular:
+            angular_pixel_size = max(2.0 * np.pi / max(float(width), 1.0), np.pi / max(float(height), 1.0))
+            return float(SPLAT_PIXEL_CLAMP_PX * max(float(depth), 1e-8) * angular_pixel_size)
         return float(SPLAT_PIXEL_CLAMP_PX * max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
 
     @staticmethod
@@ -66,6 +74,7 @@ class Camera:
         distortion_k4: float | None = None,
         distortion_k5: float | None = None,
         distortion_k6: float | None = None,
+        projection_model: int = PROJECTION_MODEL_PINHOLE,
     ) -> "Camera":
         return Camera(
             position=np.asarray(position, dtype=np.float32),
@@ -82,6 +91,7 @@ class Camera:
             distortion_k4=distortion_k4,
             distortion_k5=distortion_k5,
             distortion_k6=distortion_k6,
+            projection_model=projection_model,
         )
 
     def __post_init__(self) -> None:
@@ -93,9 +103,16 @@ class Camera:
             if value is not None:
                 setattr(self, attr, float(value))
         self.min_camera_distance = max(float(self.min_camera_distance), 0.0)
+        self.projection_model = int(self.projection_model)
+        if self.projection_model not in PROJECTION_MODEL_VALUES:
+            raise ValueError(f"Unsupported projection model {self.projection_model}.")
         if self.basis_override is not None:
             basis = np.asarray(self.basis_override, dtype=np.float32).reshape(3, 3)
             self.basis_override = basis
+
+    @property
+    def is_equirectangular(self) -> bool:
+        return int(self.projection_model) == PROJECTION_MODEL_EQUIRECTANGULAR
 
     @staticmethod
     def _resolve_distortion_defaults(defaults: tuple[float, ...] | None = None) -> tuple[float, float, float, float, float, float, float, float]:
@@ -227,6 +244,8 @@ class Camera:
 
     def project_camera_to_screen(self, camera_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[np.ndarray, bool]:
         cam = np.asarray(camera_pos, dtype=np.float32).reshape(3)
+        if self.is_equirectangular:
+            return self._project_equirectangular_camera_to_screen(cam, width, height)
         depth = float(cam[2])
         if not np.isfinite(depth) or depth <= 1e-12:
             return np.zeros((2,), dtype=np.float32), False
@@ -236,10 +255,30 @@ class Camera:
         screen = uv * np.asarray((fx, fy), dtype=np.float32) + np.asarray((cx, cy), dtype=np.float32)
         return screen.astype(np.float32, copy=False), bool(np.isfinite(screen).all())
 
+    @staticmethod
+    def _project_equirectangular_camera_to_screen(camera_pos: np.ndarray, width: int, height: int) -> tuple[np.ndarray, bool]:
+        cam = np.asarray(camera_pos, dtype=np.float64).reshape(3)
+        horizontal = float(np.linalg.norm(cam[[0, 2]]))
+        if (not np.isfinite(cam).all()) or horizontal + abs(float(cam[1])) <= _EQUIRECTANGULAR_EPS:
+            return np.zeros((2,), dtype=np.float32), False
+        theta = float(np.arctan2(float(cam[0]), float(cam[2])))
+        phi = float(np.arctan2(-float(cam[1]), horizontal))
+        screen = np.array(
+            (
+                (theta / (2.0 * np.pi) + 0.5) * max(float(width), 1.0),
+                (0.5 - phi / np.pi) * max(float(height), 1.0),
+            ),
+            dtype=np.float64,
+        )
+        screen[0] = np.mod(screen[0], max(float(width), 1.0))
+        return screen.astype(np.float32, copy=False), bool(np.isfinite(screen).all())
+
     def project_world_to_screen(self, world_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[np.ndarray, bool]:
         return self.project_camera_to_screen(self.world_point_to_camera(world_pos), width, height, default_k1, default_k2)
 
     def screen_to_world(self, screen_pos: np.ndarray, depth: float, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> np.ndarray:
+        if self.is_equirectangular:
+            return self.position + self.screen_to_world_ray(screen_pos, width, height) * np.float32(max(float(depth), 0.0))
         fx, fy = self.focal_pixels_xy(width, height)
         cx, cy = self.principal_point(width, height)
         uv = (np.asarray(screen_pos, dtype=np.float32).reshape(2) - np.asarray((cx, cy), dtype=np.float32)) / np.maximum(
@@ -251,8 +290,20 @@ class Camera:
         return self.camera_point_to_world(np.array([undistorted[0] * depth_safe, undistorted[1] * depth_safe, depth_safe], dtype=np.float32))
 
     def screen_to_world_ray(self, screen_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> np.ndarray:
+        if self.is_equirectangular:
+            return self._equirectangular_screen_to_world_ray(screen_pos, width, height)
         world = self.screen_to_world(screen_pos, 1.0, width, height, default_k1, default_k2)
         return np.asarray(normalize3(world - self.position, eps=VEC_EPS), dtype=np.float32)
+
+    def _equirectangular_screen_to_world_ray(self, screen_pos: np.ndarray, width: int, height: int) -> np.ndarray:
+        screen = np.asarray(screen_pos, dtype=np.float64).reshape(2)
+        width_safe = max(float(width), 1.0)
+        height_safe = max(float(height), 1.0)
+        theta = 2.0 * np.pi * (float(screen[0]) / width_safe - 0.5)
+        phi = np.pi * (0.5 - float(screen[1]) / height_safe)
+        cos_phi = float(np.cos(phi))
+        ray_camera = np.array((cos_phi * np.sin(theta), -np.sin(phi), cos_phi * np.cos(theta)), dtype=np.float32)
+        return np.asarray(normalize3(self.camera_to_world(ray_camera), eps=VEC_EPS), dtype=np.float32)
 
     def gpu_params(self, width: int, height: int, default_distortion: tuple[float, ...] | None = None) -> dict[str, object]:
         right, up, forward = self.basis()
@@ -271,6 +322,7 @@ class Camera:
             "projDistortionK1K2P1P2": spy.float4(*distortion[:4]),
             "projDistortionK3K4K5K6": spy.float4(*distortion[4:]),
             "minCameraDistance": float(self.min_camera_distance),
+            "projectionModel": np.uint32(self.projection_model),
         }
 
 
@@ -309,6 +361,7 @@ class Camera:
         distortion_k6: float | None = None,
         near: float = 0.1,
         far: float = 100.0,
+        projection_model: int = PROJECTION_MODEL_PINHOLE,
     ) -> "Camera":
         rot = Camera._rotation_matrix_from_quaternion_wxyz(np.asarray(q_wxyz, dtype=np.float32))
         t = np.asarray(t_xyz, dtype=np.float32).reshape(3)
@@ -335,4 +388,5 @@ class Camera:
             distortion_k5=distortion_k5,
             distortion_k6=distortion_k6,
             basis_override=rot,
+            projection_model=projection_model,
         )

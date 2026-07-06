@@ -25,6 +25,7 @@ float support_plane_slack(float3 planeNormal, float supportRadius)
 bool support_sphere_intersects_view_frustum(PinholeCamera camera, float3 cameraCenter, float supportRadius)
 {
     if (!(supportRadius > 0.0) || !all(isfinite(cameraCenter)) || !isfinite(supportRadius)) return false;
+    if (camera.is_equirectangular()) return length(cameraCenter) + supportRadius > DEPTH_VISIBILITY_FLOOR;
     if (cameraCenter.z + supportRadius <= DEPTH_VISIBILITY_FLOOR) return false;
 
     float3 leftPlane = float3(camera.params.focalPixels.x, 0.0, camera.params.principalPoint.x);
@@ -36,6 +37,13 @@ bool support_sphere_intersects_view_frustum(PinholeCamera camera, float3 cameraC
     if (dot(topPlane, cameraCenter) < -support_plane_slack(topPlane, supportRadius)) return false;
     if (dot(bottomPlane, cameraCenter) < -support_plane_slack(bottomPlane, supportRadius)) return false;
     return true;
+}
+
+bool equirectangular_outline_needs_fullscreen_fallback(PinholeCamera camera, float2 outlineMin, float2 outlineMax)
+{
+    if (!camera.is_equirectangular()) return false;
+    float2 viewport = camera.params.viewport;
+    return (outlineMax.x - outlineMin.x) > 0.5 * viewport.x || outlineMin.y <= 0.0 || outlineMax.y >= viewport.y;
 }
 
 bool fit_projected_outline_ellipse(float2 outlinePoints[ELLIPSE_POINT_COUNT], float2 outlineMin, float2 outlineMax, bool hasScreenCenter, float2 screenCenter, float2 viewport, out Ellipse ellipse)
@@ -241,6 +249,11 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
         outlinePoints[i] = screenPoint;
         outlineMin = min(outlineMin, screenPoint);
         outlineMax = max(outlineMax, screenPoint);
+    }
+    if (equirectangular_outline_needs_fullscreen_fallback(camera, outlineMin, outlineMax))
+    {
+        init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+        return true;
     }
     return fit_projected_outline_ellipse(outlinePoints, outlineMin, outlineMax, hasScreenCenter, screenCenter, camera.params.viewport, ellipse);
 }

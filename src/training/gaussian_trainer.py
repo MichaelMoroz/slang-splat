@@ -17,6 +17,7 @@ from ..renderer import Camera, GaussianRenderer
 from ..scan.prefix_sum import GPUPrefixSum
 from ..sort.radix_sort import GPURadixSort
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
+from ..scene._internal.colmap_types import COLMAP_PINHOLE_MODEL_ID
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
 from .alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
@@ -1447,7 +1448,7 @@ class GaussianTrainer:
             rows[base + 4] = np.array([up[1], up[2], forward[0], forward[1]], dtype=np.float32)
             rows[base + 5] = np.array([forward[2], camera_hash, distortion[0], distortion[1]], dtype=np.float32)
             rows[base + 6] = np.array(distortion[2:6], dtype=np.float32)
-            rows[base + 7] = np.array([distortion[6], distortion[7], 0.0, 0.0], dtype=np.float32)
+            rows[base + 7] = np.array([distortion[6], distortion[7], float(camera.projection_model), 0.0], dtype=np.float32)
         return rows
 
     def _refinement_camera_signature_value(self) -> tuple[object, ...]:
@@ -1475,6 +1476,7 @@ class GaussianTrainer:
                     round(float(frame.k4), 8),
                     round(float(frame.k5), 8),
                     round(float(frame.k6), 8),
+                    int(getattr(frame, "model_id", COLMAP_PINHOLE_MODEL_ID)),
                     *(round(float(v), 8) for v in np.asarray(frame.q_wxyz, dtype=np.float32).reshape(4)),
                     *(round(float(v), 8) for v in np.asarray(frame.t_xyz, dtype=np.float32).reshape(3)),
                 )

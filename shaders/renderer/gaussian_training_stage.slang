@@ -375,6 +375,7 @@ PinholeCamera refinement_camera(uint cameraIndex)
     params.farDepth = row2.z;
     params.projDistortionK1K2P1P2 = float4(row5.z, row5.w, row6.x, row6.y);
     params.projDistortionK3K4K5K6 = float4(row6.z, row6.w, row7.x, row7.y);
+    params.projectionModel = uint(max(row7.z, 0.0));
     return PinholeCamera.from_params(params);
 }
 
@@ -390,9 +391,8 @@ float3 apply_support_radius_lower_bound(float3 logScale, float supportRadius)
 
 float refinement_min_support_radius(PinholeCamera camera, float3 worldPos)
 {
-    float minFocal = max(min(camera.params.focalPixels.x, camera.params.focalPixels.y), SMALL_VALUE);
     float cameraDistance = length(worldPos - camera.position_world());
-    return cameraDistance * max(g_RefinementMinScreenRadiusPx, 0.0) / minFocal;
+    return camera.pixel_world_size_max(cameraDistance) * (max(g_RefinementMinScreenRadiusPx, 0.0) / SPLAT_PIXEL_CLAMP_PX);
 }
 
 void copy_adam_state(uint srcSplatId, uint dstSplatId)

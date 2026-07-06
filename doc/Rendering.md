@@ -9,7 +9,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `ICamera`
   - `PinholeCamera`
 - Shared splat data structures and reusable projection/raster math live under `shaders/utility/splatting`, while renderer bindings remain grouped in `shaders/renderer/gaussian_types.slang`:
-  - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, and lens distortion.
+  - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, lens distortion, and projection model.
   - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and projection/binning limits.
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
 - Shared constants stay in `shaders/utility/math/constants.slang`, organized with commented sections for generic numeric floors, rendering constants, and debug-visualization tuning instead of being split into tiny constants-only files.
@@ -34,6 +34,8 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - inflate the fitted radius conservatively for visibility and scan conversion while keeping the conic on the actual alpha-cutoff boundary,
   - estimate projected radius,
   - write projected splat state, raster cache data, visibility flags, and a visible-splat sort key.
+- Camera projection supports pinhole/OPENCV-style distorted views and COLMAP `EQUIRECTANGULAR` views through the shared camera math layer. Equirectangular projection stores a distance depth for sorting and visibility instead of rejecting negative camera-space `z`.
+- Equirectangular outlines that cross the left-right seam or touch the polar rows fall back to a fullscreen conservative ellipse. The current prepass stores one ellipse per splat, so this avoids missing seam-wrapped or pole-stretched support at the cost of extra tile work for those edge cases.
 - Output buffers:
   - projected splat data for raster stage,
   - raster cache data,
@@ -71,7 +73,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Raster evaluation uses the true decoded support cached in prepass with no separate pixel-floor clamp or fallback alpha branch.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
 - Writes RGBA output texture. `csRasterize` writes the normal display/gamma output; `csRasterizeLinear` reuses the same forward replay and writes linear radiance for viewer post-processing.
-- Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
+- Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`, which dispatches internally based on the camera projection model.
 
 ### PPISP Viewer Preview
 - `shaders/utility/ppisp_tonemap.slang` owns the differentiable PPISP exposure, vignetting, chroma-correction, CRF math, and the stable analytic inverse reused by photometric compensation.

@@ -28,6 +28,7 @@ Supported camera models:
 - `RADIAL`
 - `OPENCV`
 - `FULL_OPENCV`
+- `EQUIRECTANGULAR`
 
 The default sparse lookup accepts `sparse/0`, `sparse`, direct sparse files at the selected root, and one-level named sparse exports. The default image lookup tries `images_4`, `images`, and root-level images, including the named sparse-export parent when one was discovered.
 
@@ -36,7 +37,8 @@ Each training frame stores:
 - resolved image path,
 - COLMAP extrinsics (`q_wxyz`, `t_xyz`),
 - resized intrinsics (`fx`, `fy`, `cx`, `cy`),
-- radial distortion (`k1`, `k2`) when available.
+- distortion terms (`k1`, `k2`, `p1`, `p2`, `k3`, `k4`, `k5`, `k6`) when available,
+- camera model id for projection dispatch. Equirectangular frames keep focal/principal/distortion fields at zero and use spherical projection from the model id.
 
 Training targets are handled in two layers:
 

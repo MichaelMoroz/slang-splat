@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 from reference_impls.reference_cpu import _compute_scanline_tile_span_universal, project_splats
-from src.renderer import Camera
+from src.renderer import Camera, PROJECTION_MODEL_EQUIRECTANGULAR
 from src.scene import GaussianScene
 
 _ALPHA_CUTOFF = 1.0 / 255.0
@@ -129,6 +129,31 @@ def test_projection_outline_reference_is_deterministic() -> None:
     np.testing.assert_allclose(p0.center_radius_depth, p1.center_radius_depth)
     np.testing.assert_array_equal(p0.valid, p1.valid)
     np.testing.assert_allclose(p0.ellipse_conic, p1.ellipse_conic)
+
+
+def test_equirectangular_reference_keeps_side_splat_visible() -> None:
+    scene = GaussianScene(
+        positions=np.array(((3.0, 0.0, 0.0),), dtype=np.float32),
+        scales=np.full((1, 3), -4.5, dtype=np.float32),
+        rotations=np.array(((1.0, 0.0, 0.0, 0.0),), dtype=np.float32),
+        opacities=np.array((0.8,), dtype=np.float32),
+        colors=np.array(((0.8, 0.7, 0.6),), dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(
+        position=(0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        near=0.1,
+        far=20.0,
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+
+    projected = project_splats(scene, camera, width=256, height=128, radius_scale=1.6)
+    screen, ok = camera.project_world_to_screen(scene.positions[0], 256, 128)
+
+    assert ok
+    np.testing.assert_allclose(screen, np.array((192.0, 64.0), dtype=np.float32), rtol=0.0, atol=1e-5)
+    assert int(projected.valid[0]) == 1
 
 
 def test_projection_outline_hits_alpha_cutoff() -> None:

@@ -1,6 +1,8 @@
 import "utility/math/constants.slang";
 
 static const uint CAMERA_UNDISTORT_NEWTON_ITERS = 6u;
+static const uint CAMERA_PROJECTION_PINHOLE = 0u;
+static const uint CAMERA_PROJECTION_EQUIRECTANGULAR = 1u;
 
 struct CameraParams
 {
@@ -14,6 +16,7 @@ struct CameraParams
     float4 projDistortionK1K2P1P2;
     float4 projDistortionK3K4K5K6;
     float minCameraDistance;
+    uint projectionModel;
 };
 
 interface ICamera
@@ -64,10 +67,27 @@ struct PinholeCamera : ICamera
         return params.camPos + camera_to_world(cameraPos);
     }
 
+    bool is_equirectangular()
+    {
+        return params.projectionModel == CAMERA_PROJECTION_EQUIRECTANGULAR;
+    }
+
     float2 project_camera_to_screen_linear(float3 cameraPos)
     {
+        if (is_equirectangular()) return project_camera_to_screen_equirectangular(cameraPos);
         float invDepth = 1.0 / max(cameraPos.z, SMALL_VALUE);
         return cameraPos.xy * (params.focalPixels * invDepth) + params.principalPoint;
+    }
+
+    float2 project_camera_to_screen_equirectangular(float3 cameraPos)
+    {
+        float horizontal = length(cameraPos.xz);
+        float theta = atan2(cameraPos.x, cameraPos.z);
+        float phi = atan2(-cameraPos.y, horizontal);
+        float2 viewportSafe = max(params.viewport, float2(1.0));
+        float2 screenPos = float2((theta / TAU_RADIANS + 0.5) * viewportSafe.x, (0.5 - phi / PI) * viewportSafe.y);
+        screenPos.x -= floor(screenPos.x / viewportSafe.x) * viewportSafe.x;
+        return screenPos;
     }
 
     float radial_distortion(float r2, out float dRadialDr2)
@@ -144,6 +164,16 @@ struct PinholeCamera : ICamera
 
     bool project_camera_to_screen(float3 cameraPos, out float2 screenPos)
     {
+        if (is_equirectangular())
+        {
+            if (!all(isfinite(cameraPos)) || length(cameraPos) <= SMALL_VALUE)
+            {
+                screenPos = 0.0;
+                return false;
+            }
+            screenPos = project_camera_to_screen_equirectangular(cameraPos);
+            return all(isfinite(screenPos));
+        }
         if (cameraPos.z <= SMALL_VALUE)
         {
             screenPos = 0.0;
@@ -162,6 +192,7 @@ struct PinholeCamera : ICamera
 
     float3 screen_to_world(float2 screenPos, float depth)
     {
+        if (is_equirectangular()) return params.camPos + screen_to_world_ray(screenPos) * max(depth, 0.0);
         float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
         float depthSafe = max(depth, SMALL_VALUE);
         float2 uv = undistort_normalized((screenPos - params.principalPoint) / focalSafe);
@@ -170,6 +201,17 @@ struct PinholeCamera : ICamera
 
     float3 screen_to_world_ray(float2 screenPos)
     {
+        if (is_equirectangular())
+        {
+            float2 viewportSafe = max(params.viewport, float2(1.0));
+            float theta = TAU_RADIANS * (screenPos.x / viewportSafe.x - 0.5);
+            float phi = PI * (0.5 - screenPos.y / viewportSafe.y);
+            float sinTheta, cosTheta;
+            sincos(theta, sinTheta, cosTheta);
+            float sinPhi, cosPhi;
+            sincos(phi, sinPhi, cosPhi);
+            return normalize(camera_to_world(float3(cosPhi * sinTheta, -sinPhi, cosPhi * cosTheta)));
+        }
         float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
         float2 uv = undistort_normalized((screenPos - params.principalPoint) / focalSafe);
         return normalize(camera_to_world(float3(uv, 1.0)));
@@ -178,13 +220,20 @@ struct PinholeCamera : ICamera
     float pixel_world_size_max(float depth)
     {
         float depthSafe = max(depth, SMALL_VALUE);
+        if (is_equirectangular())
+        {
+            float2 viewportSafe = max(params.viewport, float2(1.0));
+            float angularPixelSize = max(TAU_RADIANS / viewportSafe.x, PI / viewportSafe.y);
+            return SPLAT_PIXEL_CLAMP_PX * depthSafe * angularPixelSize;
+        }
         float minFocal = max(min(params.focalPixels.x, params.focalPixels.y), SMALL_VALUE);
         return SPLAT_PIXEL_CLAMP_PX * depthSafe / minFocal;
     }
 
     float camera_depth(float3 worldPos)
     {
-        return world_point_to_camera(worldPos).z;
+        float3 cameraPos = world_point_to_camera(worldPos);
+        return is_equirectangular() ? length(cameraPos) : cameraPos.z;
     }
 
     bool is_depth_in_range(float depthValue)

@@ -11,7 +11,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from ..gaussian_scene import GaussianScene
 from ..sh_utils import SUPPORTED_SH_COEFF_COUNT, rgb_to_sh0
-from .colmap_types import ColmapCamera, ColmapFrame, ColmapImage, ColmapReconstruction, GaussianInitHyperParams, point_tables
+from .colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID, COLMAP_PINHOLE_MODEL_ID, ColmapCamera, ColmapFrame, ColmapImage, ColmapReconstruction, GaussianInitHyperParams, point_tables
 
 INIT_BASE_SCALE_SPACING_RATIO = 0.25
 INIT_JITTER_SPACING_RATIO = 1.0 / np.sqrt(12.0)
@@ -487,15 +487,16 @@ def _build_training_frame(task: tuple[int, object, object, Path, str, int | None
         downscale_scale=downscale_scale,
     )
     sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
+    is_equirectangular = int(getattr(camera, "model_id", -1)) == COLMAP_EQUIRECTANGULAR_MODEL_ID
     return ColmapFrame(
         image_id,
         image_path,
         image.q_wxyz.astype(np.float32),
         image.t_xyz.astype(np.float32),
-        float(camera.fx) * sx,
-        float(camera.fy) * sy,
-        float(camera.cx) * sx,
-        float(camera.cy) * sy,
+        0.0 if is_equirectangular else float(camera.fx) * sx,
+        0.0 if is_equirectangular else float(camera.fy) * sy,
+        0.0 if is_equirectangular else float(camera.cx) * sx,
+        0.0 if is_equirectangular else float(camera.cy) * sy,
         int(width),
         int(height),
         float(getattr(camera, "k1", 0.0)),
@@ -507,6 +508,7 @@ def _build_training_frame(task: tuple[int, object, object, Path, str, int | None
         float(getattr(camera, "k5", 0.0)),
         float(getattr(camera, "k6", 0.0)),
         camera_id=int(getattr(image, "camera_id", 0)),
+        model_id=int(getattr(camera, "model_id", COLMAP_PINHOLE_MODEL_ID)),
     )
 
 

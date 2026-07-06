@@ -23,7 +23,14 @@ from src.scene import (
 from src.scene._internal import colmap_ops
 from src.scene._internal.colmap_binary import count_colmap_points3d
 from src.scene._internal.colmap_ops import transform_colmap_reconstruction_custom_rotation
-from src.scene._internal.colmap_types import ColmapCamera, ColmapFrame, ColmapImage, ColmapPoint3D, ColmapReconstruction
+from src.scene._internal.colmap_types import (
+    COLMAP_EQUIRECTANGULAR_MODEL_ID,
+    ColmapCamera,
+    ColmapFrame,
+    ColmapImage,
+    ColmapPoint3D,
+    ColmapReconstruction,
+)
 
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
 
@@ -43,6 +50,8 @@ def _write_cameras_bin(path: Path, model_id: int = 1) -> None:
             handle.write(struct.pack("<dddd", 420.0, 200.0, 100.0, 0.07))
         elif model_id == 3:
             handle.write(struct.pack("<ddddd", 420.0, 200.0, 100.0, 0.07, -0.02))
+        elif model_id == COLMAP_EQUIRECTANGULAR_MODEL_ID:
+            handle.write(struct.pack("<dd", 400.0, 200.0))
         else:
             handle.write(struct.pack("<dddddddd", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0))
 
@@ -95,6 +104,7 @@ def _write_cameras_txt(path: Path, model_name: str = "PINHOLE") -> None:
         "RADIAL": "420 200 100 0.07 -0.02",
         "OPENCV": "400 420 200 100 0.07 -0.02 0.001 -0.002",
         "FULL_OPENCV": "400 420 200 100 0.07 -0.02 0.001 -0.002 0.0 0.0 0.0 0.0",
+        "EQUIRECTANGULAR": "400 200",
     }[model_name]
     path.write_text(
         "# Camera list\n"
@@ -369,6 +379,29 @@ def test_colmap_loader_supports_radial_camera_model(tmp_path: Path):
     assert np.isclose(camera.k2, -0.02)
     assert np.isclose(frame.k1, 0.07)
     assert np.isclose(frame.k2, -0.02)
+
+
+@pytest.mark.parametrize("tree_builder", (_build_tiny_colmap_tree, _build_tiny_colmap_text_tree))
+def test_colmap_loader_supports_equirectangular_camera_model(tmp_path: Path, tree_builder) -> None:
+    root = (
+        tree_builder(tmp_path, model_id=COLMAP_EQUIRECTANGULAR_MODEL_ID)
+        if tree_builder is _build_tiny_colmap_tree
+        else tree_builder(tmp_path, model_name="EQUIRECTANGULAR")
+    )
+
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+    frame_camera = frame.make_camera()
+    screen, ok = frame_camera.project_camera_to_screen(np.array((1.0, 0.0, 0.0), dtype=np.float32), frame.width, frame.height)
+
+    assert camera.model_id == COLMAP_EQUIRECTANGULAR_MODEL_ID
+    assert frame.model_id == COLMAP_EQUIRECTANGULAR_MODEL_ID
+    assert frame_camera.is_equirectangular
+    assert camera.fx == camera.fy == camera.cx == camera.cy == 0.0
+    assert frame.fx == frame.fy == frame.cx == frame.cy == 0.0
+    assert ok
+    np.testing.assert_allclose(screen, np.asarray((0.75 * frame.width, 0.5 * frame.height), dtype=np.float32), rtol=0.0, atol=1e-5)
 
 
 @pytest.mark.parametrize("model_name", ["OPENCV", "FULL_OPENCV"])

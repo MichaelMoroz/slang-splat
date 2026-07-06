@@ -1752,8 +1752,8 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.s.last_error == ""
 
 
-@pytest.mark.parametrize(("model_id", "model_name"), ((4, "OPENCV"), (6, "FULL_OPENCV")))
-def test_choose_colmap_root_supports_opencv_camera_models(tmp_path: Path, model_id: int, model_name: str) -> None:
+@pytest.mark.parametrize(("model_id", "model_name"), ((4, "OPENCV"), (6, "FULL_OPENCV"), (17, "EQUIRECTANGULAR")))
+def test_choose_colmap_root_supports_extended_camera_models(tmp_path: Path, model_id: int, model_name: str) -> None:
     database_path, images_root = _build_colmap_tree(
         tmp_path,
         image_names=["frame_000.png"],
@@ -1772,7 +1772,12 @@ def test_choose_colmap_root_supports_opencv_camera_models(tmp_path: Path, model_
     assert viewer.ui._values["colmap_images_root"] == str(images_root)
     assert viewer.ui._values["colmap_selected_camera_ids"] == (7,)
     assert viewer.ui._values["_colmap_point_stats"] == {"total_points": 1, "tracked_points_min2": 1}
-    assert viewer.ui._values["_colmap_camera_rows"][0]["model_name"] == model_name
+    camera_row = viewer.ui._values["_colmap_camera_rows"][0]
+    assert camera_row["model_name"] == model_name
+    if model_id == 17:
+        assert camera_row["focal_text"] == "n/a"
+        assert camera_row["principal_text"] == "n/a"
+        assert camera_row["distortion_text"] == "n/a"
     assert viewer.s.last_error == ""
 
 

@@ -57,7 +57,7 @@ from ..training import (
 )
 from ..training.image_color_init import TrainingImageColorInitializer
 from ..scene._internal.colmap_binary import count_colmap_points3d
-from ..scene._internal.colmap_types import ColmapFrame, ColmapReconstruction, point_tables
+from ..scene._internal.colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID, COLMAP_PINHOLE_MODEL_ID, ColmapFrame, ColmapReconstruction, point_tables
 from .session_colmap_utils import (
     _COLMAP_CAMERA_MODEL_NAMES,
     _COLMAP_DB_SAMPLE_LIMIT,
@@ -578,20 +578,28 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
         downscale_scale=progress.image_downscale_scale,
     )
     sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
+    is_equirectangular = int(getattr(camera, "model_id", -1)) == COLMAP_EQUIRECTANGULAR_MODEL_ID
     frame = ColmapFrame(
         image_id,
         image_path,
         image.q_wxyz.astype(np.float32),
         image.t_xyz.astype(np.float32),
-        float(camera.fx) * sx,
-        float(camera.fy) * sy,
-        float(camera.cx) * sx,
-        float(camera.cy) * sy,
+        0.0 if is_equirectangular else float(camera.fx) * sx,
+        0.0 if is_equirectangular else float(camera.fy) * sy,
+        0.0 if is_equirectangular else float(camera.cx) * sx,
+        0.0 if is_equirectangular else float(camera.cy) * sy,
         int(width),
         int(height),
         float(getattr(camera, "k1", 0.0)),
         float(getattr(camera, "k2", 0.0)),
+        float(getattr(camera, "p1", 0.0)),
+        float(getattr(camera, "p2", 0.0)),
+        float(getattr(camera, "k3", 0.0)),
+        float(getattr(camera, "k4", 0.0)),
+        float(getattr(camera, "k5", 0.0)),
+        float(getattr(camera, "k6", 0.0)),
         camera_id=int(image.camera_id),
+        model_id=int(getattr(camera, "model_id", COLMAP_PINHOLE_MODEL_ID)),
     )
     if progress.init_mode == _COLMAP_IMPORT_DEPTH:
         progress.frame_images.append(image)

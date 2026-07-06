@@ -7,7 +7,7 @@ import slangpy as spy
 import math
 
 from ..utility import RO_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, defer_resource_release, dispatch, load_compute_kernels, thread_count_1d
-from ..renderer import Camera, GaussianRenderer
+from ..renderer import PROJECTION_MODEL_PINHOLE, Camera, GaussianRenderer
 from .schedule import resolve_color_lr_mul, resolve_learning_rate_scale, resolve_max_opacity, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_lr_mul
 
 
@@ -193,6 +193,7 @@ class GaussianOptimizer:
                     "projDistortionK1K2P1P2": spy.float4(0.0, 0.0, 0.0, 0.0),
                     "projDistortionK3K4K5K6": spy.float4(0.0, 0.0, 0.0, 0.0),
                     "minCameraDistance": 0.0,
+                    "projectionModel": np.uint32(PROJECTION_MODEL_PINHOLE),
                 },
                 "g_EnableCurrentCameraScreenScaleCap": np.uint32(0),
             }

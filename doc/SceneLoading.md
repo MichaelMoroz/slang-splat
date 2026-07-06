@@ -36,9 +36,11 @@ Output is `GaussianScene` with contiguous `float32` arrays.
   - `RADIAL` (id `3`)
   - `OPENCV` (id `4`)
   - `FULL_OPENCV` (id `6`)
+  - `EQUIRECTANGULAR` (id `17`)
 - With the default sparse layout setting, COLMAP reconstruction files may live under `sparse/0`, directly under `sparse`, directly under the selected root, or in a one-level named child sparse export such as `sparse-cubic-fixed/sparse`.
 - Default training image lookup tries `images_4`, `images`, and then the reconstruction root. If the sparse model was discovered in a named child folder, that folder is searched too.
-- Radial distortion is preserved as per-camera `k1` / `k2` coefficients and is consumed by both screen-space projection and raster ray generation.
+- Radial and OPENCV distortion terms are preserved per camera and consumed by both screen-space projection and raster ray generation.
+- `EQUIRECTANGULAR` cameras use COLMAP's two metadata parameters (`width`, `height`) and do not carry focal, principal point, or distortion values. Imported training frames keep those fields at zero and select spherical camera projection from the stored model id.
 - Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
 - `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using local point-neighborhood covariance eigenframes for gaussian rotation and anisotropy while keeping nearest-neighbor spacing as the overall scale reference before storing 3DGS log-scales.
 - Pointcloud-based COLMAP initialization filters sparse points by the importer-selected minimum camera-observation threshold before direct seeding, diffused resampling, and point-spacing heuristics are computed.

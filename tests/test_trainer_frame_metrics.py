@@ -4,7 +4,9 @@ from pathlib import Path
 
 import numpy as np
 
+from src.renderer import PROJECTION_MODEL_EQUIRECTANGULAR
 from src.scene import ColmapFrame
+from src.scene._internal.colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID
 from src.training import GaussianTrainer, TrainingHyperParams, TrainingState
 from src.training.gaussian_trainer import _FrameMetricBookkeeper
 
@@ -93,6 +95,18 @@ def test_trainer_resolution_summary_cache_reuses_all_frame_scan() -> None:
     assert trainer.max_training_resolution(0) == (1024, 512)
     assert trainer.training_resolutions_vary(0) is True
     assert calls == [(0, 0), (1, 0), (2, 0)]
+
+
+def test_refinement_camera_rows_preserve_projection_model() -> None:
+    frame = _frame(64, 32)
+    frame.model_id = COLMAP_EQUIRECTANGULAR_MODEL_ID
+    trainer = object.__new__(GaussianTrainer)
+    trainer.frames = [frame]
+    trainer.training = TrainingHyperParams()
+
+    rows = trainer._refinement_camera_rows()
+
+    assert rows[GaussianTrainer._REFINEMENT_CAMERA_ROW_COUNT - 1, 2] == np.float32(PROJECTION_MODEL_EQUIRECTANGULAR)
 
 
 def test_trainer_restores_uniform_training_resolution_after_viewport_resize() -> None:

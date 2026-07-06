@@ -83,7 +83,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (camDistance < g_Camera.minCameraDistance) return;
     float depthValue = camPos.z;
     float supportRadius = max(projectionEllipsoid.projectedScale.x, max(projectionEllipsoid.projectedScale.y, projectionEllipsoid.projectedScale.z));
-    bool hasProjectionDistortion = any(abs(g_Camera.projDistortionK1K2P1P2) > SMALL_VALUE) || any(abs(g_Camera.projDistortionK3K4K5K6) > SMALL_VALUE);
+    bool hasProjectionDistortion = camera.is_equirectangular() || any(abs(g_Camera.projDistortionK1K2P1P2) > SMALL_VALUE) || any(abs(g_Camera.projDistortionK3K4K5K6) > SMALL_VALUE);
     if (!hasProjectionDistortion && !support_sphere_intersects_view_frustum(camera, camPos, supportRadius)) return;
 
     Ellipse projectedEllipse;
@@ -105,7 +105,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         sortCameraPosition += rng_normal3_box_muller(rngState) * g_SortCameraDitherSigma;
     }
     float3 sortCameraOffset = projectionEllipsoid.centerWorld - sortCameraPosition;
-    float sortKey = g_SortSplatKeyMode == SORT_SPLAT_KEY_Z_DEPTH ? camera.world_to_camera(sortCameraOffset).z : length(sortCameraOffset);
+    float sortKey = (g_SortSplatKeyMode == SORT_SPLAT_KEY_Z_DEPTH && !camera.is_equirectangular()) ? camera.world_to_camera(sortCameraOffset).z : length(sortCameraOffset);
     uint writeIndex = 0u;
     InterlockedAdd(g_VisibleCounter[0], 1u, writeIndex);
     if (writeIndex >= g_Prepass.splatCount) return;
