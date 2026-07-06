@@ -8,6 +8,7 @@ import pytest
 import slangpy as spy
 
 from src.training.ppisp import PPISP_FIELD_SPECS
+from src.renderer import Camera, PROJECTION_MODEL_EQUIRECTANGULAR
 from src.viewer import presenter
 from src.viewer import presenter_state
 from src.viewer import ui as viewer_ui
@@ -322,7 +323,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     assert schedule_sections[""] == {"step": 0, "stage": "Stage 0", "sh": "SH0"}
     assert schedule_sections["Learning Rates"] == pytest.approx({"base": 0.002, "pos": 0.25, "scale": 5.0, "rot": 1.0, "dc": 5.0, "opacity": 5.0, "sh": 0.1})
     assert schedule_sections["Other"] == pytest.approx({"colorspace": 0.6, "dither": 0.01, "target%": expected_target_pct, "prune_floor%": expected_prune_floor_pct, "opacity_reg": expected_opacity_reg, "push": expected_push, "noise": 0.0})
-    assert refinement == pytest.approx({"every": 200, "target_now%": expected_target_now_pct, "target%": expected_target_pct, "after": 1000, "prune_now%": expected_prune_now_pct, "prune_floor%": expected_prune_floor_pct, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": expected_min_contrib, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": 1500000})
+    assert refinement == pytest.approx({"every": 200, "target_now%": expected_target_now_pct, "target%": expected_target_pct, "after": 1000, "prune_now%": expected_prune_now_pct, "prune_floor%": expected_prune_floor_pct, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": expected_min_contrib, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": max(int(training.max_gaussians), 0)})
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_camera_struct_sections"] == (
         ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
@@ -350,6 +351,58 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
             "is_last": True,
         },
     )
+
+
+def test_camera_overlay_uses_cube_for_equirectangular_training_camera() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.ui._values["show_camera_overlays"] = True
+    viewer.camera = lambda: Camera.look_at((0.0, 0.0, -3.0), target=(0.0, 0.0, 0.0))
+    viewer.s.trainer.make_frame_camera = lambda _frame_index, _width, _height: Camera.look_at(
+        (0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+
+    world_corners, frame_indices, camera_positions = presenter_state._build_camera_overlay_geometry(viewer)
+    segments = presenter_state._camera_overlay_segments(viewer)
+
+    assert world_corners.shape == (1, 8, 3)
+    assert tuple(frame_indices.tolist()) == (0,)
+    assert np.allclose(camera_positions[0], np.zeros((3,), dtype=np.float32))
+    assert np.allclose(np.mean(world_corners[0], axis=0), np.zeros((3,), dtype=np.float32), atol=1e-6)
+    assert np.linalg.norm(world_corners[0, 1] - world_corners[0, 0]) == pytest.approx(np.linalg.norm(world_corners[0, 2] - world_corners[0, 1]))
+    assert np.linalg.norm(world_corners[0, 4] - world_corners[0, 0]) == pytest.approx(np.linalg.norm(world_corners[0, 1] - world_corners[0, 0]))
+    assert len(segments) == 1
+    near_points, far_points, connectors, *_ = segments[0]
+    assert len(near_points) == 4
+    assert len(far_points) == 4
+    assert len(connectors) == 4
+
+
+def test_overlay_projection_accepts_points_around_equirectangular_viewport_camera() -> None:
+    camera = Camera.look_at(
+        (0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+    points = np.asarray(
+        (
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, -1.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ),
+        dtype=np.float32,
+    )
+
+    screen, valid = presenter_state._project_overlay_points(camera, points, 640, 320)
+
+    assert valid.tolist() == [True, True, True, True]
+    assert np.all(np.isfinite(screen))
+    assert np.all(screen[:, 0] >= 0.0)
+    assert np.all(screen[:, 0] <= 640.0)
+    assert np.all(screen[:, 1] >= 0.0)
+    assert np.all(screen[:, 1] <= 320.0)
 
 
 def test_update_ui_text_uses_active_trainer_training_resolution_for_train_res() -> None:

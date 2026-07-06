@@ -397,7 +397,7 @@ It reports:
 - optional camera labels,
 - active-frame highlighting.
 
-Camera overlays and labels are independently gated so expensive per-frame label/metric generation is only done when needed.
+Camera overlays and labels are independently gated so expensive per-frame label/metric generation is only done when needed. Pinhole and distorted training cameras draw frustum outlines; equirectangular training cameras draw oriented cube pose markers because they have no finite image-plane frustum.
 
 ## Dataset Metrics Window
 

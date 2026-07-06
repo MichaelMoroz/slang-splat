@@ -36,6 +36,7 @@ _TRAIN_DOWNSCALE_MODE_AUTO = 0
 _CAMERA_OVERLAY_LENGTH_FRACTION = 0.08
 _CAMERA_OVERLAY_MIN_LENGTH = 0.05
 _CAMERA_OVERLAY_NEAR_FRACTION = 0.35
+_CAMERA_OVERLAY_CUBE_HALF_FRACTION = 0.45
 _CAMERA_OVERLAY_COLOR = (0.18, 0.70, 0.98, 0.72)
 _CAMERA_OVERLAY_ACTIVE_COLOR = (1.00, 0.78, 0.18, 0.96)
 _CAMERA_MIN_DIST_RING_SAMPLES = 40
@@ -733,6 +734,25 @@ def _camera_overlay_signature(viewer: object) -> tuple[object, ...]:
     return (id(trainer), tuple(id(frame) for frame in frames), round(float(getattr(getattr(trainer, "training", None), "camera_min_dist", 0.0)), 8))
 
 
+def _camera_overlay_cube_corners(position: np.ndarray, basis: tuple[np.ndarray, np.ndarray, np.ndarray], scale: float) -> np.ndarray:
+    axes = np.stack(tuple(np.asarray(axis, dtype=np.float32).reshape(3) for axis in basis), axis=0)
+    half_extent = np.float32(max(float(scale) * _CAMERA_OVERLAY_CUBE_HALF_FRACTION, _CAMERA_OVERLAY_MIN_LENGTH * _CAMERA_OVERLAY_CUBE_HALF_FRACTION))
+    offsets = np.asarray(
+        (
+            (-1.0, -1.0, -1.0),
+            (1.0, -1.0, -1.0),
+            (1.0, 1.0, -1.0),
+            (-1.0, 1.0, -1.0),
+            (-1.0, -1.0, 1.0),
+            (1.0, -1.0, 1.0),
+            (1.0, 1.0, 1.0),
+            (-1.0, 1.0, 1.0),
+        ),
+        dtype=np.float32,
+    )
+    return np.asarray(position, dtype=np.float32).reshape(1, 3) + half_extent * (offsets @ axes)
+
+
 def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     trainer = getattr(viewer.s, "trainer", None)
@@ -753,10 +773,18 @@ def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarr
         try:
             right, up, forward = (np.asarray(axis, dtype=np.float32).reshape(3) for axis in camera.basis())
             position = np.asarray(getattr(camera, "position"), dtype=np.float32).reshape(3)
-            fx, fy = camera.focal_pixels_xy(int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
         except Exception:
             continue
         if not (np.all(np.isfinite(position)) and np.all(np.isfinite(right)) and np.all(np.isfinite(up)) and np.all(np.isfinite(forward))):
+            continue
+        if bool(getattr(camera, "is_equirectangular", False)):
+            cameras.append(_camera_overlay_cube_corners(position, (right, up, forward), overlay_far).astype(np.float32, copy=False))
+            frame_indices.append(int(frame_index))
+            camera_positions.append(position.astype(np.float32, copy=False))
+            continue
+        try:
+            fx, fy = camera.focal_pixels_xy(int(getattr(frame, "width", 1)), int(getattr(frame, "height", 1)))
+        except Exception:
             continue
         if not (np.isfinite(fx) and np.isfinite(fy) and fx > 1e-8 and fy > 1e-8):
             continue
@@ -822,6 +850,19 @@ def _camera_min_dist_rings(position: np.ndarray, basis: tuple[np.ndarray, np.nda
 def _project_overlay_points(viewer_camera: object, points_world: np.ndarray, viewport_width: int, viewport_height: int) -> tuple[np.ndarray, np.ndarray]:
     if not hasattr(viewer_camera, "basis") or not hasattr(viewer_camera, "focal_pixels_xy") or not hasattr(viewer_camera, "principal_point"):
         return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=bool)
+    if bool(getattr(viewer_camera, "is_equirectangular", False)) and hasattr(viewer_camera, "project_world_to_screen"):
+        screen = np.zeros((points_world.shape[0], 2), dtype=np.float32)
+        valid = np.isfinite(points_world).all(axis=1)
+        for point_index in np.flatnonzero(valid):
+            try:
+                projected, is_valid = viewer_camera.project_world_to_screen(points_world[int(point_index)], int(viewport_width), int(viewport_height))
+            except Exception:
+                valid[int(point_index)] = False
+                continue
+            screen_point = np.asarray(projected, dtype=np.float32).reshape(2)
+            screen[int(point_index)] = screen_point
+            valid[int(point_index)] = bool(is_valid) and bool(np.isfinite(screen_point).all())
+        return screen, valid
     try:
         basis = np.stack(tuple(np.asarray(axis, dtype=np.float32).reshape(3) for axis in viewer_camera.basis()), axis=0)
         position = np.asarray(getattr(viewer_camera, "position"), dtype=np.float32).reshape(3)
