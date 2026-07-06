@@ -1420,7 +1420,7 @@ class GaussianRenderer:
             self._project_group_size,
         )
 
-    def _count_visible_scanlines(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
+    def _count_visible_scanlines(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer, camera: Camera) -> None:
         dispatch_indirect(
             pipeline=self._p_count_visible_scanlines,
             args_buffer=args_buffer,
@@ -1430,6 +1430,7 @@ class GaussianRenderer:
                 "g_VisibleCounter": self._work_buffers["visible_counter"],
                 "g_ScanlineCounts": self._work_buffers["scanline_counts"],
                 **self._prepass_uniforms(self._scene_count),
+                **self._camera_uniforms(camera),
             },
             command_encoder=encoder,
             debug_label="Count Visible Scanlines",
@@ -1448,7 +1449,7 @@ class GaussianRenderer:
             exclusive=True,
         )
 
-    def _emit_scanlines(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
+    def _emit_scanlines(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer, camera: Camera) -> None:
         dispatch_indirect(
             pipeline=self._p_emit_scanlines,
             args_buffer=args_buffer,
@@ -1460,6 +1461,7 @@ class GaussianRenderer:
                 "g_ScanlineOffsets": self._work_buffers["scanline_offsets"],
                 "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"],
                 **self._prepass_uniforms(self._scene_count),
+                **self._camera_uniforms(camera),
             },
             command_encoder=encoder,
             debug_label="Emit Scanlines",
@@ -1733,9 +1735,9 @@ class GaussianRenderer:
             self._sort_visible_splats(encoder)
         with debug_region(encoder, "Prepass Scanlines", 22):
             visible_args = self._visible_dispatch_args(encoder)
-            self._count_visible_scanlines(encoder, visible_args)
+            self._count_visible_scanlines(encoder, visible_args, camera)
             self._prefix_scanline_counts(encoder)
-            self._emit_scanlines(encoder, visible_args)
+            self._emit_scanlines(encoder, visible_args, camera)
         with debug_region(encoder, "Prepass Tiles", 23):
             scanline_args = self._scanline_dispatch_args(encoder)
             self._count_scanline_tiles(encoder, scanline_args)

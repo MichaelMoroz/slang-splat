@@ -4,7 +4,7 @@ import numpy as np
 
 from reference_impls.reference_cpu import project_splats
 from src.renderer import Camera, GaussianRenderer, PROJECTION_MODEL_EQUIRECTANGULAR
-from src.scene import GaussianScene
+from src.scene import GaussianScene, rgb_to_sh0
 
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
 _EQUIRECT_TEST_WIDTH = 256
@@ -190,3 +190,33 @@ def test_equirectangular_renderer_keeps_full_sphere_shell_visible(device):
     assert np.all(np.isfinite(projected.ellipse_conic))
     np.testing.assert_allclose(gpu_center_radius_depth, projected.center_radius_depth, rtol=0.0, atol=3e-3)
     np.testing.assert_allclose(gpu_ellipse_conic, projected.ellipse_conic, rtol=5e-3, atol=2e-4)
+
+
+def test_equirectangular_renderer_samples_seam_column_at_pixel_center(device):
+    width, height = 64, 32
+    theta = np.array((-np.pi + np.pi / np.float32(width),), dtype=np.float32)
+    phi = np.array((np.pi * (0.5 - (0.5 * np.float32(height) + 0.5) / np.float32(height)),), dtype=np.float32)
+    scene = _scene_from_positions(_equirectangular_rays(theta, phi) * _EQUIRECT_SPHERE_RADIUS, sigma=0.025)
+    scene.sh_coeffs = rgb_to_sh0(scene.colors)[:, None, :].astype(np.float32)
+    camera = _equirectangular_camera()
+    renderer = GaussianRenderer(
+        device,
+        width=width,
+        height=height,
+        radius_scale=_EQUIRECT_RADIUS_SCALE,
+        alpha_cutoff=_EQUIRECT_ALPHA_CUTOFF,
+        list_capacity_multiplier=16,
+        allocate_training_work_buffers=False,
+        allocate_grad_work_buffers=False,
+    )
+
+    debug = renderer.debug_pipeline_data(scene, camera)
+    tile_ranges = np.asarray(debug["tile_ranges"], dtype=np.uint32)
+    seam_tile_y = (height // 2) // renderer.tile_size
+    left_tile = seam_tile_y * renderer.tile_width
+    right_tile = left_tile + renderer.tile_width - 1
+    image = renderer.render(scene, camera, background=(0.0, 0.0, 0.0)).image[:, :, :3]
+
+    assert float(np.max(image[:, 0, :])) > 0.05
+    assert int(tile_ranges[left_tile, 1]) > int(tile_ranges[left_tile, 0])
+    assert int(tile_ranges[right_tile, 1]) > int(tile_ranges[right_tile, 0])

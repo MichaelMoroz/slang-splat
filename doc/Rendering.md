@@ -36,6 +36,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - write projected splat state, raster cache data, visibility flags, and a visible-splat sort key.
 - Camera projection supports pinhole/OPENCV-style distorted views and COLMAP `EQUIRECTANGULAR` views through the shared camera math layer. Equirectangular projection stores a distance depth for sorting and visibility instead of rejecting negative camera-space `z`.
 - Equirectangular outlines that cross the left-right seam or touch the polar rows fall back to a fullscreen conservative ellipse. The current prepass stores one ellipse per splat, so this avoids missing seam-wrapped or pole-stretched support at the cost of extra tile work for those edge cases.
+- Equirectangular splats whose padded binning radius overlaps the left-right seam emit an additional wrapped scanline span with the screen center shifted by one viewport width. Normal raster evaluation still ray-traces the original splat; the duplicate span only prevents seam-edge tile culling.
 - Output buffers:
   - projected splat data for raster stage,
   - raster cache data,
@@ -68,6 +69,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `csRasterize` in `shaders/renderer/gaussian_raster_stage.slang`.
 - Raster execution uses fixed `8x8` tiles: one `8x8` thread group covers one raster tile, and each thread owns exactly one pixel.
 - Each thread resolves the tile range for its pixel, reuses each staged gaussian loaded from the prepass raster cache for that single forward replay, and writes one output pixel.
+- Pixel geometry is sampled at pixel centers (`x + 0.5`, `y + 0.5`) for ray generation and screen-space debug ellipse evaluation. This avoids sampling exactly on the equirectangular left-right seam.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
 - Shared gaussian staging uses `256`-splat batches.
 - Raster evaluation uses the true decoded support cached in prepass with no separate pixel-floor clamp or fallback alpha branch.

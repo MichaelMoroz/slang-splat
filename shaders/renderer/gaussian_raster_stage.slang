@@ -765,17 +765,17 @@ RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
     uint localY = lane / RASTER_THREAD_TILE_DIM;
     info.pixelCoord = uint2(tileX * g_Prepass.tileSize + localX, tileY * g_Prepass.tileSize + localY);
     info.pixelActive = info.pixelCoord.x < g_Raster.width && info.pixelCoord.y < g_Raster.height;
-    info.samplePoint = float2(info.pixelCoord);
+    info.samplePoint = float2(info.pixelCoord) + 0.5;
 
     if (g_TrainingSubsample.enabled != 0u)
     {
         PinholeCamera camera = PinholeCamera.from_params(g_TrainingNativeCamera);
         uint2 samplePixel = training_sample_native_pixel(info.pixelCoord, g_TrainingSubsample);
-        info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(float2(samplePixel)));
+        info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(float2(samplePixel) + 0.5));
     } else
     {
         PinholeCamera camera = PinholeCamera.from_params(g_Camera);
-        info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(float2(min(info.pixelCoord.x, g_Raster.width - 1u), min(info.pixelCoord.y, g_Raster.height - 1u))));
+        info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(info.samplePoint));
     }
 
     uint2 range = g_TileRanges[info.tileId];

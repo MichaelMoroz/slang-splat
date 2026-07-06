@@ -29,15 +29,18 @@ uint encode_sort_key_float(float value)
     uint bits = asuint(value);
     return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
 }
-bool load_prepared_projected_ellipse(uint splatId, out Ellipse ellipse, out ScanlineLoopConfig loopCfg)
+
+void make_conservative_circle_binning_ellipse(inout Ellipse ellipse)
 {
-    ellipse.init(0.0, 0.0, 0.0);
+    float radius = max(ellipse.radiusPx, MIN_SCREEN_RADIUS_PX);
+    float invRadiusSq = 1.0 / max(radius * radius, ELLIPSE_EPS);
+    ellipse.conic = float3(invRadiusSq, 0.0, invRadiusSq);
+    ellipse.bboxExtent = float2(radius);
+}
+
+bool prepare_projected_ellipse_loop(inout Ellipse ellipse, out ScanlineLoopConfig loopCfg)
+{
     loopCfg = make_scanline_loop_config(g_Prepass, false, 0, -1, 0, -1);
-    float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
-    if (centerRadiusDepth.z <= 0.0 || !all(isfinite(centerRadiusDepth))) return false;
-    float4 conicOpacity = g_ScreenEllipseConic[splatId];
-    ellipse.init(centerRadiusDepth.xy, centerRadiusDepth.z, conicOpacity.xyz);
-    if (!all(isfinite(ellipse.centerPx)) || !isfinite(ellipse.radiusPx) || !all(isfinite(ellipse.conic))) return false;
     float tileSize = float(g_Prepass.tileSize);
     float halfTile = 0.5 * tileSize;
     if (!try_prepare_conic_for_binning(ellipse, halfTile)) return false;
@@ -51,6 +54,69 @@ bool load_prepared_projected_ellipse(uint splatId, out Ellipse ellipse, out Scan
 
     loopCfg = build_scanline_loop_config(g_Prepass, ellipse, minX, maxX, minY, maxY);
     return loopCfg.lineEnd >= loopCfg.lineStart;
+}
+
+uint load_prepared_projected_ellipse_variants(
+    uint splatId,
+    out Ellipse ellipse0,
+    out ScanlineLoopConfig loopCfg0,
+    out Ellipse ellipse1,
+    out ScanlineLoopConfig loopCfg1)
+{
+    ellipse0.init(0.0, 0.0, 0.0);
+    ellipse1.init(0.0, 0.0, 0.0);
+    loopCfg0 = make_scanline_loop_config(g_Prepass, false, 0, -1, 0, -1);
+    loopCfg1 = make_scanline_loop_config(g_Prepass, false, 0, -1, 0, -1);
+    float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
+    if (centerRadiusDepth.z <= 0.0 || !all(isfinite(centerRadiusDepth))) return 0u;
+    float4 conicOpacity = g_ScreenEllipseConic[splatId];
+    ellipse0.init(centerRadiusDepth.xy, centerRadiusDepth.z, conicOpacity.xyz);
+    if (!all(isfinite(ellipse0.centerPx)) || !isfinite(ellipse0.radiusPx) || !all(isfinite(ellipse0.conic))) return 0u;
+
+    float viewportWidth = max(g_Camera.viewport.x, 1.0);
+    bool equirectangular = g_Camera.projectionModel == CAMERA_PROJECTION_EQUIRECTANGULAR;
+    bool wrapsLeft = equirectangular && ellipse0.centerPx.x - ellipse0.radiusPx <= 0.0 && ellipse0.centerPx.x + ellipse0.radiusPx < viewportWidth;
+    bool wrapsRight = equirectangular && ellipse0.centerPx.x + ellipse0.radiusPx >= viewportWidth && ellipse0.centerPx.x - ellipse0.radiusPx > 0.0;
+    bool hasWrappedVariant = wrapsLeft || wrapsRight;
+    if (hasWrappedVariant) make_conservative_circle_binning_ellipse(ellipse0);
+
+    uint variantCount = prepare_projected_ellipse_loop(ellipse0, loopCfg0) ? 1u : 0u;
+    if (hasWrappedVariant)
+    {
+        ellipse1 = ellipse0;
+        ellipse1.centerPx.x += wrapsLeft ? viewportWidth : -viewportWidth;
+        if (prepare_projected_ellipse_loop(ellipse1, loopCfg1)) variantCount++;
+    }
+    return variantCount;
+}
+
+uint scanline_loop_count(ScanlineLoopConfig loopCfg)
+{
+    return loopCfg.lineEnd >= loopCfg.lineStart ? uint(loopCfg.lineEnd - loopCfg.lineStart + 1) : 0u;
+}
+
+uint emit_projected_ellipse_scanlines(uint splatId, Ellipse preparedEllipse, ScanlineLoopConfig loopCfg, uint writeIndex, uint writeEnd)
+{
+    float tileSize = float(g_Prepass.tileSize);
+    uint loopCount = scanline_loop_count(loopCfg);
+    for (uint i = 0u; i < loopCount && writeIndex < writeEnd; i++)
+    {
+        uint lineCoord = uint(loopCfg.lineStart + int(i));
+        ScanlineSpan span;
+        ScanlineWorkItem item;
+        item.splatId = splatId;
+        item.clear(loopCfg.scanAlongX);
+        if (compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, span) && span.lineCount > 0u)
+        {
+            uint startTileId = loopCfg.scanAlongX
+                ? (lineCoord * g_Prepass.tileWidth + span.lineStartMinor)
+                : (span.lineStartMinor * g_Prepass.tileWidth + lineCoord);
+            item.setSpan(startTileId, span.lineCount, loopCfg.scanAlongX);
+        }
+        g_ScanlineWorkItems[writeIndex] = item.packed();
+        writeIndex++;
+    }
+    return writeIndex;
 }
 
 [shader("compute")]
@@ -122,12 +188,14 @@ void csCountVisibleScanlines(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (visibleSplatId >= visibleCount) return;
 
     uint splatId = g_VisibleValues[visibleSplatId];
-    Ellipse preparedEllipse;
-    ScanlineLoopConfig loopCfg;
+    Ellipse ellipse0, ellipse1;
+    ScanlineLoopConfig loopCfg0, loopCfg1;
     uint scanlineCount = 0u;
-    if (load_prepared_projected_ellipse(splatId, preparedEllipse, loopCfg))
+    uint variantCount = load_prepared_projected_ellipse_variants(splatId, ellipse0, loopCfg0, ellipse1, loopCfg1);
+    if (variantCount > 0u)
     {
-        scanlineCount = uint(loopCfg.lineEnd - loopCfg.lineStart + 1);
+        scanlineCount += scanline_loop_count(loopCfg0);
+        if (variantCount > 1u) scanlineCount += scanline_loop_count(loopCfg1);
     }
     g_ScanlineCounts[visibleSplatId] = scanlineCount;
 }
@@ -141,31 +209,17 @@ void csEmitScanlines(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (visibleSplatId >= visibleCount) return;
 
     uint splatId = g_VisibleValues[visibleSplatId];
-    Ellipse preparedEllipse;
-    ScanlineLoopConfig loopCfg;
-    if (!load_prepared_projected_ellipse(splatId, preparedEllipse, loopCfg)) return;
+    Ellipse ellipse0, ellipse1;
+    ScanlineLoopConfig loopCfg0, loopCfg1;
+    uint variantCount = load_prepared_projected_ellipse_variants(splatId, ellipse0, loopCfg0, ellipse1, loopCfg1);
+    if (variantCount == 0u) return;
 
     uint scanlineBase = g_ScanlineOffsets[visibleSplatId];
     uint scanlineCount = g_ScanlineCounts[visibleSplatId];
     if (scanlineBase >= g_Prepass.maxScanlineEntries || scanlineCount == 0u) return;
-    uint scanlineWriteCount = min(scanlineCount, g_Prepass.maxScanlineEntries - scanlineBase);
-    float tileSize = float(g_Prepass.tileSize);
-    for (uint i = 0u; i < scanlineWriteCount; i++)
-    {
-        uint lineCoord = uint(loopCfg.lineStart + int(i));
-        ScanlineSpan span;
-        ScanlineWorkItem item;
-        item.splatId = splatId;
-        item.clear(loopCfg.scanAlongX);
-        if (compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, span) && span.lineCount > 0u)
-        {
-            uint startTileId = loopCfg.scanAlongX
-                ? (lineCoord * g_Prepass.tileWidth + span.lineStartMinor)
-                : (span.lineStartMinor * g_Prepass.tileWidth + lineCoord);
-            item.setSpan(startTileId, span.lineCount, loopCfg.scanAlongX);
-        }
-        g_ScanlineWorkItems[scanlineBase + i] = item.packed();
-    }
+    uint writeEnd = min(scanlineBase + scanlineCount, g_Prepass.maxScanlineEntries);
+    uint writeIndex = emit_projected_ellipse_scanlines(splatId, ellipse0, loopCfg0, scanlineBase, writeEnd);
+    if (variantCount > 1u) emit_projected_ellipse_scanlines(splatId, ellipse1, loopCfg1, writeIndex, writeEnd);
 }
 
 [shader("compute")]
