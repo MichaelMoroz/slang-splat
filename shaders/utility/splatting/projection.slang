@@ -2,6 +2,8 @@ import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/splatting/common.slang";
 
+static const uint EQUIRECTANGULAR_ELLIPSE_POINT_COUNT = 8u;
+
 float screen_radius_cap(float2 viewport)
 {
     return max(max(viewport.x, viewport.y), MIN_SCREEN_RADIUS_PX);
@@ -44,6 +46,95 @@ bool equirectangular_outline_needs_fullscreen_fallback(PinholeCamera camera, flo
     if (!camera.is_equirectangular()) return false;
     float2 viewport = camera.params.viewport;
     return (outlineMax.x - outlineMin.x) > 0.5 * viewport.x || outlineMin.y <= 0.0 || outlineMax.y >= viewport.y;
+}
+
+bool solve_symmetric_3x3(
+    float s00,
+    float s01,
+    float s02,
+    float s11,
+    float s12,
+    float s22,
+    float3 rhs,
+    out float3 solution)
+{
+    solution = 0.0;
+    float det = s00 * (s11 * s22 - s12 * s12)
+        - s01 * (s01 * s22 - s12 * s02)
+        + s02 * (s01 * s12 - s11 * s02);
+    if (abs(det) <= ELLIPSE_EPS || !isfinite(det)) return false;
+
+    solution.x = (
+        rhs.x * (s11 * s22 - s12 * s12)
+        - s01 * (rhs.y * s22 - s12 * rhs.z)
+        + s02 * (rhs.y * s12 - s11 * rhs.z)
+    ) / det;
+    solution.y = (
+        s00 * (rhs.y * s22 - s12 * rhs.z)
+        - rhs.x * (s01 * s22 - s12 * s02)
+        + s02 * (s01 * rhs.z - rhs.y * s02)
+    ) / det;
+    solution.z = (
+        s00 * (s11 * rhs.z - rhs.y * s12)
+        - s01 * (s01 * rhs.z - rhs.y * s02)
+        + rhs.x * (s01 * s12 - s11 * s02)
+    ) / det;
+    return all(isfinite(solution));
+}
+
+bool fit_centered_projected_outline_ellipse(float2 outlinePoints[EQUIRECTANGULAR_ELLIPSE_POINT_COUNT], float2 screenCenter, out Ellipse ellipse)
+{
+    ellipse.centerPx = 0.0;
+    ellipse.radiusPx = 0.0;
+    ellipse.conic = 0.0;
+    ellipse.bboxExtent = 0.0;
+
+    float s00 = 0.0;
+    float s01 = 0.0;
+    float s02 = 0.0;
+    float s11 = 0.0;
+    float s12 = 0.0;
+    float s22 = 0.0;
+    float3 rhs = 0.0;
+    [unroll] for (uint i = 0u; i < EQUIRECTANGULAR_ELLIPSE_POINT_COUNT; i++)
+    {
+        float2 d = outlinePoints[i] - screenCenter;
+        float3 row = float3(d.x * d.x, 2.0 * d.x * d.y, d.y * d.y);
+        s00 += row.x * row.x;
+        s01 += row.x * row.y;
+        s02 += row.x * row.z;
+        s11 += row.y * row.y;
+        s12 += row.y * row.z;
+        s22 += row.z * row.z;
+        rhs += row;
+    }
+
+    float3 conic;
+    if (!solve_symmetric_3x3(s00, s01, s02, s11, s12, s22, rhs, conic)) return false;
+    float detConic = conic.x * conic.z - conic.y * conic.y;
+    if (conic.x <= ELLIPSE_EPS || conic.z <= ELLIPSE_EPS || detConic <= ELLIPSE_EPS) return false;
+
+    float trace = conic.x + conic.z;
+    float disc = sqrt(max(0.25 * trace * trace - detConic, 0.0));
+    float axis0 = rsqrt(max(0.5 * trace + disc, ELLIPSE_EPS));
+    float axis1 = rsqrt(max(0.5 * trace - disc, ELLIPSE_EPS));
+    float radius = max(axis0, axis1);
+    ellipse.centerPx = screenCenter;
+    ellipse.radiusPx = radius;
+    ellipse.conic = conic;
+    ellipse.bboxExtent = float2(radius, radius);
+    return all(isfinite(ellipse.centerPx)) && isfinite(ellipse.radiusPx) && all(isfinite(ellipse.conic)) && ellipse.radiusPx > 0.0;
+}
+
+bool equirectangular_centered_ellipse_needs_fullscreen_fallback(PinholeCamera camera, Ellipse ellipse)
+{
+    float detConic = ellipse.conic.x * ellipse.conic.z - ellipse.conic.y * ellipse.conic.y;
+    if (detConic <= ELLIPSE_EPS) return true;
+    float2 extent = sqrt(max(float2(ellipse.conic.z, ellipse.conic.x) / detConic, 0.0));
+    if (!all(isfinite(extent))) return true;
+    float2 centerMin = ellipse.centerPx - extent;
+    float2 centerMax = ellipse.centerPx + extent;
+    return centerMin.x <= 0.0 || centerMax.x >= camera.params.viewport.x || centerMin.y <= 0.0 || centerMax.y >= camera.params.viewport.y;
 }
 
 bool fit_projected_outline_ellipse(float2 outlinePoints[ELLIPSE_POINT_COUNT], float2 outlineMin, float2 outlineMax, bool hasScreenCenter, float2 screenCenter, float2 viewport, out Ellipse ellipse)
@@ -228,6 +319,49 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
     float tangentBasisVLength = length(tangentBasisV);
     if (tangentBasisVLength <= ELLIPSE_EPS || !isfinite(tangentBasisVLength)) return false;
     tangentBasisV /= tangentBasisVLength;
+
+    if (camera.is_equirectangular())
+    {
+        if (!hasScreenCenter)
+        {
+            if (!supportIntersectsFrustum) return false;
+            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+            return true;
+        }
+        float2 outlinePoints[EQUIRECTANGULAR_ELLIPSE_POINT_COUNT];
+        float2 outlineMin = float2(1e30, 1e30);
+        float2 outlineMax = float2(-1e30, -1e30);
+        [unroll] for (uint i = 0u; i < EQUIRECTANGULAR_ELLIPSE_POINT_COUNT; i++)
+        {
+            float theta = TAU_RADIANS * (float(i) / float(EQUIRECTANGULAR_ELLIPSE_POINT_COUNT));
+            float s, c;
+            sincos(theta, s, c);
+            float3 localPoint = tangentCircleCenter + tangentCircleRadius * (c * tangentBasisU + s * tangentBasisV);
+            float3 worldPoint = local_point_to_world(localPoint, ellipsoid.centerWorld, ellipsoid.projectedInvScale, ellipsoid.rotation);
+            float2 screenPoint = 0.0;
+            if (!camera.project_world_to_screen(worldPoint, screenPoint))
+            {
+                if (!supportIntersectsFrustum) return false;
+                init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+                return true;
+            }
+            outlinePoints[i] = screenPoint;
+            outlineMin = min(outlineMin, screenPoint);
+            outlineMax = max(outlineMax, screenPoint);
+        }
+        if (equirectangular_outline_needs_fullscreen_fallback(camera, outlineMin, outlineMax))
+        {
+            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+            return true;
+        }
+        if (!fit_centered_projected_outline_ellipse(outlinePoints, screenCenter, ellipse)) return false;
+        if (equirectangular_centered_ellipse_needs_fullscreen_fallback(camera, ellipse))
+        {
+            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+            return true;
+        }
+        return true;
+    }
 
     float2 outlinePoints[ELLIPSE_POINT_COUNT];
     float2 outlineMin = float2(1e30, 1e30);

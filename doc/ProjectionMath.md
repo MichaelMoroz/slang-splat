@@ -125,7 +125,8 @@ $$
 w_i = p + R S z_i.
 $$
 
-Each $w_i$ is then projected through the full camera model, including distortion, to produce five screen points.
+Each $w_i$ is then projected through the full camera model, including distortion, to produce five screen points for pinhole-style cameras.
+Equirectangular cameras use the same tangent circle but sample eight outline points, since the spherical map is more nonlinear near the poles and seam.
 
 ### 2.3 Five-Point Conic Fit
 
@@ -134,6 +135,14 @@ The screen-space ellipse is represented by the quadratic equation
 $$
 A x^2 + 2 B x y + C y^2 + D x + E y = 1.
 $$
+
+For equirectangular cameras the implementation uses a centered variant before rasterization. The projected splat center is fixed at $m$ and the eight outline samples solve
+
+$$
+A (x_i - m_x)^2 + 2 B (x_i - m_x)(y_i - m_y) + C (y_i - m_y)^2 = 1
+$$
+
+in least squares. This keeps the raster conic centered on the spherical ray through the Gaussian center while matching the alpha-cutoff boundary around the projected outline. If the sampled outline crosses the left-right seam, touches the polar rows, or the fitted conic extent reaches those boundaries, the projection uses the conservative fullscreen fallback.
 
 Equivalently, in homogeneous coordinates $x_h = (x, y, 1)^T$,
 

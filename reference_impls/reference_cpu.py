@@ -14,6 +14,7 @@ ELLIPSE_EPS = 1e-6
 MIN_CONIC_DET = 1e-12
 GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(3.0)
 ELLIPSE_RADIUS_PAD_PX = np.float32(1.0)
+EQUIRECTANGULAR_ELLIPSE_POINT_COUNT = 8
 
 
 @dataclass(slots=True)
@@ -128,6 +129,45 @@ def _init_fullscreen_fallback_ellipse(width: int, height: int) -> tuple[np.ndarr
     return center_px, radius, conic
 
 
+def _fit_centered_outline_ellipse(outline_points: np.ndarray, screen_center: np.ndarray) -> tuple[np.ndarray, float, np.ndarray] | None:
+    center = np.asarray(screen_center, dtype=np.float32).reshape(2)
+    d = (np.asarray(outline_points, dtype=np.float64).reshape(-1, 2) - center.astype(np.float64, copy=False))
+    design = np.stack((d[:, 0] * d[:, 0], 2.0 * d[:, 0] * d[:, 1], d[:, 1] * d[:, 1]), axis=1)
+    normal = design.T @ design
+    rhs = np.sum(design, axis=0)
+    try:
+        conic = np.linalg.solve(normal, rhs).astype(np.float32)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.isfinite(conic).all():
+        return None
+    det = float(conic[0] * conic[2] - conic[1] * conic[1])
+    if float(conic[0]) <= ELLIPSE_EPS or float(conic[2]) <= ELLIPSE_EPS or det <= ELLIPSE_EPS:
+        return None
+    trace = float(conic[0] + conic[2])
+    disc = math.sqrt(max(0.25 * trace * trace - det, 0.0))
+    axis0 = 1.0 / math.sqrt(max(0.5 * trace + disc, ELLIPSE_EPS))
+    axis1 = 1.0 / math.sqrt(max(0.5 * trace - disc, ELLIPSE_EPS))
+    radius_px = float(max(axis0, axis1))
+    return center, radius_px, conic.astype(np.float32, copy=False)
+
+
+def _equirectangular_centered_ellipse_needs_fallback(center: np.ndarray, conic: np.ndarray, width: int, height: int) -> bool:
+    det = float(conic[0] * conic[2] - conic[1] * conic[1])
+    if det <= ELLIPSE_EPS:
+        return True
+    extent = np.sqrt(np.maximum(np.array((conic[2], conic[0]), dtype=np.float64) / det, 0.0))
+    if not np.isfinite(extent).all():
+        return True
+    center = np.asarray(center, dtype=np.float64).reshape(2)
+    return (
+        float(center[0] - extent[0]) <= 0.0
+        or float(center[0] + extent[0]) >= float(width)
+        or float(center[1] - extent[1]) <= 0.0
+        or float(center[1] + extent[1]) >= float(height)
+    )
+
+
 def _support_sphere_intersects_view_frustum(camera_center: np.ndarray, camera: Camera, width: int, height: int, support_radius: float) -> bool:
     center = np.asarray(camera_center, dtype=np.float64).reshape(3)
     radius = float(support_radius)
@@ -188,6 +228,33 @@ def _compute_outline_ellipse(
     if tangent_basis_v_norm <= ELLIPSE_EPS or not np.isfinite(tangent_basis_v_norm):
         return None
     tangent_basis_v /= tangent_basis_v_norm
+
+    if camera.is_equirectangular:
+        if not screen_ok:
+            return _init_fullscreen_fallback_ellipse(width, height) if support_intersects_frustum else None
+        outline_points = np.zeros((EQUIRECTANGULAR_ELLIPSE_POINT_COUNT, 2), dtype=np.float32)
+        outline_min = np.full((2,), 1e30, dtype=np.float32)
+        outline_max = np.full((2,), -1e30, dtype=np.float32)
+        q_inv = _quat_conj(rotation)
+        for index in range(EQUIRECTANGULAR_ELLIPSE_POINT_COUNT):
+            theta = np.float32(2.0 * np.pi * index / float(EQUIRECTANGULAR_ELLIPSE_POINT_COUNT))
+            local_point = tangent_circle_center + tangent_circle_radius * (np.cos(theta) * tangent_basis_u + np.sin(theta) * tangent_basis_v)
+            world_point = world_pos + _quat_rotate(local_point * scale, q_inv)
+            screen_point, point_ok = camera.project_world_to_screen(world_point, width, height)
+            if not point_ok:
+                return _init_fullscreen_fallback_ellipse(width, height) if support_intersects_frustum else None
+            outline_points[index] = screen_point
+            outline_min = np.minimum(outline_min, screen_point)
+            outline_max = np.maximum(outline_max, screen_point)
+        if (float(outline_max[0] - outline_min[0]) > 0.5 * float(width)) or float(outline_min[1]) <= 0.0 or float(outline_max[1]) >= float(height):
+            return _init_fullscreen_fallback_ellipse(width, height)
+        fitted = _fit_centered_outline_ellipse(outline_points, screen_center)
+        if fitted is None:
+            return None
+        center_px, _, conic = fitted
+        if _equirectangular_centered_ellipse_needs_fallback(center_px, conic, width, height):
+            return _init_fullscreen_fallback_ellipse(width, height)
+        return fitted
 
     outline_points = np.zeros((5, 2), dtype=np.float32)
     outline_min = np.full((2,), 1e30, dtype=np.float32)

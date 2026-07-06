@@ -9,6 +9,16 @@ from src.renderer import Camera, PROJECTION_MODEL_EQUIRECTANGULAR
 from src.scene import GaussianScene
 
 _ALPHA_CUTOFF = 1.0 / 255.0
+_PROJECTION_ALPHA_TOL = 5e-4
+_EQUIRECT_DENSE_WIDTH = 384
+_EQUIRECT_DENSE_HEIGHT = 192
+_EQUIRECT_DENSE_LONGITUDES = 48
+_EQUIRECT_DENSE_LATITUDES = 23
+_EQUIRECT_SHELL_RADIUS = np.float32(3.0)
+_EQUIRECT_SHELL_SIGMA = np.float32(0.006)
+_EQUIRECT_SHELL_OPACITY = np.float32(0.8)
+_EQUIRECT_RADIUS_SCALE = 1.6
+_EDGE_SAMPLE_COUNT = 8
 
 
 def make_scene(count: int, seed: int = 123) -> GaussianScene:
@@ -30,6 +40,26 @@ def make_scene(count: int, seed: int = 123) -> GaussianScene:
         opacities=opacities,
         colors=colors,
         sh_coeffs=sh_coeffs,
+    )
+
+
+def _equirectangular_dense_shell_scene() -> GaussianScene:
+    lon_ids, lat_ids = np.meshgrid(
+        np.arange(_EQUIRECT_DENSE_LONGITUDES, dtype=np.float32),
+        np.arange(_EQUIRECT_DENSE_LATITUDES, dtype=np.float32),
+    )
+    theta = np.float32(2.0 * np.pi) * ((lon_ids + np.float32(0.5)) / np.float32(_EQUIRECT_DENSE_LONGITUDES)) - np.float32(np.pi)
+    phi = np.float32(np.pi) * (np.float32(0.5) - (lat_ids + np.float32(0.5)) / np.float32(_EQUIRECT_DENSE_LATITUDES))
+    cos_phi = np.cos(phi)
+    positions = np.stack((cos_phi * np.sin(theta), -np.sin(phi), cos_phi * np.cos(theta)), axis=-1).reshape(-1, 3).astype(np.float32) * _EQUIRECT_SHELL_RADIUS
+    count = int(positions.shape[0])
+    return GaussianScene(
+        positions=positions,
+        scales=np.full((count, 3), np.log(_EQUIRECT_SHELL_SIGMA), dtype=np.float32),
+        rotations=np.repeat(np.array(((1.0, 0.0, 0.0, 0.0),), dtype=np.float32), count, axis=0),
+        opacities=np.full((count,), _EQUIRECT_SHELL_OPACITY, dtype=np.float32),
+        colors=np.repeat(np.array(((0.8, 0.7, 0.6),), dtype=np.float32), count, axis=0),
+        sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
     )
 
 
@@ -180,7 +210,41 @@ def test_projection_outline_hits_alpha_cutoff() -> None:
         outline_point = _outline_screen_point(projected.center_radius_depth[splat_index, :2], projected.ellipse_conic[splat_index], float(rng.uniform(0.0, 2.0 * math.pi)))
         ray_direction = camera.screen_to_world_ray(outline_point, 192, 128)
         alpha = _ray_splat_intersection_alpha(camera.position, ray_direction, packed[splat_index], 1.6)
-        assert abs(alpha - _ALPHA_CUTOFF) <= 5e-4
+        assert abs(alpha - _ALPHA_CUTOFF) <= _PROJECTION_ALPHA_TOL
+
+
+def test_equirectangular_dense_shell_outline_hits_alpha_cutoff() -> None:
+    scene = _equirectangular_dense_shell_scene()
+    camera = Camera.look_at(
+        position=(0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        near=0.1,
+        far=20.0,
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+    projected = project_splats(scene, camera, width=_EQUIRECT_DENSE_WIDTH, height=_EQUIRECT_DENSE_HEIGHT, radius_scale=_EQUIRECT_RADIUS_SCALE)
+    packed = np.concatenate(
+        [scene.positions, scene.scales, scene.rotations, scene.colors, scene.opacities[:, None]],
+        axis=1,
+    ).astype(np.float32)
+    non_fallback_count = 0
+    fallback_count = 0
+    edge_angles = np.linspace(0.0, 2.0 * np.pi, num=_EDGE_SAMPLE_COUNT, endpoint=False)
+
+    assert int(np.count_nonzero(projected.valid)) == scene.count
+    for splat_index in np.flatnonzero(projected.valid != 0).tolist():
+        if _is_fullscreen_fallback_ellipse(projected.center_radius_depth[splat_index], projected.ellipse_conic[splat_index], _EQUIRECT_DENSE_WIDTH, _EQUIRECT_DENSE_HEIGHT):
+            fallback_count += 1
+            continue
+        non_fallback_count += 1
+        for theta in edge_angles:
+            outline_point = _outline_screen_point(projected.center_radius_depth[splat_index, :2], projected.ellipse_conic[splat_index], float(theta))
+            ray_direction = camera.screen_to_world_ray(outline_point, _EQUIRECT_DENSE_WIDTH, _EQUIRECT_DENSE_HEIGHT)
+            alpha = _ray_splat_intersection_alpha(camera.position, ray_direction, packed[splat_index], _EQUIRECT_RADIUS_SCALE)
+            assert abs(alpha - _ALPHA_CUTOFF) <= _PROJECTION_ALPHA_TOL
+
+    assert non_fallback_count > scene.count - 16
+    assert 0 < fallback_count <= 16
 
 
 def test_scanline_span_analytic_solver_matches_bruteforce() -> None:

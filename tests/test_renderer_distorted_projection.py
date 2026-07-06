@@ -18,6 +18,7 @@ _EQUIRECT_RADIUS_SCALE = 1.6
 _EQUIRECT_LIST_CAPACITY_MULTIPLIER = 64
 _EQUIRECT_SPLAT_COLOR = np.array([[0.8, 0.7, 0.6]], dtype=np.float32)
 _EQUIRECT_SPLAT_OPACITY = 0.8
+_EQUIRECT_ALPHA_CUTOFF = 1.0 / 255.0
 
 
 def _equirectangular_camera() -> Camera:
@@ -172,15 +173,20 @@ def test_equirectangular_renderer_keeps_full_sphere_shell_visible(device):
         width=_EQUIRECT_TEST_WIDTH,
         height=_EQUIRECT_TEST_HEIGHT,
         radius_scale=_EQUIRECT_RADIUS_SCALE,
+        alpha_cutoff=_EQUIRECT_ALPHA_CUTOFF,
         list_capacity_multiplier=_EQUIRECT_LIST_CAPACITY_MULTIPLIER,
     )
 
-    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale, alpha_cutoff=renderer.alpha_cutoff)
     debug = renderer.debug_pipeline_data(scene, camera)
     gpu_visible = np.asarray(debug["splat_visible"], dtype=np.uint32)
+    gpu_center_radius_depth = np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)
+    gpu_ellipse_conic = np.asarray(debug["screen_ellipse_conic"], dtype=np.float32)[:, :3]
 
     assert int(np.sum(projected.valid, dtype=np.uint32)) == scene.count
     assert int(np.sum(gpu_visible, dtype=np.uint32)) == scene.count
     assert int(debug["generated_entries"]) > scene.count
     assert np.all(np.isfinite(projected.center_radius_depth))
     assert np.all(np.isfinite(projected.ellipse_conic))
+    np.testing.assert_allclose(gpu_center_radius_depth, projected.center_radius_depth, rtol=0.0, atol=3e-3)
+    np.testing.assert_allclose(gpu_ellipse_conic, projected.ellipse_conic, rtol=5e-3, atol=2e-4)

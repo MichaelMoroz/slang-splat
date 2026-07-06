@@ -30,7 +30,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `csProjectVisibleSplats`
 - For each splat:
   - decode the stored 3DGS log-scale to sigma, convert it to finite-support ellipsoid radius with `radius_scale * 3.0`, and use that same support consistently for projection, binning, and raster evaluation,
-  - solve the projected cutoff outline analytically from the ellipsoid tangent circle and fit a renormalized conic in screen space,
+  - solve the projected cutoff outline analytically from the ellipsoid tangent circle and fit a screen-space conic, using a centered eight-sample fit for equirectangular cameras,
   - inflate the fitted radius conservatively for visibility and scan conversion while keeping the conic on the actual alpha-cutoff boundary,
   - estimate projected radius,
   - write projected splat state, raster cache data, visibility flags, and a visible-splat sort key.
