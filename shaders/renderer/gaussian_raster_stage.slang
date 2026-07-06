@@ -328,6 +328,7 @@ float raster_eval_outline_alpha(uint splatId, float opacity, float2 samplePoint)
 {
     float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
     float4 conicAndOpacity = g_ScreenEllipseConic[splatId];
+    if (conicAndOpacity.x <= 0.0 || conicAndOpacity.z <= 0.0) return 0.0;
     float ellipseScale = max(g_Raster.debugGaussianScaleMultiplier * g_Raster.debugEllipseScaleMultiplier, SMALL_VALUE);
     float conicScale = 1.0 / (ellipseScale * ellipseScale);
     float3 conic = conicAndOpacity.xyz * conicScale;

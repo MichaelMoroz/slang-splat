@@ -140,6 +140,10 @@ def _is_fullscreen_fallback_ellipse(center_radius_depth: np.ndarray, conic: np.n
     )
 
 
+def _is_cap_rect_conic(conic: np.ndarray) -> bool:
+    return float(conic[0]) < 0.0 and float(conic[2]) < 0.0
+
+
 def test_projection_outline_reference_is_finite() -> None:
     scene = make_scene(128, seed=7)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
@@ -258,13 +262,14 @@ def test_equirectangular_dense_shell_outline_hits_alpha_cutoff() -> None:
         axis=1,
     ).astype(np.float32)
     non_fallback_count = 0
-    fallback_count = 0
+    cap_rect_count = 0
     edge_angles = np.linspace(0.0, 2.0 * np.pi, num=_EDGE_SAMPLE_COUNT, endpoint=False)
 
     assert int(np.count_nonzero(projected.valid)) == scene.count
     for splat_index in np.flatnonzero(projected.valid != 0).tolist():
-        if _is_fullscreen_fallback_ellipse(projected.center_radius_depth[splat_index], projected.ellipse_conic[splat_index], _EQUIRECT_DENSE_WIDTH, _EQUIRECT_DENSE_HEIGHT):
-            fallback_count += 1
+        assert not _is_fullscreen_fallback_ellipse(projected.center_radius_depth[splat_index], projected.ellipse_conic[splat_index], _EQUIRECT_DENSE_WIDTH, _EQUIRECT_DENSE_HEIGHT)
+        if _is_cap_rect_conic(projected.ellipse_conic[splat_index]):
+            cap_rect_count += 1
             continue
         non_fallback_count += 1
         for theta in edge_angles:
@@ -274,7 +279,7 @@ def test_equirectangular_dense_shell_outline_hits_alpha_cutoff() -> None:
             assert abs(alpha - _ALPHA_CUTOFF) <= _PROJECTION_ALPHA_TOL
 
     assert non_fallback_count > scene.count - 16
-    assert 0 < fallback_count <= 16
+    assert 0 < cap_rect_count <= 16
 
 
 def test_scanline_span_analytic_solver_matches_bruteforce() -> None:

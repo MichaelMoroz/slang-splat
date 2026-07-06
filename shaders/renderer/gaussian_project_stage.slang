@@ -75,10 +75,11 @@ uint load_prepared_projected_ellipse_variants(
 
     float viewportWidth = max(g_Camera.viewport.x, 1.0);
     bool equirectangular = g_Camera.projectionModel == CAMERA_PROJECTION_EQUIRECTANGULAR;
-    bool wrapsLeft = equirectangular && ellipse0.centerPx.x - ellipse0.radiusPx <= 0.0 && ellipse0.centerPx.x + ellipse0.radiusPx < viewportWidth;
-    bool wrapsRight = equirectangular && ellipse0.centerPx.x + ellipse0.radiusPx >= viewportWidth && ellipse0.centerPx.x - ellipse0.radiusPx > 0.0;
+    float xExtent = ellipse0.isBBoxRect() ? ellipse0.rectExtent().x : ellipse0.radiusPx;
+    bool wrapsLeft = equirectangular && ellipse0.centerPx.x - xExtent <= 0.0 && ellipse0.centerPx.x + xExtent < viewportWidth;
+    bool wrapsRight = equirectangular && ellipse0.centerPx.x + xExtent >= viewportWidth && ellipse0.centerPx.x - xExtent > 0.0;
     bool hasWrappedVariant = wrapsLeft || wrapsRight;
-    if (hasWrappedVariant) make_conservative_circle_binning_ellipse(ellipse0);
+    if (hasWrappedVariant && !ellipse0.isBBoxRect()) make_conservative_circle_binning_ellipse(ellipse0);
 
     uint variantCount = prepare_projected_ellipse_loop(ellipse0, loopCfg0) ? 1u : 0u;
     if (hasWrappedVariant)
@@ -155,7 +156,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     Ellipse projectedEllipse;
     if (!compute_ellipsoid_outline_ellipse(projectionEllipsoid, camera, projectedEllipse)) return;
     projectedEllipse.radiusPx = max(projectedEllipse.radiusPx * ELLIPSE_SAFETY_SCALE + ELLIPSE_RADIUS_PAD_PX, MIN_SCREEN_RADIUS_PX);
-    projectedEllipse.bboxExtent = float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
+    projectedEllipse.bboxExtent = projectedEllipse.isBBoxRect() ? projectedEllipse.rectExtent() : float2(projectedEllipse.radiusPx, projectedEllipse.radiusPx);
     if (!projectedEllipse.isVisible(camDistance, depthValue, camera.params.viewport, g_Camera.nearDepth, g_Camera.farDepth)) return;
     g_ScreenCenterRadiusDepth[splatId] = float4(projectedEllipse.centerPx, projectedEllipse.radiusPx, camDistance);
     g_ScreenColorAlpha[splatId] = float4(rasterGaussian.colorAlpha.xyz, gaussian.rawOpacity);

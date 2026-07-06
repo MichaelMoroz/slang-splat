@@ -336,6 +336,17 @@ struct Ellipse
             && det > CONIC_DETERMINANT_FLOOR;
     }
 
+    // Equirectangular cap rects ride in the conic slots as (-xExtent, 0, -yExtent).
+    bool isBBoxRect()
+    {
+        return conic.x < 0.0 && conic.z < 0.0;
+    }
+
+    float2 rectExtent()
+    {
+        return float2(-conic.x, -conic.z);
+    }
+
     float clippedBBoxAreaPx(float2 viewport)
     {
         if (!all(isfinite(centerPx)) || !isfinite(radiusPx) || !(radiusPx > 0.0)) return 0.0;
@@ -536,6 +547,7 @@ float gaussian_scale_volume(float3 logScale)
 
 float projected_ellipse_area(float3 conic)
 {
+    if (conic.x < 0.0 && conic.z < 0.0) return max(4.0 * conic.x * conic.z, SMALL_VALUE);
     float det = conic.x * conic.z - conic.y * conic.y;
     return max(0.5 * TAU_RADIANS / sqrt(max(det, CONIC_DETERMINANT_FLOOR)), SMALL_VALUE);
 }

@@ -41,14 +41,14 @@ bool support_sphere_intersects_view_frustum(PinholeCamera camera, float3 cameraC
     return true;
 }
 
-bool equirectangular_outline_needs_fullscreen_fallback(PinholeCamera camera, float2 outlineMin, float2 outlineMax)
+bool equirectangular_outline_needs_fallback(PinholeCamera camera, float2 outlineMin, float2 outlineMax)
 {
     if (!camera.is_equirectangular()) return false;
     float2 viewport = camera.params.viewport;
     return (outlineMax.x - outlineMin.x) > 0.5 * viewport.x || outlineMin.y <= 0.0 || outlineMax.y >= viewport.y;
 }
 
-bool equirectangular_support_needs_fullscreen_fallback(PinholeCamera camera, float3 cameraCenter, float supportRadius)
+bool equirectangular_support_needs_fallback(PinholeCamera camera, float3 cameraCenter, float supportRadius)
 {
     if (!camera.is_equirectangular()) return false;
     float distance = length(cameraCenter);
@@ -61,6 +61,31 @@ bool equirectangular_support_needs_fullscreen_fallback(PinholeCamera camera, flo
     float angularRadius = asin(saturate(supportRadius / distance));
     float angularSlack = TINY_VALUE;
     return abs(theta) + angularRadius + angularSlack >= PI || abs(phi) + angularRadius + angularSlack >= 0.5 * PI;
+}
+
+// Bounded binning rect for the support-sphere direction cap (half-angle asin(r/d)):
+// latitude band center.y +- alpha/PI * H; longitude interval from the bounding-meridian
+// identity sin(dTheta) = sin(alpha) / cos(phi0) = r / horizontal, or full width when the
+// cap contains a pole (horizontal <= r). Encoded as conic = (-xExtent, 0, -yExtent) so
+// every no-analytic-conic binning path picks it up without extra storage.
+void init_equirectangular_cap_rect_ellipse(PinholeCamera camera, float3 cameraCenter, float supportRadius, float2 screenCenter, out Ellipse ellipse)
+{
+    float2 viewport = max(camera.params.viewport, float2(1.0));
+    float distance = length(cameraCenter);
+    if (!(distance > DEPTH_VISIBILITY_FLOOR) || !(supportRadius > 0.0) || supportRadius >= distance)
+    {
+        init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+        return;
+    }
+
+    float horizontal = length(cameraCenter.xz);
+    float angularRadius = asin(saturate(supportRadius / distance));
+    float yExtent = min(angularRadius / PI, 0.5) * viewport.y;
+    float xExtent = horizontal <= supportRadius ? viewport.x : asin(saturate(supportRadius / horizontal)) / TAU_RADIANS * viewport.x;
+    ellipse.centerPx = screenCenter;
+    ellipse.radiusPx = max(max(xExtent, yExtent), MIN_SCREEN_RADIUS_PX);
+    ellipse.conic = float3(-xExtent, 0.0, -yExtent);
+    ellipse.bboxExtent = float2(xExtent, yExtent);
 }
 
 bool solve_symmetric_3x3(
@@ -155,7 +180,7 @@ bool fit_centered_projected_outline_ellipse(float2 outlinePoints[EQUIRECTANGULAR
     return all(isfinite(ellipse.centerPx)) && isfinite(ellipse.radiusPx) && all(isfinite(ellipse.conic)) && ellipse.radiusPx > 0.0;
 }
 
-bool equirectangular_centered_ellipse_needs_fullscreen_fallback(PinholeCamera camera, Ellipse ellipse)
+bool equirectangular_centered_ellipse_needs_fallback(PinholeCamera camera, Ellipse ellipse)
 {
     float detConic = ellipse.conic.x * ellipse.conic.z - ellipse.conic.y * ellipse.conic.y;
     if (detConic <= 0.0 || !isfinite(detConic)) return true;
@@ -359,10 +384,10 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
             init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
             return true;
         }
-        if (equirectangular_support_needs_fullscreen_fallback(camera, cameraCenter, supportRadius))
+        if (equirectangular_support_needs_fallback(camera, cameraCenter, supportRadius))
         {
             if (!supportIntersectsFrustum) return false;
-            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+            init_equirectangular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
             return true;
         }
         float2 outlinePoints[EQUIRECTANGULAR_ELLIPSE_POINT_COUNT];
@@ -379,23 +404,18 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
             if (!camera.project_world_to_screen(worldPoint, screenPoint))
             {
                 if (!supportIntersectsFrustum) return false;
-                init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+                init_equirectangular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
                 return true;
             }
             outlinePoints[i] = screenPoint;
             outlineMin = min(outlineMin, screenPoint);
             outlineMax = max(outlineMax, screenPoint);
         }
-        if (equirectangular_outline_needs_fullscreen_fallback(camera, outlineMin, outlineMax))
+        if (equirectangular_outline_needs_fallback(camera, outlineMin, outlineMax)
+            || !fit_centered_projected_outline_ellipse(outlinePoints, screenCenter, ellipse)
+            || equirectangular_centered_ellipse_needs_fallback(camera, ellipse))
         {
-            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
-            return true;
-        }
-        if (!fit_centered_projected_outline_ellipse(outlinePoints, screenCenter, ellipse)) return false;
-        if (equirectangular_centered_ellipse_needs_fullscreen_fallback(camera, ellipse))
-        {
-            init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
-            return true;
+            init_equirectangular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
         }
         return true;
     }
@@ -421,11 +441,6 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
         outlineMin = min(outlineMin, screenPoint);
         outlineMax = max(outlineMax, screenPoint);
     }
-    if (equirectangular_outline_needs_fullscreen_fallback(camera, outlineMin, outlineMax))
-    {
-        init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
-        return true;
-    }
     return fit_projected_outline_ellipse(outlinePoints, outlineMin, outlineMax, hasScreenCenter, screenCenter, camera.params.viewport, ellipse);
 }
 
@@ -435,7 +450,8 @@ bool try_prepare_conic_for_binning(inout Ellipse ellipse, float halfTile)
     if (!all(isfinite(ellipse.centerPx)) || !isfinite(ellipse.radiusPx) || !(ellipse.radiusPx > 0.0)) return false;
     if (!ellipse.hasAnalyticConic())
     {
-        ellipse.bboxExtent = max(float2(ellipse.radiusPx + BBOX_PAD_PX), float2(MIN_BBOX_EXTENT_PX));
+        float2 rawExtent = ellipse.isBBoxRect() ? ellipse.rectExtent() : float2(ellipse.radiusPx);
+        ellipse.bboxExtent = max(rawExtent + BBOX_PAD_PX, float2(MIN_BBOX_EXTENT_PX));
         return true;
     }
     float3 conic = ellipse.conic;
