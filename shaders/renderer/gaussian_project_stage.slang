@@ -3,6 +3,7 @@ import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/random/random.slang";
 import "utility/splatting/common.slang";
+import "utility/splatting/opacity.slang";
 import "utility/splatting/projection.slang";
 import "utility/splatting/raster.slang";
 
@@ -23,6 +24,39 @@ uniform uint g_HighlightEnabled;
 uniform float3 g_HighlightColor;
 uniform float g_HighlightMix;
 uniform StructuredBuffer<uint> g_SplatHighlight;
+
+// Splat-editor selection preview. Visualization only: splats that would be selected by
+// the current box + histogram ranges are tinted toward g_SelectPreviewColor (a toned-down
+// blue), computed inline here so there is no extra dispatch/buffer. Ranges default to the
+// full extent (all splats pass), so an unconstrained axis is a no-op.
+uniform uint g_SelectPreviewEnabled;
+uniform float3 g_SelectPreviewColor;
+uniform float g_SelectPreviewMix;
+uniform uint g_SelectPreviewBoxEnabled;
+uniform float3 g_SelectPreviewBoxCenter;
+uniform float3 g_SelectPreviewBoxAxisX;
+uniform float3 g_SelectPreviewBoxAxisY;
+uniform float3 g_SelectPreviewBoxAxisZ;
+uniform float3 g_SelectPreviewBoxHalfExtent;
+uniform float2 g_SelectPreviewScaleRange;
+uniform float2 g_SelectPreviewOpacityRange;
+uniform float2 g_SelectPreviewColorRange;
+
+bool select_preview_hit(Gaussian3D gaussian)
+{
+    if (g_SelectPreviewBoxEnabled != 0u)
+    {
+        float3 offset = gaussian.position - g_SelectPreviewBoxCenter;
+        float3 local = float3(dot(g_SelectPreviewBoxAxisX, offset), dot(g_SelectPreviewBoxAxisY, offset), dot(g_SelectPreviewBoxAxisZ, offset));
+        if (any(abs(local) > g_SelectPreviewBoxHalfExtent)) return false;
+    }
+    float scaleScalar = exp((gaussian.logScale.x + gaussian.logScale.y + gaussian.logScale.z) / 3.0);
+    if (scaleScalar < g_SelectPreviewScaleRange.x || scaleScalar > g_SelectPreviewScaleRange.y) return false;
+    float opacityScalar = opacity_from_raw(gaussian.rawOpacity);
+    if (opacityScalar < g_SelectPreviewOpacityRange.x || opacityScalar > g_SelectPreviewOpacityRange.y) return false;
+    float lumaScalar = dot(saturate(0.5 + SH_C0 * gaussian.shCoeffs[0u]), float3(0.2126, 0.7152, 0.0722));
+    return lumaScalar >= g_SelectPreviewColorRange.x && lumaScalar <= g_SelectPreviewColorRange.y;
+}
 
 uint encode_sort_key_float(float value)
 {
@@ -136,6 +170,10 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     float3 cameraPosition = camera.position_world();
     RasterGaussian rasterGaussian = build_raster_gaussian(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, cameraPosition, g_Raster.shBand, gaussian);
+    // Preview first (toned-down blue), then the committed selection on top, so an already
+    // selected candidate reads as selected rather than preview.
+    if (g_SelectPreviewEnabled != 0u && select_preview_hit(gaussian))
+        rasterGaussian.colorAlpha.xyz = lerp(rasterGaussian.colorAlpha.xyz, g_SelectPreviewColor, saturate(g_SelectPreviewMix));
     if (g_HighlightEnabled != 0u && g_SplatHighlight[splatId] != 0u)
         rasterGaussian.colorAlpha.xyz = lerp(rasterGaussian.colorAlpha.xyz, g_HighlightColor, saturate(g_HighlightMix));
     float fusedOpacity = rasterGaussian.colorAlpha.w;

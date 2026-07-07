@@ -676,6 +676,61 @@ class GaussianRenderer:
             "g_HighlightMix": float(self._highlight_mix),
         }
 
+    def set_selection_preview(
+        self,
+        *,
+        box_enabled: bool = False,
+        box_center: np.ndarray | None = None,
+        box_axes: np.ndarray | None = None,
+        box_half_extents: np.ndarray | None = None,
+        scale_range: tuple[float, float] | None = None,
+        opacity_range: tuple[float, float] | None = None,
+        color_range: tuple[float, float] | None = None,
+        color: tuple[float, float, float] | None = None,
+        mix: float | None = None,
+    ) -> None:
+        """Enable the selection-candidate preview (display-only color tint in the prepass).
+
+        Highlights splats that would be selected by the given box (optional) intersected
+        with the per-scalar histogram ranges (scale, opacity, color luminance). Ranges left
+        as ``None`` default to the full extent (no filtering).
+        """
+        self._preview_enabled = True
+        if color is not None:
+            self._preview_color = (float(color[0]), float(color[1]), float(color[2]))
+        if mix is not None:
+            self._preview_mix = float(np.clip(mix, 0.0, 1.0))
+        self._preview_box_enabled = bool(box_enabled)
+        if box_center is not None:
+            self._preview_box_center = np.asarray(box_center, dtype=np.float32).reshape(3)
+        if box_axes is not None:
+            self._preview_box_axes = np.asarray(box_axes, dtype=np.float32).reshape(3, 3)
+        if box_half_extents is not None:
+            self._preview_box_half_extent = np.abs(np.asarray(box_half_extents, dtype=np.float32).reshape(3))
+        full = (-1e30, 1e30)
+        self._preview_ranges = np.array(
+            [scale_range or full, opacity_range or full, color_range or full], dtype=np.float32
+        )
+
+    def clear_selection_preview(self) -> None:
+        self._preview_enabled = False
+
+    def _preview_vars(self) -> dict[str, object]:
+        return {
+            "g_SelectPreviewEnabled": np.uint32(1 if self._preview_enabled else 0),
+            "g_SelectPreviewColor": spy.float3(*self._preview_color),
+            "g_SelectPreviewMix": float(self._preview_mix),
+            "g_SelectPreviewBoxEnabled": np.uint32(1 if self._preview_box_enabled else 0),
+            "g_SelectPreviewBoxCenter": spy.float3(*self._preview_box_center),
+            "g_SelectPreviewBoxAxisX": spy.float3(*self._preview_box_axes[0]),
+            "g_SelectPreviewBoxAxisY": spy.float3(*self._preview_box_axes[1]),
+            "g_SelectPreviewBoxAxisZ": spy.float3(*self._preview_box_axes[2]),
+            "g_SelectPreviewBoxHalfExtent": spy.float3(*self._preview_box_half_extent),
+            "g_SelectPreviewScaleRange": spy.float2(*self._preview_ranges[0]),
+            "g_SelectPreviewOpacityRange": spy.float2(*self._preview_ranges[1]),
+            "g_SelectPreviewColorRange": spy.float2(*self._preview_ranges[2]),
+        }
+
     def set_highlight_appearance(self, color: tuple[float, float, float], mix: float) -> None:
         self._highlight_color = (float(color[0]), float(color[1]), float(color[2]))
         self._highlight_mix = float(np.clip(mix, 0.0, 1.0))
@@ -1157,6 +1212,14 @@ class GaussianRenderer:
         self._highlight_color: tuple[float, float, float] = (1.0, 0.55, 0.1)
         self._highlight_mix = 0.65
         self._highlight_mask_cpu: np.ndarray | None = None
+        self._preview_enabled = False
+        self._preview_color: tuple[float, float, float] = (0.15, 0.5, 1.0)
+        self._preview_mix = 0.35
+        self._preview_box_enabled = False
+        self._preview_box_center = np.zeros(3, dtype=np.float32)
+        self._preview_box_axes = np.eye(3, dtype=np.float32)
+        self._preview_box_half_extent = np.zeros(3, dtype=np.float32)
+        self._preview_ranges = np.tile(np.array([-1e30, 1e30], dtype=np.float32), (3, 1))
         self._output_texture: spy.Texture | None = None
         self._training_depth_stats_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
@@ -1600,6 +1663,7 @@ class GaussianRenderer:
                 "g_VisibleValues": self._work_buffers["visible_values"],
                 "g_VisibleCounter": self._work_buffers["visible_counter"],
                 **self._highlight_vars(),
+                **self._preview_vars(),
                 **self._prepass_uniforms(scene.count),
                 **self._raster_uniforms(np.zeros((3,), dtype=np.float32)),
                 **self._anisotropy_uniforms(),

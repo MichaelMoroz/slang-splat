@@ -151,6 +151,8 @@ Selection is a per-splat GPU mask that doubles as the render highlight, so selec
 - histogram-range selection over per-splat scale, opacity, or color luminance,
 - invert and clear.
 
+`Preview candidates` (on by default) tints the splats the current box intersected with the histogram ranges *would* select in a toned-down blue, live as you drag the gizmo or range handles, before you commit. It is visualization only — the tint is computed inline in the projection prepass (no extra dispatch, buffer, or readback), applied under the committed-selection highlight so an already selected splat still reads as selected, and it costs nothing when the panel is closed.
+
 Edits apply only to the selection:
 
 - `Resample` at `0%` deletes the selection, `< 100%` randomly sparsifies it, and `> 100%` subdivides it by cloning children from random selected parents (offset within each parent's covariance and shrunk by the 3DGS split factor). The button reads `Delete selection` at `0%`.

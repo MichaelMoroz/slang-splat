@@ -123,3 +123,52 @@ def test_resample_densify_adds_expected_children(device) -> None:
     # Children (appended after the originals) are shrunk by the 3DGS split factor.
     child_scale = np.exp(renderer.read_scene_groups(total)["scales"][scene.count:, :3])
     assert 0.4 < child_scale.mean() / np.exp(scene.scales[sel]).mean() < 0.9
+
+
+def _projected_colors(renderer: GaussianRenderer, scene: GaussianScene, camera) -> np.ndarray:
+    return np.asarray(renderer.debug_pipeline_data(scene, camera)["screen_color_alpha"], dtype=np.float32)[:, :3]
+
+
+def test_selection_preview_tints_only_box_and_range_candidates(device) -> None:
+    from src.renderer import Camera
+
+    scene = _scene(300, seed=11)
+    renderer = _renderer(device, scene)
+    camera = Camera.look_at(position=(0.0, 0.0, 9.0), target=(0.0, 0.0, 0.0), near=0.1, far=60.0)
+    base = _projected_colors(renderer, scene, camera)
+
+    # Box preview: exactly the in-box splats are tinted toward blue; others untouched.
+    center = np.array([0.3, -0.2, 0.1], dtype=np.float32)
+    half = np.array([0.9, 0.7, 1.1], dtype=np.float32)
+    rot = _euler_matrix((15.0, -25.0, 40.0))
+    renderer.set_selection_preview(box_enabled=True, box_center=center, box_axes=rot.T, box_half_extents=half)
+    prev = _projected_colors(renderer, scene, camera)
+    inside = splat_edit.select_in_box(scene, center, half, rotation=rot)
+    changed = ~np.all(np.isclose(prev, base, atol=1e-4), axis=1)
+    np.testing.assert_array_equal(changed, inside)
+    assert (prev[inside] - base[inside])[:, 2].mean() > 0.0  # blue channel increases
+
+    # Box intersected with an opacity range narrows the candidate set.
+    renderer.set_selection_preview(box_enabled=True, box_center=center, box_axes=rot.T, box_half_extents=half, opacity_range=(0.5, 1.0))
+    prev2 = _projected_colors(renderer, scene, camera)
+    expected = inside & (scene.opacities >= 0.5) & (scene.opacities <= 1.0)
+    np.testing.assert_array_equal(~np.all(np.isclose(prev2, base, atol=1e-4), axis=1), expected)
+
+    # Disabled preview restores the exact base colors (zero-cost, visualization only).
+    renderer.clear_selection_preview()
+    np.testing.assert_allclose(_projected_colors(renderer, scene, camera), base, atol=1e-6)
+
+
+def test_selection_preview_and_highlight_layer_independently(device) -> None:
+    from src.renderer import Camera
+
+    scene = _scene(200, seed=12)
+    renderer = _renderer(device, scene)
+    camera = Camera.look_at(position=(0.0, 0.0, 9.0), target=(0.0, 0.0, 0.0), near=0.1, far=60.0)
+    # A committed selection (highlight) wins over the preview tint on the same splat.
+    sel = splat_edit.select_in_range(splat_edit.selection_scalar(scene, "opacity"), 0.0, 0.6)
+    renderer.set_selection_highlight(sel, color=(1.0, 0.55, 0.1), mix=0.65)
+    renderer.set_selection_preview(opacity_range=(0.0, 0.6))
+    colors = _projected_colors(renderer, scene, camera)
+    # Selected splats read orange (red >> blue), not the preview blue.
+    assert np.median(colors[sel][:, 0] - colors[sel][:, 2]) > 0.0

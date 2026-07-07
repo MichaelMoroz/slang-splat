@@ -658,6 +658,7 @@ def _update_splat_editor_panel(viewer: object) -> None:
     if not window_open:
         if was_open:
             splat_editor_ctrl.clear_highlight(viewer)
+            splat_editor_ctrl.clear_preview(viewer)
         _set_ui_value(viewer, "_splat_editor_state", None)
         _set_ui_value(viewer, "_splat_editor_box_segments", ())
         _set_ui_value(viewer, "_splat_editor_gizmo", None)
@@ -670,8 +671,11 @@ def _update_splat_editor_panel(viewer: object) -> None:
         splat_editor_ctrl.init_box_to_scene(viewer)
         splat_editor_ctrl.refresh_histograms(viewer)
         splat_editor_ctrl.sync_selection_to_scene(viewer)
+        splat_editor_ctrl.sync_preview(viewer)
         if not was_open:
             splat_editor_ctrl.sync_highlight(viewer)
+    else:
+        splat_editor_ctrl.clear_preview(viewer)
     box_segments = _splat_editor_box_segments(viewer, state) if (has_scene and state.box_enabled) else ()
     _set_ui_value(viewer, "_splat_editor_state", state)
     _set_ui_value(viewer, "_splat_editor_box_segments", box_segments)

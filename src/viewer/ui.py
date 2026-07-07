@@ -2363,6 +2363,11 @@ class ToolkitWindow:
         imgui.separator()
 
         imgui.text("Selection")
+        preview_changed, preview_enabled = imgui.checkbox("Preview candidates", bool(getattr(state, "preview_enabled", True)))
+        if preview_changed:
+            state.preview_enabled = bool(preview_enabled)
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Tint splats the current box and ranges would select (blue), before committing.")
         changed, box_enabled = imgui.checkbox("Bounding box selection", bool(state.box_enabled))
         if changed:
             state.box_enabled = bool(box_enabled)

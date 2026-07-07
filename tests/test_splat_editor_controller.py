@@ -164,3 +164,35 @@ def test_edit_properties_sets_opacity_on_selection_only(device) -> None:
     opacities = viewer.s.renderer.read_live_scene().opacities
     np.testing.assert_allclose(opacities[sel], 0.3, atol=1e-3)
     np.testing.assert_allclose(opacities[~sel], scene.opacities[~sel], atol=1e-3)
+
+
+def test_sync_preview_enables_for_box_and_clears_when_unconstrained(device) -> None:
+    scene = _scene(80, seed=8)
+    viewer = _loaded_viewer(device, scene)
+    state = ed.editor_state(viewer)
+    ed.init_box_to_scene(viewer)
+    ed.refresh_histograms(viewer, force=True)
+
+    # Box enabled -> preview on with the box bound.
+    state.box_enabled = True
+    state.preview_enabled = True
+    ed.sync_preview(viewer)
+    assert bool(viewer.s.renderer._preview_enabled) is True
+    assert bool(viewer.s.renderer._preview_box_enabled) is True
+
+    # Box off and every range at full extent -> nothing to preview -> cleared.
+    state.box_enabled = False
+    ed.sync_preview(viewer)
+    assert bool(viewer.s.renderer._preview_enabled) is False
+
+    # Narrowing a histogram range re-enables the preview even without a box.
+    edges = state.histograms[ed.splat_edit.SELECT_OPACITY][1]
+    state.ranges[ed.splat_edit.SELECT_OPACITY] = (float(edges[0]), 0.5 * float(edges[0] + edges[-1]))
+    ed.sync_preview(viewer)
+    assert bool(viewer.s.renderer._preview_enabled) is True
+    assert bool(viewer.s.renderer._preview_box_enabled) is False
+
+    # The preview toggle overrides everything.
+    state.preview_enabled = False
+    ed.sync_preview(viewer)
+    assert bool(viewer.s.renderer._preview_enabled) is False

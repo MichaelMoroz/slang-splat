@@ -50,6 +50,7 @@ class SplatEditorState:
     edit_scale_enabled: bool = False
     highlight_color: tuple[float, float, float] = DEFAULT_HIGHLIGHT_COLOR
     highlight_mix: float = DEFAULT_HIGHLIGHT_MIX
+    preview_enabled: bool = True
     status: str = ""
 
 
@@ -269,6 +270,55 @@ def clear_highlight(viewer: object) -> None:
     renderer = _display_renderer(viewer)
     if renderer is not None and hasattr(renderer, "set_highlight_visible"):
         renderer.set_highlight_visible(False)
+
+
+# --- selection preview --------------------------------------------------------
+
+_PREVIEW_RANGE_KINDS = (splat_edit.SELECT_SCALE, splat_edit.SELECT_OPACITY, splat_edit.SELECT_COLOR)
+
+
+def _active_preview_range(state: SplatEditorState, kind: str) -> tuple[float, float] | None:
+    """The (lo, hi) range for ``kind`` when it actually narrows the histogram, else None."""
+    value_range = state.ranges.get(kind)
+    if value_range is None:
+        return None
+    histogram = state.histograms.get(kind)
+    if histogram is not None:
+        edges = np.asarray(histogram[1], dtype=np.float64).reshape(-1)
+        if edges.size >= 2:
+            lo_full, hi_full = float(edges[0]), float(edges[-1])
+            tol = 1e-6 * max(hi_full - lo_full, 1e-12)
+            if value_range[0] <= lo_full + tol and value_range[1] >= hi_full - tol:
+                return None
+    return (float(value_range[0]), float(value_range[1]))
+
+
+def sync_preview(viewer: object) -> None:
+    """Push a display-only preview of the candidate selection (box + ranges) to the renderer."""
+    renderer = _display_renderer(viewer)
+    if renderer is None or not hasattr(renderer, "set_selection_preview"):
+        return
+    state = editor_state(viewer)
+    scale_range, opacity_range, color_range = (_active_preview_range(state, kind) for kind in _PREVIEW_RANGE_KINDS)
+    box_active = bool(state.box_enabled)
+    if not state.preview_enabled or not (box_active or scale_range or opacity_range or color_range):
+        renderer.clear_selection_preview()
+        return
+    renderer.set_selection_preview(
+        box_enabled=box_active,
+        box_center=state.box_center,
+        box_axes=box_rotation_matrix(state).T,  # rows = box axes (columns of world-from-box)
+        box_half_extents=state.box_half_extents,
+        scale_range=scale_range,
+        opacity_range=opacity_range,
+        color_range=color_range,
+    )
+
+
+def clear_preview(viewer: object) -> None:
+    renderer = _display_renderer(viewer)
+    if renderer is not None and hasattr(renderer, "clear_selection_preview"):
+        renderer.clear_selection_preview()
 
 
 # --- edit operations ----------------------------------------------------------
