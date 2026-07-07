@@ -1794,7 +1794,14 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
     if previous_renderer is not None and _renderer_size(previous_renderer, role) == size and not force_recreate:
         return previous_renderer
     renderer = _create_renderer(viewer, size[0], size[1], allow_debug_overlays)
-    if isinstance(viewer.s.scene, GaussianScene):
+    # Prefer a GPU->GPU scene copy from the outgoing renderer so live splat-editor edits
+    # (which live only in the GPU buffer) survive a resize/recreate; fall back to the CPU
+    # scene only when there is no prior renderer to copy from.
+    if previous_renderer is not None and int(getattr(previous_renderer, "_scene_count", 0)) > 0:
+        enc = viewer.device.create_command_encoder()
+        previous_renderer.copy_scene_state_to(enc, renderer)
+        viewer.device.submit_command_buffer(enc.finish())
+    elif isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     return _finalize_renderer_replacement(viewer, role, renderer, previous_renderer)
 

@@ -2411,11 +2411,12 @@ class ToolkitWindow:
         imgui.separator()
 
         imgui.text("Resample selection")
-        imgui.text_disabled("< 100% removes splats, > 100% subdivides to add splats.")
-        pct_changed, pct = imgui.slider_float("Amount", float(state.resample_percent), 1.0, 400.0, "%.0f%%")
+        imgui.text_disabled("0% deletes the selection, < 100% removes splats, > 100% subdivides to add splats.")
+        pct_changed, pct = imgui.slider_float("Amount", float(state.resample_percent), 0.0, 400.0, "%.0f%%")
         if pct_changed:
             state.resample_percent = float(pct)
-        if imgui.button("Resample selection##apply"):
+        resample_label = "Delete selection##apply" if float(state.resample_percent) <= 0.0 else "Resample selection##apply"
+        if imgui.button(resample_label):
             self.callbacks.editor_resample()
         imgui.separator()
 

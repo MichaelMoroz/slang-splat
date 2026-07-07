@@ -527,6 +527,21 @@ class GaussianRenderer:
             setattr(self, attr, shader)
         self._fixed_raster_grad_shaders = self._load_raster_grad_shaders("Fixed")
         self._k_clear_float_buffer = load_compute_kernel(self.device, SHADER_ROOT / "utility" / "metrics" / "metrics.slang", "csClearFloatBuffer")
+        self._edit_kernels = load_compute_kernels(
+            self.device,
+            SHADER_ROOT / "renderer" / "splat_edit_stage.slang",
+            {
+                "select_box": "csSelectBox",
+                "select_range": "csSelectRange",
+                "select_set_all": "csSelectSetAll",
+                "count_selected": "csCountSelected",
+                "edit_properties": "csEditProperties",
+                "resample_mark_keep": "csResampleMarkKeep",
+                "resample_compact_survivors": "csResampleCompactSurvivors",
+                "resample_compact_selected": "csResampleCompactSelected",
+                "resample_emit_children": "csResampleEmitChildren",
+            },
+        )
 
     def _load_raster_grad_shaders(self, entry_suffix: str) -> _RasterGradShaderSet:
         kernels = load_compute_kernels(
@@ -655,6 +670,190 @@ class GaussianRenderer:
             "g_HighlightColor": spy.float3(*self._highlight_color),
             "g_HighlightMix": float(self._highlight_mix),
         }
+
+    def set_highlight_appearance(self, color: tuple[float, float, float], mix: float) -> None:
+        self._highlight_color = (float(color[0]), float(color[1]), float(color[2]))
+        self._highlight_mix = float(np.clip(mix, 0.0, 1.0))
+
+    def set_highlight_visible(self, visible: bool) -> None:
+        """Toggle the selection highlight without discarding the GPU selection mask."""
+        self._highlight_enabled = bool(visible)
+
+    def read_live_scene(self) -> GaussianScene:
+        """Build a CPU scene from the current GPU param buffer (for export/histograms)."""
+        groups = self.read_scene_groups(self._scene_count)
+        opacities = np.reciprocal(1.0 + np.exp(-groups["color_alpha"][:, 3])).astype(np.float32, copy=False)
+        return GaussianScene(
+            positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
+            scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
+            rotations=np.asarray(groups["rotations"], dtype=np.float32),
+            opacities=opacities,
+            colors=np.asarray(groups["color_alpha"][:, :3], dtype=np.float32),
+            sh_coeffs=np.asarray(groups["sh_coeffs"], dtype=np.float32),
+        )
+
+    # --- GPU splat editing --------------------------------------------------
+    # The selection mask is the highlight buffer, so selecting a splat highlights it with
+    # no extra upload. Selection and property edits run in place on the param buffer; only
+    # resample (which changes the splat count) rebuilds and swaps the scene/mask buffers.
+    SELECT_MODE_REPLACE, SELECT_MODE_ADD, SELECT_MODE_SUBTRACT, SELECT_MODE_INTERSECT = 0, 1, 2, 3
+    SELECT_SCALAR_SCALE, SELECT_SCALAR_OPACITY, SELECT_SCALAR_COLOR = 0, 1, 2
+    SELECT_SET_CLEAR, SELECT_SET_ALL, SELECT_SET_INVERT = 0, 1, 2
+    EDIT_FLAG_COLOR, EDIT_FLAG_OPACITY, EDIT_FLAG_SCALE = 1, 2, 4
+
+    def _edit_common_vars(self) -> dict[str, object]:
+        return {
+            "g_SplatParams": self._scene_buffers["splat_params"],
+            "g_SelectionMask": self._ensure_highlight_buffer(self._scene_count),
+            "g_EditSplatCount": np.uint32(self._scene_count),
+            "g_PackedParamCount": np.uint32(self.packed_trainable_param_count),
+        }
+
+    def _alloc_edit_scratch(self, name: str, element_count: int, dtype_bytes: int = 4) -> spy.Buffer:
+        return alloc_buffer(self.device, name=f"renderer.edit.{name}", size=max(int(element_count), 1) * dtype_bytes, usage=self._RW_BUFFER_USAGE)
+
+    def _run_selection_kernel(self, kernel_name: str, extra_vars: dict[str, object]) -> int:
+        if self._scene_count <= 0:
+            return 0
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels[kernel_name].dispatch(thread_count=thread_count_1d(self._scene_count), vars={**self._edit_common_vars(), **extra_vars}, command_encoder=encoder)
+        self.device.submit_command_buffer(encoder.finish())
+        return self._finish_selection_change()
+
+    def _finish_selection_change(self) -> int:
+        self._highlight_mask_cpu = None
+        count = self.edit_selection_count()
+        self._highlight_enabled = count > 0
+        return count
+
+    def edit_selection_count(self) -> int:
+        if self._scene_count <= 0:
+            return 0
+        counter = self._alloc_edit_scratch("selection_counter", 1)
+        counter.copy_from_numpy(np.zeros((1,), dtype=np.uint32))
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels["count_selected"].dispatch(thread_count=thread_count_1d(self._scene_count), vars={**self._edit_common_vars(), "g_ResampleCounter": counter}, command_encoder=encoder)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        return int(self._read_array(counter, np.uint32, 1)[0])
+
+    def edit_select_box(self, center: np.ndarray, axes: np.ndarray, half_extents: np.ndarray, mode: int) -> int:
+        axes = np.asarray(axes, dtype=np.float32).reshape(3, 3)
+        return self._run_selection_kernel("select_box", {
+            "g_SelectMode": np.uint32(mode),
+            "g_SelectBoxCenter": spy.float3(*np.asarray(center, dtype=np.float32).reshape(3)),
+            "g_SelectBoxAxisX": spy.float3(*axes[0]),
+            "g_SelectBoxAxisY": spy.float3(*axes[1]),
+            "g_SelectBoxAxisZ": spy.float3(*axes[2]),
+            "g_SelectBoxHalfExtent": spy.float3(*np.abs(np.asarray(half_extents, dtype=np.float32).reshape(3))),
+        })
+
+    def edit_select_range(self, scalar_kind: int, low: float, high: float, mode: int) -> int:
+        lo, hi = (float(low), float(high)) if low <= high else (float(high), float(low))
+        return self._run_selection_kernel("select_range", {
+            "g_SelectMode": np.uint32(mode),
+            "g_SelectScalarKind": np.uint32(scalar_kind),
+            "g_SelectRange": spy.float2(lo, hi),
+        })
+
+    def edit_select_set_all(self, set_value: int) -> int:
+        return self._run_selection_kernel("select_set_all", {"g_SelectSetValue": np.uint32(set_value)})
+
+    def edit_properties(self, *, color: tuple[float, float, float] | None = None, opacity: float | None = None, scale: float | None = None) -> None:
+        if self._scene_count <= 0:
+            return
+        flags = (self.EDIT_FLAG_COLOR if color is not None else 0) | (self.EDIT_FLAG_OPACITY if opacity is not None else 0) | (self.EDIT_FLAG_SCALE if scale is not None else 0)
+        if flags == 0:
+            return
+        rgb = np.clip(np.asarray(color if color is not None else (0.0, 0.0, 0.0), dtype=np.float32).reshape(3), 0.0, 1.0)
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels["edit_properties"].dispatch(
+            thread_count=thread_count_1d(self._scene_count),
+            vars={
+                **self._edit_common_vars(),
+                "g_EditFlags": np.uint32(flags),
+                "g_EditColor": spy.float3(*rgb),
+                "g_EditOpacity": float(np.clip(opacity if opacity is not None else 0.0, 0.0, 1.0)),
+                "g_EditTargetScale": float(max(scale if scale is not None else 1e-6, 1e-12)),
+            },
+            command_encoder=encoder,
+        )
+        self.device.submit_command_buffer(encoder.finish())
+        self._current_scene = SceneBinding(count=self._scene_count)
+
+    def edit_resample(self, ratio: float, seed: int) -> int:
+        """Sparsify/densify/delete the selection on GPU, rebuilding the scene buffer.
+
+        ``ratio == 0`` deletes the whole selection; ``ratio < 1`` drops that fraction;
+        ``ratio > 1`` clones children from random selected parents. Returns the new count.
+        """
+        src_count = int(self._scene_count)
+        ratio = max(float(ratio), 0.0)
+        selected = self.edit_selection_count()
+        if src_count <= 0 or selected == 0 or abs(ratio - 1.0) < 1e-9:
+            return src_count
+        packed = int(self.packed_trainable_param_count)
+        child_count = max(int(round(ratio * selected)) - selected, 0) if ratio > 1.0 else 0
+        src_params = self._scene_buffers["splat_params"]
+        src_mask = self._ensure_highlight_buffer(src_count)
+        keep_flags = self._alloc_edit_scratch("keep_flags", src_count)
+        keep_prefix = self._alloc_edit_scratch("keep_prefix", src_count)
+        total_buffer = self._alloc_edit_scratch("keep_total", 1)
+
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels["resample_mark_keep"].dispatch(
+            thread_count=thread_count_1d(src_count),
+            vars={"g_SrcMask": src_mask, "g_KeepFlags": keep_flags, "g_ResampleSrcCount": np.uint32(src_count), "g_ResampleRatio": float(ratio), "g_ResampleSeed": np.uint32(seed & 0xFFFFFFFF)},
+            command_encoder=encoder,
+        )
+        self._prefix_sum.scan_uint(encoder, keep_flags, keep_prefix, src_count, total_buffer=total_buffer, exclusive=True)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        survivor_count = int(self._read_array(total_buffer, np.uint32, 1)[0])
+        total_count = survivor_count + child_count
+        if total_count <= 0:
+            total_count, survivor_count, child_count = 0, 0, 0
+
+        dst_params = self._alloc_edit_scratch("dst_params", max(total_count, 1) * packed)
+        dst_mask = self._alloc_edit_scratch("dst_mask", max(total_count, 1))
+        resample_vars = {
+            "g_SrcParams": src_params, "g_DstParams": dst_params, "g_SrcMask": src_mask, "g_DstMask": dst_mask,
+            "g_KeepFlags": keep_flags, "g_KeepPrefix": keep_prefix, "g_PackedParamCount": np.uint32(packed),
+            "g_ResampleSrcCount": np.uint32(src_count), "g_ResampleSurvivorCount": np.uint32(survivor_count),
+            "g_ResampleChildCount": np.uint32(child_count),
+        }
+        encoder = self.device.create_command_encoder()
+        if total_count > 0:
+            self._edit_kernels["resample_compact_survivors"].dispatch(thread_count=thread_count_1d(src_count), vars=resample_vars, command_encoder=encoder)
+        if child_count > 0:
+            selected_prefix = self._alloc_edit_scratch("selected_prefix", src_count)
+            selected_ids = self._alloc_edit_scratch("selected_ids", selected)
+            self._prefix_sum.scan_uint(encoder, src_mask, selected_prefix, src_count, exclusive=True)
+            self._edit_kernels["resample_compact_selected"].dispatch(thread_count=thread_count_1d(src_count), vars={"g_SrcMask": src_mask, "g_SelectedPrefix": selected_prefix, "g_SelectedIds": selected_ids, "g_ResampleSrcCount": np.uint32(src_count)}, command_encoder=encoder)
+            self._edit_kernels["resample_emit_children"].dispatch(
+                thread_count=thread_count_1d(child_count),
+                vars={**resample_vars, "g_SelectedIds": selected_ids, "g_ResampleSelectedCount": np.uint32(selected), "g_ResampleSeed": np.uint32(seed & 0xFFFFFFFF)},
+                command_encoder=encoder,
+            )
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+
+        self._adopt_edited_scene_buffer(dst_params, dst_mask, total_count, packed)
+        return total_count
+
+    def _adopt_edited_scene_buffer(self, dst_params: spy.Buffer, dst_mask: spy.Buffer, count: int, packed: int) -> None:
+        defer_resource_releases((self._scene_buffers["splat_params"], self._highlight_buffer))
+        self._scene_buffers["splat_params"] = dst_params
+        self._resource_groups.scene = self._scene_buffers
+        self._scene_capacity = max(int(count), 1)
+        self._scene_count = int(count)
+        self._scene_packed_param_count = int(packed)
+        self._highlight_buffer = dst_mask
+        self._highlight_capacity = max(int(count), 1)
+        self._highlight_mask_cpu = None
+        self._current_scene = SceneBinding(count=int(count))
+        self._ensure_work_buffers(int(count))
+        self._highlight_enabled = self.edit_selection_count() > 0
 
     def clear_scene_resources(self) -> None:
         defer_resource_releases((
@@ -1800,6 +1999,15 @@ class GaussianRenderer:
         dst._scene_count = self._scene_count
         if include_work_buffers:
             dst._current_scene = self._current_scene
+        self._copy_highlight_state_to(encoder, dst)
+
+    def _copy_highlight_state_to(self, encoder: spy.CommandEncoder, dst: "GaussianRenderer") -> None:
+        dst.set_highlight_appearance(self._highlight_color, self._highlight_mix)
+        dst._highlight_enabled = self._highlight_enabled
+        dst._highlight_mask_cpu = None
+        if self._highlight_buffer is None or self._scene_count <= 0:
+            return
+        encoder.copy_buffer(dst._ensure_highlight_buffer(self._scene_count), 0, self._highlight_buffer, 0, self._scene_count * self._U32_BYTES)
 
     def copy_prepass_capacity_state_to(self, dst: "GaussianRenderer") -> None:
         dst._pending_min_list_entries = max(int(dst._pending_min_list_entries), int(self._pending_min_list_entries))

@@ -669,7 +669,7 @@ def _update_splat_editor_panel(viewer: object) -> None:
     if has_scene:
         splat_editor_ctrl.init_box_to_scene(viewer)
         splat_editor_ctrl.refresh_histograms(viewer)
-        splat_editor_ctrl.ensure_selection(state, splat_editor_ctrl._scene_count(viewer))
+        splat_editor_ctrl.sync_selection_to_scene(viewer)
         if not was_open:
             splat_editor_ctrl.sync_highlight(viewer)
     box_segments = _splat_editor_box_segments(viewer, state) if (has_scene and state.box_enabled) else ()

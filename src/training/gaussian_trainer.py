@@ -2326,12 +2326,30 @@ class GaussianTrainer:
         count = max(int(scene.count), 0)
         self._scene_count, self.scene = count, _SceneCountProxy(count)
         self.renderer.set_scene(scene)
+        self._reset_edited_scene_state(scene)
+
+    def resample_selection(self, ratio: float, seed: int) -> int:
+        """GPU-resample the live selection in place, then reset optimizer bookkeeping.
+
+        The compaction runs on the renderer's param buffer (which the trainer optimizes),
+        so no scene round-trips to the CPU. Survivor indices are renumbered and children
+        appended, so Adam moments/ages/refinement state are reset like ``replace_scene``.
+        """
+        new_count = int(self.renderer.edit_resample(ratio, seed))
+        if new_count == self._scene_count:
+            return new_count
+        self._scene_count, self.scene = new_count, _SceneCountProxy(new_count)
+        self._reset_edited_scene_state(None)
+        return new_count
+
+    def _reset_edited_scene_state(self, scene: GaussianScene | None) -> None:
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_refinement_buffers(self._scene_count)
         self._ensure_renderer_workspace(self._scene_count)
         self._reset_splat_ages()
         self._refinement_camera_signature = None
-        self._scale_reg_reference = self._estimate_scale_reg_reference(scene)
+        if scene is not None:
+            self._scale_reg_reference = self._estimate_scale_reg_reference(scene)
         self._zero_optimizer_moments()
         self._clear_clone_counts()
         self._invalidate_downscaled_target()
