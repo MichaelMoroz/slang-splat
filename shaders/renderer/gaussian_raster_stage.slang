@@ -521,6 +521,11 @@ float3 raster_viewed_fraction_ema_color(uint splatId)
     return jet_colormap(debug_normalize_range(splat_viewed_fraction_ema(splatId), g_Raster.debugContributionRange));
 }
 
+float3 raster_unrefinable_color(uint splatId, float3 splatColor)
+{
+    return g_DebugSplatInit[splatId].w < 0.0 ? float3(1.0, 0.05, 0.02) : 0.04 * saturate(splatColor);
+}
+
 uint raster_adam_moment_index(uint splatCount, uint paramId, uint splatId)
 {
     return paramId * splatCount + splatId;
@@ -733,6 +738,7 @@ float3 raster_debug_color(RasterPixelInfo info, RasterReplayState replayState, u
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(splatId);
     if (debugMode == DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION) return raster_current_frame_splat_contribution_color(splatId);
     if (debugMode == DEBUG_MODE_VIEWED_FRACTION_EMA) return raster_viewed_fraction_ema_color(splatId);
+    if (debugMode == DEBUG_MODE_UNREFINABLE) return raster_unrefinable_color(splatId, splatColor);
     if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_ADAM_SECOND_MOMENT) return jet_colormap(raster_normalize_threshold_band(raster_adam_second_moment_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)

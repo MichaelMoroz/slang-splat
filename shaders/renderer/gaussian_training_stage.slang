@@ -1264,6 +1264,7 @@ void csClampRefinementMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
+    if (!refinement_is_refinable(splatId)) return;
     if (g_RefinementCameraCount == 0u) return;
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId);

@@ -19,6 +19,7 @@ from ..sort.radix_sort import GPURadixSort
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..scene._internal.colmap_types import COLMAP_PINHOLE_MODEL_ID
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8, point_nn_scales
+from ..scene.splat_edit import resample_selection as resample_scene_selection
 from .alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .dataset_texture_pool import DatasetTexturePool, PreloadedDatasetTextures
@@ -2370,6 +2371,10 @@ class GaussianTrainer:
         sh_coeffs = pad_sh_coeffs(groups["sh_coeffs"], SUPPORTED_SH_COEFF_COUNT)
         colors = sh_coeffs_to_display_colors(sh_coeffs)
         opacities = np.reciprocal(1.0 + np.exp(-color_alpha[:, 3])).astype(np.float32, copy=False)
+        refinable = None
+        if "splat_init" in self._refinement_buffers:
+            splat_init = buffer_to_numpy(self._refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[: self._scene_count]
+            refinable = np.ascontiguousarray(splat_init[:, 3] >= 0.0, dtype=bool)
         return GaussianScene(
             positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
             scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
@@ -2377,6 +2382,7 @@ class GaussianTrainer:
             opacities=np.asarray(opacities, dtype=np.float32),
             colors=np.asarray(colors, dtype=np.float32),
             sh_coeffs=sh_coeffs,
+            refinable=refinable,
         )
 
     def replace_scene(self, scene: GaussianScene) -> None:
@@ -2392,17 +2398,17 @@ class GaussianTrainer:
         self._reset_edited_scene_state(scene)
 
     def resample_selection(self, ratio: float, seed: int) -> int:
-        """GPU-resample the live selection in place, then reset optimizer bookkeeping.
-
-        The compaction runs on the renderer's param buffer (which the trainer optimizes),
-        so no scene round-trips to the CPU. Survivor indices are renumbered and children
-        appended, so Adam moments/ages/refinement state are reset like ``replace_scene``.
-        """
-        new_count = int(self.renderer.edit_resample(ratio, seed))
-        if new_count == self._scene_count:
+        """Resample the live selection, then reset optimizer bookkeeping."""
+        scene = self.read_live_scene()
+        selection = self.renderer.read_selection_mask()
+        new_scene, new_selection = resample_scene_selection(scene, selection, ratio, rng=np.random.default_rng(int(seed) & 0xFFFFFFFF))
+        new_count = int(new_scene.count)
+        if new_count == self._scene_count and new_scene is scene:
             return new_count
+        self.renderer.set_scene(new_scene)
+        self.renderer.set_selection_highlight(new_selection)
         self._scene_count, self.scene = new_count, _SceneCountProxy(new_count)
-        self._reset_edited_scene_state(None)
+        self._reset_edited_scene_state(new_scene)
         return new_count
 
     def _reset_edited_scene_state(self, scene: GaussianScene | None) -> None:

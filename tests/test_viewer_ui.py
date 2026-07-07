@@ -2443,6 +2443,8 @@ def test_debug_mode_labels_include_contribution_amount() -> None:
     assert "Grad Variance" in ui._DEBUG_MODE_LABELS
     assert "refinement_distribution" in ui._DEBUG_MODE_VALUES
     assert "Refinement Distribution" in ui._DEBUG_MODE_LABELS
+    assert "unrefinable" in ui._DEBUG_MODE_VALUES
+    assert "Unrefinable Splats" in ui._DEBUG_MODE_LABELS
     assert "sh_view_dependent" in ui._DEBUG_MODE_VALUES
     assert "SH View-Dependent" in ui._DEBUG_MODE_LABELS
     assert "sh_coefficient" in ui._DEBUG_MODE_VALUES
@@ -2462,6 +2464,7 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._renderer_debug_control_keys("current_frame_splat_contribution") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("viewed_fraction_ema") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("refinement_distribution") == ("debug_mode", "debug_refinement_distribution_min", "debug_refinement_distribution_max")
+    assert ui._renderer_debug_control_keys("unrefinable") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("adam_momentum") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("adam_second_moment") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("grad_variance") == ("debug_mode", "debug_grad_norm_threshold")
@@ -2471,6 +2474,8 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._renderer_debug_control_keys("splat_density") == ("debug_mode", "debug_density_min", "debug_density_max")
     assert ui._renderer_debug_control_keys("depth_local_mismatch") == ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
     assert ui._renderer_debug_control_keys(ui.PPISP_DEBUG_MODE) == tuple(spec.key for spec in PPISP_FIELD_SPECS)
+    viewer_ui._values["debug_mode"] = ui._DEBUG_MODE_VALUES.index("unrefinable")
+    assert ui._debug_colorbar_mode(viewer_ui) is None
 
 
 def test_contribution_amount_colorbar_ticks_use_linear_values() -> None:

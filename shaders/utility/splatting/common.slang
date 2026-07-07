@@ -27,6 +27,7 @@ static const uint DEBUG_MODE_BLACK_NEGATIVE = 17u;
 static const uint DEBUG_MODE_GRAD_VARIANCE = 18u;
 static const uint DEBUG_MODE_REFINEMENT_DISTRIBUTION = 19u;
 static const uint DEBUG_MODE_VIEWED_FRACTION_EMA = 20u;
+static const uint DEBUG_MODE_UNREFINABLE = 21u;
 static const uint DEBUG_GRAD_STATS_STRIDE = 2u;
 static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const uint DEBUG_SH_COEFF_COUNT = SH_COEFF_COUNT;

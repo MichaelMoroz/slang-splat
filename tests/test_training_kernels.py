@@ -2577,6 +2577,44 @@ def test_refinement_prune_mask_selects_lowest_exact_ratio(device, tmp_path: Path
     np.testing.assert_array_equal(mask, np.array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0], dtype=np.uint32))
 
 
+def test_refinement_prune_mask_keeps_non_refinable_lowest_contribution(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=4, seed=284)
+    scene.refinable = np.array([False, True, True, True], dtype=bool)
+    frame = _make_frame(tmp_path, image_name="refinement_prune_non_refinable_target.png", image_id=284)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            refinement_growth_start_step=0,
+            refinement_interval=9999,
+            refinement_min_contribution=0,
+            refinement_prune_lowest_contribution_ratio=0.5,
+            refinement_prune_lowest_contribution_ratio_stage1=0.5,
+            refinement_prune_lowest_contribution_ratio_stage2=0.5,
+            refinement_prune_lowest_contribution_ratio_stage3=0.5,
+            refinement_prune_lowest_contribution_ratio_stage4=0.5,
+            lr_schedule_enabled=False,
+        ),
+        seed=123,
+    )
+    _write_contribution_info(trainer, [0.0, 1.0, 2.0, 3.0])
+
+    gaussian_trainer_module.GaussianTrainer._update_refinement_prune_mask(trainer)
+    mask = buffer_to_numpy(trainer.refinement_buffers["refinement_prune_mask"], np.uint32)[: scene.count].copy()
+
+    np.testing.assert_array_equal(mask, np.array([0, 1, 1, 0], dtype=np.uint32))
+
+    trainer._run_refinement(clone_counts_override=np.zeros((scene.count,), dtype=np.uint32))
+    splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[: trainer.scene.count]
+
+    assert trainer.scene.count == 2
+    assert np.count_nonzero(splat_init[:, 3] < 0.0) == 1
+    np.testing.assert_allclose(splat_init[splat_init[:, 3] < 0.0, :3], scene.positions[:1], rtol=0.0, atol=1e-6)
+
+
 def test_refinement_prune_sort_uses_exact_float_average_contribution(device, tmp_path: Path) -> None:
     scene = _make_scene(count=4, seed=184)
     frame = _make_frame(tmp_path, image_name="refinement_float_prune_target.png", image_id=184)
@@ -3810,6 +3848,29 @@ def test_refinement_preserves_non_refinable_splats_without_clones(device, tmp_pa
     assert np.all(splat_init[refinable_indices, 3] > 0.0)
 
 
+def test_trainer_resample_selection_preserves_non_refinable_flags(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=3, seed=296)
+    scene.refinable = np.array([False, True, False], dtype=bool)
+    frame = _make_frame(tmp_path, image_name="resample_refinable_flags_target.png", image_id=296)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_growth_start_step=0, refinement_interval=9999),
+        seed=123,
+    )
+
+    renderer.set_selection_highlight(np.array([False, True, False], dtype=bool))
+    new_count = trainer.resample_selection(0.0, seed=9)
+    splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:new_count]
+
+    assert new_count == 2
+    np.testing.assert_allclose(splat_init[:, :3], scene.positions[[0, 2]], rtol=0.0, atol=1e-6)
+    assert np.all(splat_init[:, 3] < 0.0)
+
+
 def test_refinement_opacity_mul_rewrites_unsplit_survivor_alpha(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=191)
     scene.opacities[:] = np.array([0.6], dtype=np.float32)
@@ -4141,6 +4202,29 @@ def test_refinement_min_screen_size_raises_small_splats(device, tmp_path: Path) 
     assert np.all(scales >= initial_scale)
     np.testing.assert_allclose(scales, np.full((3,), scales[0], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(scales, np.full((3,), expected_sigma, dtype=np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_refinement_min_screen_size_skips_non_refinable_splats(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=203)
+    scene.refinable = np.array([False], dtype=bool)
+    scene.positions[0] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    scene.scales[0] = _log_sigma(np.array([1e-5, 1e-5, 1e-5], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="refinement_min_non_refinable.png", image_id=203)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-3),
+        seed=123,
+    )
+
+    _write_contribution_info(trainer, [200.0])
+    trainer._run_refinement(clone_counts_override=np.zeros((1,), dtype=np.uint32))
+
+    scales = _actual_scale(_read_scene_groups(renderer, trainer.scene.count)["scales"][0, :3])
+    np.testing.assert_allclose(scales, _actual_scale(scene.scales[0, :3]), rtol=0.0, atol=1e-8)
 
 
 def test_refinement_min_screen_size_scales_with_distance(device, tmp_path: Path) -> None:

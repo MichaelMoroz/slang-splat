@@ -138,6 +138,7 @@ class GaussianRenderer:
     DEBUG_MODE_SH_COEFFICIENT = "sh_coefficient"
     DEBUG_MODE_BLACK_NEGATIVE = "black_negative"
     DEBUG_MODE_REFINEMENT_DISTRIBUTION = "refinement_distribution"
+    DEBUG_MODE_UNREFINABLE = "unrefinable"
     DEBUG_MODES = (
         DEBUG_MODE_NORMAL,
         DEBUG_MODE_PROCESSED_COUNT,
@@ -160,6 +161,7 @@ class GaussianRenderer:
         DEBUG_MODE_GRAD_VARIANCE,
         DEBUG_MODE_REFINEMENT_DISTRIBUTION,
         DEBUG_MODE_VIEWED_FRACTION_EMA,
+        DEBUG_MODE_UNREFINABLE,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
@@ -694,6 +696,12 @@ class GaussianRenderer:
             colors=np.asarray(groups["color_alpha"][:, :3], dtype=np.float32),
             sh_coeffs=np.asarray(groups["sh_coeffs"], dtype=np.float32),
         )
+
+    def read_selection_mask(self) -> np.ndarray:
+        count = int(self._scene_count)
+        if count <= 0 or self._highlight_buffer is None:
+            return np.zeros((max(count, 0),), dtype=bool)
+        return buffer_to_numpy(self._highlight_buffer, np.uint32)[:count].copy() != 0
 
     # --- GPU splat editing --------------------------------------------------
     # The selection mask is the highlight buffer, so selecting a splat highlights it with
@@ -1798,7 +1806,7 @@ class GaussianRenderer:
             vars.update(self._debug_splat_contribution_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_VIEWED_FRACTION_EMA, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_viewed_fraction_var())
-        if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_REFINEMENT_DISTRIBUTION:
+        if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_REFINEMENT_DISTRIBUTION, self.DEBUG_MODE_UNREFINABLE):
             vars.update(self._debug_splat_init_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())
@@ -2449,6 +2457,15 @@ class GaussianRenderer:
         self._ensure_work_buffers(max(int(splat_age.shape[0]), self._scene_count, 1))
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.pad(splat_age, (0, max(self._work_splat_capacity - splat_age.shape[0], 0)), constant_values=1.0))
         self._debug_splat_age_buffer = None
+
+    def upload_debug_splat_init(self, values: np.ndarray) -> None:
+        splat_init = np.ascontiguousarray(values, dtype=np.float32).reshape(-1, 4)
+        self._ensure_work_buffers(max(int(splat_init.shape[0]), self._scene_count, 1))
+        padded = np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.float32)
+        padded[:, 3] = 1.0
+        padded[: splat_init.shape[0]] = splat_init
+        self._work_buffers["debug_splat_init"].copy_from_numpy(padded)
+        self._debug_splat_init_buffer = None
 
     def upload_debug_splat_contribution(self, values: np.ndarray) -> None:
         contribution = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
