@@ -1968,19 +1968,24 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
             "colmap_images_root": str(images_root),
             "colmap_depth_value_mode": 1,
             "colmap_pointcloud_enabled": True,
+            "colmap_pointcloud_refinable": False,
             "colmap_pointcloud_nn_radius_scale_coef": 0.4,
             "colmap_diffused_enabled": True,
+            "colmap_diffused_refinable": True,
             "colmap_diffused_point_count": 4096,
             "colmap_diffused_diffusion_radius": 0.75,
             "colmap_diffused_nn_radius_scale_coef": 0.45,
             "colmap_custom_ply_enabled": True,
+            "colmap_custom_ply_refinable": False,
             "colmap_custom_ply_path": str(ply_path),
             "colmap_custom_ply_nn_radius_scale_coef": 1.1,
             "colmap_custom_mesh_enabled": True,
+            "colmap_custom_mesh_refinable": True,
             "colmap_custom_mesh_path": str(mesh_path),
             "colmap_custom_mesh_point_count": 2048,
             "colmap_custom_mesh_nn_radius_scale_coef": 0.55,
             "colmap_fibonacci_sphere_enabled": True,
+            "colmap_fibonacci_sphere_refinable": False,
             "colmap_fibonacci_sphere_point_count": 512,
             "colmap_fibonacci_sphere_radius_multiplier": 2.5,
             "colmap_fibonacci_sphere_color": (0.2, 0.4, 0.6),
@@ -2009,16 +2014,21 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
     assert progress is not None
     assert progress.init_mode == "pointcloud"
     assert progress.pointcloud_enabled is True
+    assert progress.pointcloud_refinable is False
     assert progress.pointcloud_nn_radius_scale_coef == pytest.approx(0.4)
     assert progress.diffused_enabled is True
+    assert progress.diffused_refinable is True
     assert progress.diffused_point_count == 4096
     assert progress.diffused_diffusion_radius == pytest.approx(0.75)
     assert progress.custom_ply_enabled is True
+    assert progress.custom_ply_refinable is False
     assert progress.custom_ply_path == ply_path.resolve()
     assert progress.custom_mesh_enabled is True
+    assert progress.custom_mesh_refinable is True
     assert progress.custom_mesh_path == mesh_path.resolve()
     assert progress.custom_mesh_point_count == 2048
     assert progress.fibonacci_sphere_enabled is True
+    assert progress.fibonacci_sphere_refinable is False
     assert progress.fibonacci_sphere_point_count == 512
     assert progress.fibonacci_sphere_radius_multiplier == pytest.approx(2.5)
     assert progress.fibonacci_sphere_color == pytest.approx((0.2, 0.4, 0.6))
@@ -2668,7 +2678,12 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.selected_camera_ids == ()
     assert defaults.depth_value_mode == "z_depth"
     assert defaults.depth_point_count == 100000
+    assert defaults.pointcloud_refinable is True
+    assert defaults.diffused_refinable is True
+    assert defaults.custom_ply_refinable is True
+    assert defaults.custom_mesh_refinable is True
     assert defaults.fibonacci_sphere_point_count == 0
+    assert defaults.fibonacci_sphere_refinable is True
     assert defaults.fibonacci_sphere_radius_multiplier == 2.0
     assert defaults.fibonacci_sphere_color == pytest.approx((0.8, 0.8, 0.8))
     assert isinstance(defaults.fibonacci_sphere_upper_hemisphere_only, bool)
@@ -3335,8 +3350,10 @@ def test_build_initial_training_scene_combines_fibonacci_as_separate_source(monk
             colmap_import=SimpleNamespace(
                 init_mode="pointcloud",
                 pointcloud_enabled=True,
+                pointcloud_refinable=False,
                 pointcloud_nn_radius_scale_coef=0.5,
                 fibonacci_sphere_enabled=True,
+                fibonacci_sphere_refinable=True,
                 fibonacci_sphere_nn_radius_scale_coef=1.0,
                 min_track_length=3,
             ),
@@ -3394,6 +3411,7 @@ def test_build_initial_training_scene_combines_fibonacci_as_separate_source(monk
 
     assert scene.count == 4
     assert np.array_equal(scene.positions, np.concatenate((point_positions, fibonacci_positions), axis=0))
+    np.testing.assert_array_equal(scene.refinable, np.array([False, False, True, True], dtype=bool))
     assert scale_reg_reference is None
 
 

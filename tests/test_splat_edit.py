@@ -23,6 +23,36 @@ def _make_scene(count: int, *, seed: int = 0) -> GaussianScene:
     )
 
 
+def test_gaussian_scene_refinable_validation_and_subset() -> None:
+    base = _make_scene(4, seed=13)
+    refinable = np.array([True, False, True, False])
+    scene = GaussianScene(
+        positions=base.positions,
+        scales=base.scales,
+        rotations=base.rotations,
+        opacities=base.opacities,
+        colors=base.colors,
+        sh_coeffs=base.sh_coeffs,
+        refinable=refinable,
+    )
+
+    assert scene.refinable is not None
+    assert scene.refinable.dtype == np.bool_
+    np.testing.assert_array_equal(scene.refinable, refinable)
+    np.testing.assert_array_equal(scene.subset(2).refinable, refinable[:2])
+
+    with pytest.raises(ValueError, match="refinable"):
+        GaussianScene(
+            positions=base.positions,
+            scales=base.scales,
+            rotations=base.rotations,
+            opacities=base.opacities,
+            colors=base.colors,
+            sh_coeffs=base.sh_coeffs,
+            refinable=np.ones((3,), dtype=bool),
+        )
+
+
 def test_total_scale_is_linear_geometric_mean() -> None:
     scene = _make_scene(5)
     expected = np.exp(np.mean(scene.scales[:, :3], axis=1))
@@ -103,6 +133,34 @@ def test_resample_densify_adds_selected_children() -> None:
     # Children are shrunk relative to their parents.
     child_scales = new_scene.scales[20:, :3]
     assert np.all(child_scales < scene.scales[:10, :3].max() + 1e-3)
+
+
+def test_resample_densify_inherits_refinable_from_parent() -> None:
+    scene = _make_scene(6, seed=4)
+    scene.refinable = np.array([True, False, True, True, False, True], dtype=bool)
+    mask = np.zeros(6, dtype=bool)
+    mask[:3] = True
+    selected_idx = np.where(mask)[0]
+    expected_parents = selected_idx[np.random.default_rng(15).integers(0, selected_idx.shape[0], size=3)]
+
+    new_scene, new_mask = splat_edit.resample_selection(scene, mask, 2.0, rng=np.random.default_rng(15))
+
+    assert new_scene.refinable is not None
+    assert new_scene.count == 9
+    np.testing.assert_array_equal(new_scene.refinable[:6], scene.refinable)
+    np.testing.assert_array_equal(new_scene.refinable[6:], scene.refinable[expected_parents])
+    np.testing.assert_array_equal(new_mask, np.concatenate([mask, np.ones((3,), dtype=bool)]))
+
+
+def test_concat_scenes_defaults_missing_refinable_to_true() -> None:
+    left = _make_scene(2, seed=6)
+    right = _make_scene(1, seed=7)
+    right.refinable = np.array([False], dtype=bool)
+
+    merged = splat_edit._concat_scenes(left, right)
+
+    assert merged.refinable is not None
+    np.testing.assert_array_equal(merged.refinable, np.array([True, True, False], dtype=bool))
 
 
 def test_resample_noop_when_ratio_one_or_empty_selection() -> None:

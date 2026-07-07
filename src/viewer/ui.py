@@ -2848,12 +2848,13 @@ class ToolkitWindow:
         )
         imgui.spacing()
         flags = imgui.TableFlags_.row_bg.value | imgui.TableFlags_.borders.value | imgui.TableFlags_.resizable.value | imgui.TableFlags_.sizing_stretch_prop.value
-        if imgui.begin_table("##colmap_init_sources", 5, flags):
+        if imgui.begin_table("##colmap_init_sources", 6, flags):
             for label, column_flags, width in (
                 ("Use", imgui.TableColumnFlags_.width_fixed.value, 38.0),
                 ("Source", imgui.TableColumnFlags_.width_fixed.value, 150.0),
                 ("Points", imgui.TableColumnFlags_.width_fixed.value, 96.0),
                 ("Path / Radius", imgui.TableColumnFlags_.width_stretch.value, 0.0),
+                ("Refinable", imgui.TableColumnFlags_.width_fixed.value, 74.0),
                 ("NN Scale", imgui.TableColumnFlags_.width_fixed.value, 112.0),
             ):
                 imgui.table_setup_column(label, column_flags, width)
@@ -2865,6 +2866,16 @@ class ToolkitWindow:
                 if changed:
                     ui._values[key] = bool(enabled)
                 return bool(ui._values.get(key, False))
+
+            def _row_refinable(key: str, enabled: bool) -> None:
+                imgui.table_next_column()
+                imgui.begin_disabled(not enabled)
+                changed, refinable = imgui.checkbox(f"##{key}", bool(ui._values.get(key, True)))
+                if changed:
+                    ui._values[key] = bool(refinable)
+                if imgui.is_item_hovered():
+                    imgui.set_item_tooltip("Allow this source to be pruned or subdivided by training refinement.")
+                imgui.end_disabled()
 
             def _row_nn_scale(key: str, default: float, enabled: bool) -> None:
                 imgui.table_next_column()
@@ -2891,6 +2902,7 @@ class ToolkitWindow:
             imgui.text_disabled("all")
             imgui.table_next_column()
             imgui.text_disabled("Sparse COLMAP points")
+            _row_refinable("colmap_pointcloud_refinable", pointcloud_enabled)
             _row_nn_scale("colmap_pointcloud_nn_radius_scale_coef", 0.5, pointcloud_enabled)
 
             imgui.table_next_row()
@@ -2925,6 +2937,7 @@ class ToolkitWindow:
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
             imgui.end_disabled()
+            _row_refinable("colmap_diffused_refinable", diffused_enabled)
             _row_nn_scale("colmap_diffused_nn_radius_scale_coef", 0.5, diffused_enabled)
 
             imgui.table_next_row()
@@ -2937,6 +2950,7 @@ class ToolkitWindow:
             imgui.begin_disabled(not custom_ply_enabled)
             self._draw_import_path_selector(ui, label="PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
             imgui.end_disabled()
+            _row_refinable("colmap_custom_ply_refinable", custom_ply_enabled)
             _row_nn_scale("colmap_custom_ply_nn_radius_scale_coef", 1.0, custom_ply_enabled)
 
             imgui.table_next_row()
@@ -2960,6 +2974,7 @@ class ToolkitWindow:
             imgui.begin_disabled(not custom_mesh_enabled)
             self._draw_import_path_selector(ui, label="Mesh", key="colmap_custom_mesh_path", button_label="Browse Mesh...", callback=self.callbacks.browse_colmap_mesh)
             imgui.end_disabled()
+            _row_refinable("colmap_custom_mesh_refinable", custom_mesh_enabled)
             _row_nn_scale("colmap_custom_mesh_nn_radius_scale_coef", 0.5, custom_mesh_enabled)
 
             imgui.table_next_row()
@@ -2994,6 +3009,8 @@ class ToolkitWindow:
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
             imgui.end_disabled()
+            _row_refinable("colmap_fibonacci_sphere_refinable", fibonacci_enabled)
+            _row_nn_scale("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0, fibonacci_enabled)
             imgui.table_next_row()
             imgui.table_next_column()
             imgui.table_next_column()
@@ -3011,6 +3028,7 @@ class ToolkitWindow:
             if imgui.is_item_hovered():
                 imgui.set_item_tooltip("Restrict synthesized Fibonacci sky-sphere points to the upper hemisphere above the mean COLMAP camera center.")
             imgui.end_disabled()
+            imgui.table_next_column()
             imgui.table_next_column()
             imgui.table_next_row()
             imgui.table_next_column()
@@ -3031,7 +3049,7 @@ class ToolkitWindow:
                 imgui.set_item_tooltip("RGB color assigned to synthesized Fibonacci sky-sphere points.")
             imgui.end_disabled()
             imgui.table_next_column()
-            _row_nn_scale("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0, fibonacci_enabled)
+            imgui.table_next_column()
 
             imgui.end_table()
 

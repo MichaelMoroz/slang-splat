@@ -931,6 +931,7 @@ def test_optimizer_screen_scale_cap_skips_clamp_inside_camera_min_distance(devic
         trainer.optimizer.dispatch_projection(
             encoder,
             scene_buffers=renderer.scene_buffers,
+            splat_init_buffer=trainer.refinement_buffers["splat_init"],
             splat_count=scene.count,
             training_hparams=trainer.training,
             frame_camera=camera,
@@ -2517,6 +2518,7 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         "splat_contribution_history",
         "splat_viewed_fraction_history",
         "splat_age",
+        "splat_init",
         "gradient_stats",
         "refinement_eligible_mask",
         "refinement_prune_mask",
@@ -2529,8 +2531,10 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         "append_counter",
         "append_params",
         "append_splat_age",
+        "append_splat_init",
         "dst_splat_params",
         "dst_splat_age",
+        "dst_splat_init",
         "dst_splat_contribution_history",
         "dst_splat_viewed_fraction_history",
         "camera_rows",
@@ -3726,6 +3730,44 @@ def test_refinement_rewrite_culls_low_contribution_splats(device, tmp_path: Path
     np.testing.assert_allclose(groups["positions"][0, :3], scene.positions[0], rtol=0.0, atol=1e-6)
 
 
+def test_refinement_preserves_non_refinable_splats_without_clones(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=96)
+    scene.refinable = np.array([False, True], dtype=bool)
+    scene.positions[:] = np.array([[0.0, 0.0, 2.0], [2.0, 0.0, 2.0]], dtype=np.float32)
+    scene.opacities[:] = np.array([0.6, 0.6], dtype=np.float32)
+    scene.scales[:] = _log_sigma(np.array([[0.05, 0.05, 0.05], [0.09, 0.06, 0.03]], dtype=np.float32))
+    frame = _make_frame(tmp_path, image_name="refinement_non_refinable_target.png", image_id=116)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_alpha_cull_threshold=1e-6, refinement_min_contribution=50, refinement_opacity_mul=0.25),
+        seed=123,
+    )
+
+    trainer._observed_contribution_pixel_count = renderer.width * renderer.height
+    clone_counts = np.array([3, 1], dtype=np.uint32)
+    trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
+    _write_contribution_info(trainer, [0.0, 200.0])
+    trainer._run_refinement(clone_counts_override=clone_counts)
+
+    assert trainer.scene.count == 3
+    groups = _read_scene_groups(renderer, trainer.scene.count)
+    positions = groups["positions"][:, :3]
+    non_ref_index = int(np.argmin(np.linalg.norm(positions - scene.positions[0][None, :], axis=1)))
+    refinable_indices = np.array([idx for idx in range(trainer.scene.count) if idx != non_ref_index], dtype=np.intp)
+    splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[: trainer.scene.count]
+
+    np.testing.assert_allclose(positions[non_ref_index], scene.positions[0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(_actual_opacity(groups["color_alpha"][non_ref_index, 3]), np.float32(0.6), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(splat_init[non_ref_index, :3], scene.positions[0], rtol=0.0, atol=1e-6)
+    assert float(splat_init[non_ref_index, 3]) < 0.0
+    np.testing.assert_allclose(splat_init[refinable_indices, :3], np.repeat(scene.positions[1][None, :], 2, axis=0), rtol=0.0, atol=1e-6)
+    assert np.all(splat_init[refinable_indices, 3] > 0.0)
+
+
 def test_refinement_opacity_mul_rewrites_unsplit_survivor_alpha(device, tmp_path: Path) -> None:
     scene = _make_scene(count=1, seed=191)
     scene.opacities[:] = np.array([0.6], dtype=np.float32)
@@ -4485,6 +4527,53 @@ def test_optimizer_projection_clamps_sh_coefficients(device, tmp_path: Path) -> 
     assert np.all(sampled_colors >= -1e-5)
     assert np.all(sampled_colors <= 1.0 + 1e-5)
     np.testing.assert_allclose(sh_coeffs[4:], 0.0, rtol=0.0, atol=1e-6)
+
+
+def test_init_position_regularizer_pulls_live_positions_toward_initial_scene(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=2, seed=113)
+    scene.positions[:] = np.array([[0.0, 0.0, 2.0], [2.0, 0.0, 2.0]], dtype=np.float32)
+    scene.refinable = np.array([False, True], dtype=bool)
+    frame = _make_frame(tmp_path, image_name="init_position_reg_target.png", image_id=27)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(init_position_reg_weight=0.25, scale_abs_reg_weight=0.0, opacity_reg_weight=0.0, sh1_reg_weight=0.0),
+        seed=123,
+    )
+    groups = _read_scene_groups(renderer, scene.count)
+    moved_positions = groups["positions"].copy()
+    moved_positions[:, :3] = scene.positions + np.array([[1.0, 0.0, 0.0], [-0.5, 0.5, 0.0]], dtype=np.float32)
+    renderer.write_scene_groups(
+        scene.count,
+        positions=moved_positions,
+        scales=groups["scales"],
+        rotations=groups["rotations"],
+        sh_coeffs=groups["sh_coeffs"],
+        color_alpha=groups["color_alpha"],
+    )
+
+    enc = device.create_command_encoder()
+    trainer.optimizer.dispatch_projection(
+        enc,
+        scene_buffers=renderer.scene_buffers,
+        splat_init_buffer=trainer.refinement_buffers["splat_init"],
+        splat_count=scene.count,
+        training_hparams=trainer.training,
+        step_index=0,
+    )
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[: scene.count]
+    expected = moved_positions[:, :3] - np.float32(0.5) * (moved_positions[:, :3] - scene.positions)
+    after = _read_scene_groups(renderer, scene.count)["positions"][:, :3]
+
+    np.testing.assert_allclose(splat_init[:, :3], scene.positions, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(splat_init[:, 3], np.array([-2.0, 2.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(after, expected, rtol=0.0, atol=1e-6)
 
 
 def test_box_downscale_matches_expected_mean(device, tmp_path: Path) -> None:

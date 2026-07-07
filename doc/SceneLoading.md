@@ -28,6 +28,8 @@
 
 Output is `GaussianScene` with contiguous `float32` arrays.
 
+`GaussianScene.refinable` is an optional boolean splat mask. When absent, loaders and concatenation treat every splat as refinable. Viewer COLMAP imports can set this independently for pointcloud, diffused, custom PLY, custom mesh, and Fibonacci shell initialization sources.
+
 ## COLMAP Loader Notes
 - Supported camera models:
   - `SIMPLE_PINHOLE` (id `0`)

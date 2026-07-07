@@ -70,6 +70,10 @@ For point-based COLMAP initialization:
 
 Interactive and headless runs both use the same resolved initialization hyperparameters, so count caps, scale coefficients, and opacity overrides stay aligned between entry points.
 
+Each initialized source can also carry a refinable mask. COLMAP pointcloud, diffused pointcloud, custom PLY, custom mesh, and Fibonacci shell sources expose separate `*_refinable` import settings. Missing masks are treated as fully refinable.
+
+The trainer stores a per-splat initialization record as `float4(init_xyz, signed_nn_radius)`. Positive `w` means refinement may prune or split that splat; negative `w` freezes the splat topology while still allowing normal optimizer updates. The absolute radius is used by the init-position regularizer, so non-refinable splats are still gently pulled toward their source anchor.
+
 ## Training Schedule
 
 Training is stage-controlled rather than a single flat hyperparameter set.
@@ -174,7 +178,7 @@ Each trainer `step()` performs the following high-level sequence.
 7. Run the optimizer path.
    - optional packed per-splat grad-norm reduction,
    - one fused packed per-parameter update that applies scalar gradient clipping, ADAM, and generic regularization in a single dispatch,
-   - one fused per-gaussian post step that applies gaussian-specific regularization and the post-step safety/projection rules (quaternion normalization, anisotropy clamp, screen-size clamp, SH projection).
+   - one fused per-gaussian post step that applies gaussian-specific regularization and the post-step safety/projection rules (init-position pullback, quaternion normalization, anisotropy clamp, screen-size clamp, SH projection).
 
 8. When the current refinement boundary is reached, run the refinement pass.
 
@@ -186,6 +190,17 @@ The blended image term is:
 
 DSSIM is evaluated from blurred BT.601 luminance moments rather than from hue directly.
 The tracked SSIM summary is averaged over the pixels that participate in RGB training, so alpha-thresholded transparent regions no longer dilute the reported score.
+
+## Init Position Regularization
+
+`init_position_reg_weight` applies a direct post-step displacement:
+
+- `position -= saturate(weight * abs(init_nn_radius)) * (position - init_position)`
+- the default weight is `0.001`,
+- the regularizer is not scaled by the optimizer learning rate,
+- editor GPU resampling rebuilds the init anchors from the new live scene and marks the resampled topology refinable.
+
+The intent is to reduce long-term drift from imported initialization geometry without preventing splats from optimizing photometrically.
 
 ## Position Random Step Noise
 
@@ -228,11 +243,13 @@ Current behavior:
 - contribution thresholds use the raw fixed-unit visible-average contribution,
 - contribution values use a bidirectional leave-one-out RGB estimate: prefix transmittance times alpha times the distance between the splat color and the color composited behind it, averaged only across views where the current-frame contribution was nonzero,
 - completed refinement passes decay the contribution threshold,
+- non-refinable splats are excluded from prune candidates and clone sampling, and forced clone counts are ignored for them,
 - each refinement pass can additionally prune the exact lowest contribution fraction of otherwise surviving splats by building a GPU candidate mask, radix-sorting contribution/id pairs, and marking the lowest-ranked survivors before the topology rewrite,
 - clone-budget growth stays off until `refinement_growth_start_step`, then ramps on by `refinement_growth_ratio`,
 - clone resampling weights combine gradient variance and viewed-fraction EMA, with the viewed-fraction term zeroed below the configured viewed-fraction threshold,
 - split-family samples are generated from centered Fibonacci samples on the dominant local plane,
 - child scales shrink by the family-size rule before `refinement_clone_scale_mul` is applied,
+- split children inherit the parent's init position and radius as refinable metadata,
 - packed ADAM moments are migrated with the rewritten topology so unrelated splats keep optimizer history.
 
 ## Metrics

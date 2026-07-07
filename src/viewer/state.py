@@ -77,17 +77,22 @@ class ColmapImportSettings:
     target_alpha_threshold: float = DEFAULT_TARGET_ALPHA_THRESHOLD
     use_target_alpha_mask: bool = False
     pointcloud_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_enabled", False))
+    pointcloud_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_refinable", True))
     pointcloud_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
     diffused_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_enabled", False))
+    diffused_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_refinable", True))
     diffused_diffusion_radius: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_diffusion_radius", 1.0))
     diffused_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
     custom_ply_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_enabled", False))
+    custom_ply_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_refinable", True))
     custom_ply_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_nn_radius_scale_coef", 1.0))
     custom_mesh_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_enabled", False))
     custom_mesh_path: Path | None = None
     custom_mesh_point_count: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_point_count", _VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_point_count", 500000)))
+    custom_mesh_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_refinable", True))
     custom_mesh_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
     fibonacci_sphere_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_enabled", int(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_point_count", 0)) > 0))
+    fibonacci_sphere_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_refinable", True))
     fibonacci_sphere_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0))
 
     def __post_init__(self) -> None:
@@ -132,17 +137,22 @@ class ColmapImportProgress:
     depth_value_mode: str = "z_depth"
     depth_root: Path | None = None
     pointcloud_enabled: bool = False
+    pointcloud_refinable: bool = True
     pointcloud_nn_radius_scale_coef: float = 0.5
     diffused_enabled: bool = False
+    diffused_refinable: bool = True
     diffused_diffusion_radius: float = 1.0
     diffused_nn_radius_scale_coef: float = 0.5
     custom_ply_enabled: bool = False
+    custom_ply_refinable: bool = True
     custom_ply_nn_radius_scale_coef: float = 1.0
     custom_mesh_enabled: bool = False
     custom_mesh_path: Path | None = None
     custom_mesh_point_count: int = 500000
+    custom_mesh_refinable: bool = True
     custom_mesh_nn_radius_scale_coef: float = 0.5
     fibonacci_sphere_enabled: bool = False
+    fibonacci_sphere_refinable: bool = True
     fibonacci_sphere_nn_radius_scale_coef: float = 1.0
     phase: str = "prepare"
     current: int = 0

@@ -989,6 +989,10 @@ def _import_cfg_enabled(import_cfg: object, attr_name: str, default: bool = Fals
     return bool(getattr(import_cfg, attr_name, default))
 
 
+def _import_cfg_refinable(import_cfg: object, attr_name: str) -> bool:
+    return bool(getattr(import_cfg, attr_name, True))
+
+
 def _import_cfg_nn_radius_scale_coef(import_cfg: object, attr_name: str, default: float = 0.5, fallback_attr: str | None = "nn_radius_scale_coef") -> float:
     fallback = default if fallback_attr is None else getattr(import_cfg, fallback_attr, default)
     return float(max(getattr(import_cfg, attr_name, fallback), 1e-4))
@@ -1057,6 +1061,12 @@ def _concat_gaussian_scenes(scenes: list[GaussianScene]) -> GaussianScene:
     # Sources may carry different SH coefficient counts (e.g. a DC-only point cloud
     # alongside full-SH scenes); pad them all to the largest so concatenation aligns.
     target_sh_coeffs = max(int(np.asarray(scene.sh_coeffs).shape[1]) for scene in scenes)
+    refinable = None
+    if any(scene.refinable is not None for scene in scenes):
+        refinable = np.concatenate([
+            np.ones((scene.count,), dtype=bool) if scene.refinable is None else np.asarray(scene.refinable, dtype=bool)
+            for scene in scenes
+        ], axis=0)
     return GaussianScene(
         positions=np.ascontiguousarray(np.concatenate([np.asarray(scene.positions, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         scales=np.ascontiguousarray(np.concatenate([np.asarray(scene.scales, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
@@ -1064,6 +1074,7 @@ def _concat_gaussian_scenes(scenes: list[GaussianScene]) -> GaussianScene:
         opacities=np.ascontiguousarray(np.concatenate([np.asarray(scene.opacities, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         colors=np.ascontiguousarray(np.concatenate([np.asarray(scene.colors, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         sh_coeffs=np.ascontiguousarray(np.concatenate([pad_sh_coeffs(np.asarray(scene.sh_coeffs, dtype=np.float32), target_sh_coeffs) for scene in scenes], axis=0), dtype=np.float32),
+        refinable=refinable,
     )
 
 
@@ -1167,7 +1178,13 @@ def _copy_gaussian_scene(scene: GaussianScene) -> GaussianScene:
         opacities=np.array(scene.opacities, dtype=np.float32, copy=True),
         colors=np.array(scene.colors, dtype=np.float32, copy=True),
         sh_coeffs=np.array(scene.sh_coeffs, dtype=np.float32, copy=True),
+        refinable=None if scene.refinable is None else np.array(scene.refinable, dtype=bool, copy=True),
     )
+
+
+def _set_scene_refinable(scene: GaussianScene, refinable: bool) -> GaussianScene:
+    scene.refinable = np.full((scene.count,), bool(refinable), dtype=bool)
+    return scene
 
 
 def _clear_cached_init_source(viewer: object) -> None:
@@ -2388,7 +2405,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             init_neighbor_count,
             init_anisotropy_strength,
         )
-        source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
+        source_scenes.append(_set_scene_refinable(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), _import_cfg_refinable(import_cfg, "pointcloud_refinable")))
 
     if _import_cfg_enabled(import_cfg, "diffused_enabled"):
         positions = getattr(viewer.s, "cached_init_diffused_positions", None)
@@ -2404,13 +2421,13 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             init_neighbor_count,
             init_anisotropy_strength,
         )
-        source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
+        source_scenes.append(_set_scene_refinable(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), _import_cfg_refinable(import_cfg, "diffused_refinable")))
 
     if _import_cfg_enabled(import_cfg, "custom_ply_enabled"):
         cached_ply_scene = getattr(viewer.s, "cached_init_custom_ply_scene", None)
         if cached_ply_scene is None:
             raise RuntimeError("Cached custom PLY scene is unavailable.")
-        source_scenes.append(_copy_gaussian_scene(cached_ply_scene))
+        source_scenes.append(_set_scene_refinable(_copy_gaussian_scene(cached_ply_scene), _import_cfg_refinable(import_cfg, "custom_ply_refinable")))
 
     if _import_cfg_enabled(import_cfg, "custom_mesh_enabled"):
         positions = getattr(viewer.s, "cached_init_custom_mesh_positions", None)
@@ -2425,7 +2442,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             init_neighbor_count,
             init_anisotropy_strength,
         )
-        source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
+        source_scenes.append(_set_scene_refinable(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), _import_cfg_refinable(import_cfg, "custom_mesh_refinable")))
 
     if _fibonacci_source_enabled(import_cfg):
         positions = getattr(viewer.s, "cached_init_fibonacci_positions", None)
@@ -2440,7 +2457,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             init_neighbor_count,
             init_anisotropy_strength,
         )
-        source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
+        source_scenes.append(_set_scene_refinable(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), _import_cfg_refinable(import_cfg, "fibonacci_sphere_refinable")))
 
     return _concat_gaussian_scenes(source_scenes), None
 
@@ -2755,17 +2772,22 @@ def _finish_import_colmap_dataset(
     target_alpha_threshold: float = _DEFAULT_TARGET_ALPHA_THRESHOLD,
     use_target_alpha_mask: bool = False,
     pointcloud_enabled: bool | None = None,
+    pointcloud_refinable: bool = True,
     pointcloud_nn_radius_scale_coef: float | None = None,
     diffused_enabled: bool | None = None,
+    diffused_refinable: bool = True,
     diffused_diffusion_radius: float = 1.0,
     diffused_nn_radius_scale_coef: float | None = None,
     custom_ply_enabled: bool | None = None,
+    custom_ply_refinable: bool = True,
     custom_ply_nn_radius_scale_coef: float | None = None,
     custom_mesh_enabled: bool | None = None,
+    custom_mesh_refinable: bool = True,
     custom_mesh_path: Path | None = None,
     custom_mesh_point_count: int | None = None,
     custom_mesh_nn_radius_scale_coef: float | None = None,
     fibonacci_sphere_enabled: bool | None = None,
+    fibonacci_sphere_refinable: bool = True,
     fibonacci_sphere_nn_radius_scale_coef: float | None = None,
     recon: object = None,
     training_frames: list[ColmapFrame] | None = None,
@@ -2819,17 +2841,22 @@ def _finish_import_colmap_dataset(
         target_alpha_threshold=target_alpha_threshold,
         use_target_alpha_mask=use_target_alpha_mask,
         pointcloud_enabled=pointcloud_enabled,
+        pointcloud_refinable=pointcloud_refinable,
         pointcloud_nn_radius_scale_coef=pointcloud_nn_radius_scale_coef,
         diffused_enabled=diffused_enabled,
+        diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
         diffused_nn_radius_scale_coef=diffused_nn_radius_scale_coef,
         custom_ply_enabled=custom_ply_enabled,
+        custom_ply_refinable=custom_ply_refinable,
         custom_ply_nn_radius_scale_coef=custom_ply_nn_radius_scale_coef,
         custom_mesh_enabled=custom_mesh_enabled,
+        custom_mesh_refinable=custom_mesh_refinable,
         custom_mesh_path=custom_mesh_path,
         custom_mesh_point_count=custom_mesh_point_count,
         custom_mesh_nn_radius_scale_coef=custom_mesh_nn_radius_scale_coef,
         fibonacci_sphere_enabled=fibonacci_sphere_enabled,
+        fibonacci_sphere_refinable=fibonacci_sphere_refinable,
         fibonacci_sphere_nn_radius_scale_coef=fibonacci_sphere_nn_radius_scale_coef,
     )
     viewer.s.colmap_root = Path(colmap_root)
@@ -2901,17 +2928,22 @@ def import_colmap_dataset(
     training_image_color_init: bool = False,
     photometric_compensation_enabled: bool = False,
     pointcloud_enabled: bool | None = None,
+    pointcloud_refinable: bool = True,
     pointcloud_nn_radius_scale_coef: float | None = None,
     diffused_enabled: bool | None = None,
+    diffused_refinable: bool = True,
     diffused_diffusion_radius: float = 1.0,
     diffused_nn_radius_scale_coef: float | None = None,
     custom_ply_enabled: bool | None = None,
+    custom_ply_refinable: bool = True,
     custom_ply_nn_radius_scale_coef: float | None = None,
     custom_mesh_enabled: bool | None = None,
+    custom_mesh_refinable: bool = True,
     custom_mesh_path: Path | None = None,
     custom_mesh_point_count: int | None = None,
     custom_mesh_nn_radius_scale_coef: float | None = None,
     fibonacci_sphere_enabled: bool | None = None,
+    fibonacci_sphere_refinable: bool = True,
     fibonacci_sphere_nn_radius_scale_coef: float | None = None,
 ) -> None:
     _clear_loaded_scene(viewer)
@@ -2936,17 +2968,22 @@ def import_colmap_dataset(
         init_neighbor_count=max(int(init_neighbor_count), 2),
         init_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
         pointcloud_enabled=bool(pointcloud_enabled),
+        pointcloud_refinable=bool(pointcloud_refinable),
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef if pointcloud_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
         diffused_enabled=bool(diffused_enabled),
+        diffused_refinable=bool(diffused_refinable),
         diffused_diffusion_radius=max(float(diffused_diffusion_radius), 0.0),
         diffused_nn_radius_scale_coef=float(max(diffused_nn_radius_scale_coef if diffused_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
         custom_ply_enabled=bool(custom_ply_enabled),
+        custom_ply_refinable=bool(custom_ply_refinable),
         custom_ply_nn_radius_scale_coef=float(max(custom_ply_nn_radius_scale_coef if custom_ply_nn_radius_scale_coef is not None else 1.0, 1e-4)),
         custom_mesh_enabled=bool(custom_mesh_enabled),
+        custom_mesh_refinable=bool(custom_mesh_refinable),
         custom_mesh_path=None if custom_mesh_path is None else Path(custom_mesh_path).resolve(),
         custom_mesh_point_count=max(int(custom_mesh_point_count if custom_mesh_point_count is not None else diffused_point_count), 1),
         custom_mesh_nn_radius_scale_coef=float(max(custom_mesh_nn_radius_scale_coef if custom_mesh_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
         fibonacci_sphere_enabled=bool(fibonacci_sphere_enabled),
+        fibonacci_sphere_refinable=bool(fibonacci_sphere_refinable),
         fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
         fibonacci_sphere_radius_multiplier=max(float(fibonacci_sphere_radius_multiplier), 0.0),
         fibonacci_sphere_color=tuple(float(v) for v in np.clip(np.asarray(fibonacci_sphere_color, dtype=np.float32).reshape(3), 0.0, 1.0)),
@@ -3025,17 +3062,22 @@ def import_colmap_dataset(
         target_alpha_threshold=target_alpha_threshold,
         use_target_alpha_mask=use_target_alpha_mask,
         pointcloud_enabled=pointcloud_enabled,
+        pointcloud_refinable=pointcloud_refinable,
         pointcloud_nn_radius_scale_coef=pointcloud_nn_radius_scale_coef,
         diffused_enabled=diffused_enabled,
+        diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
         diffused_nn_radius_scale_coef=diffused_nn_radius_scale_coef,
         custom_ply_enabled=custom_ply_enabled,
+        custom_ply_refinable=custom_ply_refinable,
         custom_ply_nn_radius_scale_coef=custom_ply_nn_radius_scale_coef,
         custom_mesh_enabled=custom_mesh_enabled,
+        custom_mesh_refinable=custom_mesh_refinable,
         custom_mesh_path=custom_mesh_path,
         custom_mesh_point_count=custom_mesh_point_count,
         custom_mesh_nn_radius_scale_coef=custom_mesh_nn_radius_scale_coef,
         fibonacci_sphere_enabled=fibonacci_sphere_enabled,
+        fibonacci_sphere_refinable=fibonacci_sphere_refinable,
         fibonacci_sphere_nn_radius_scale_coef=fibonacci_sphere_nn_radius_scale_coef,
         recon=recon,
         training_frames=training_frames,
@@ -3087,16 +3129,21 @@ def import_colmap_from_ui(viewer: object) -> None:
     fibonacci_sphere_color = tuple(float(v) for v in np.clip(np.asarray(viewer.ui._values.get("colmap_fibonacci_sphere_color", FIBONACCI_SPHERE_COLOR), dtype=np.float32).reshape(3), 0.0, 1.0))
     fibonacci_sphere_upper_hemisphere_only = bool(viewer.ui._values.get("colmap_fibonacci_sphere_upper_hemisphere_only", False))
     pointcloud_enabled = bool(viewer.ui._values.get("colmap_pointcloud_enabled", False))
+    pointcloud_refinable = bool(viewer.ui._values.get("colmap_pointcloud_refinable", True))
     pointcloud_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_pointcloud_nn_radius_scale_coef", nn_radius_scale_coef))
     diffused_enabled = bool(viewer.ui._values.get("colmap_diffused_enabled", False))
+    diffused_refinable = bool(viewer.ui._values.get("colmap_diffused_refinable", True))
     diffused_diffusion_radius = max(float(viewer.ui._values.get("colmap_diffused_diffusion_radius", 1.0)), 0.0)
     diffused_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_diffused_nn_radius_scale_coef", nn_radius_scale_coef))
     custom_ply_enabled = bool(viewer.ui._values.get("colmap_custom_ply_enabled", False))
+    custom_ply_refinable = bool(viewer.ui._values.get("colmap_custom_ply_refinable", True))
     custom_ply_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_custom_ply_nn_radius_scale_coef", 1.0))
     custom_mesh_enabled = bool(viewer.ui._values.get("colmap_custom_mesh_enabled", False))
+    custom_mesh_refinable = bool(viewer.ui._values.get("colmap_custom_mesh_refinable", True))
     custom_mesh_point_count = max(int(viewer.ui._values.get("colmap_custom_mesh_point_count", diffused_point_count)), 1)
     custom_mesh_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_custom_mesh_nn_radius_scale_coef", nn_radius_scale_coef))
     fibonacci_sphere_enabled = bool(viewer.ui._values.get("colmap_fibonacci_sphere_enabled", fibonacci_sphere_point_count > 0))
+    fibonacci_sphere_refinable = bool(viewer.ui._values.get("colmap_fibonacci_sphere_refinable", True))
     fibonacci_sphere_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0))
     rotation_mode = min(
         max(
@@ -3174,17 +3221,22 @@ def import_colmap_from_ui(viewer: object) -> None:
         target_alpha_mode=target_alpha_mode,
         target_alpha_threshold=target_alpha_threshold,
         pointcloud_enabled=pointcloud_enabled,
+        pointcloud_refinable=pointcloud_refinable,
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef, 1e-4)),
         diffused_enabled=diffused_enabled,
+        diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
         diffused_nn_radius_scale_coef=float(max(diffused_nn_radius_scale_coef, 1e-4)),
         custom_ply_enabled=custom_ply_enabled,
+        custom_ply_refinable=custom_ply_refinable,
         custom_ply_nn_radius_scale_coef=float(max(custom_ply_nn_radius_scale_coef, 1e-4)),
         custom_mesh_enabled=custom_mesh_enabled,
         custom_mesh_path=None if custom_mesh_path is None else custom_mesh_path.resolve(),
         custom_mesh_point_count=custom_mesh_point_count,
+        custom_mesh_refinable=custom_mesh_refinable,
         custom_mesh_nn_radius_scale_coef=float(max(custom_mesh_nn_radius_scale_coef, 1e-4)),
         fibonacci_sphere_enabled=fibonacci_sphere_enabled,
+        fibonacci_sphere_refinable=fibonacci_sphere_refinable,
         fibonacci_sphere_nn_radius_scale_coef=float(max(fibonacci_sphere_nn_radius_scale_coef, 1e-4)),
         dataset_pool_size=_training_dataset_pool_size_from_ui(viewer),
         dataset_residency=dataset_residency,
@@ -3309,17 +3361,22 @@ def advance_colmap_import(viewer: object) -> None:
                 fibonacci_sphere_upper_hemisphere_only=getattr(progress, "fibonacci_sphere_upper_hemisphere_only", False),
                 target_alpha_mode=progress.target_alpha_mode,
                 pointcloud_enabled=getattr(progress, "pointcloud_enabled", None),
+                pointcloud_refinable=getattr(progress, "pointcloud_refinable", True),
                 pointcloud_nn_radius_scale_coef=getattr(progress, "pointcloud_nn_radius_scale_coef", None),
                 diffused_enabled=getattr(progress, "diffused_enabled", None),
+                diffused_refinable=getattr(progress, "diffused_refinable", True),
                 diffused_diffusion_radius=getattr(progress, "diffused_diffusion_radius", None),
                 diffused_nn_radius_scale_coef=getattr(progress, "diffused_nn_radius_scale_coef", None),
                 custom_ply_enabled=getattr(progress, "custom_ply_enabled", None),
+                custom_ply_refinable=getattr(progress, "custom_ply_refinable", True),
                 custom_ply_nn_radius_scale_coef=getattr(progress, "custom_ply_nn_radius_scale_coef", None),
                 custom_mesh_enabled=getattr(progress, "custom_mesh_enabled", None),
+                custom_mesh_refinable=getattr(progress, "custom_mesh_refinable", True),
                 custom_mesh_path=getattr(progress, "custom_mesh_path", None),
                 custom_mesh_point_count=getattr(progress, "custom_mesh_point_count", None),
                 custom_mesh_nn_radius_scale_coef=getattr(progress, "custom_mesh_nn_radius_scale_coef", None),
                 fibonacci_sphere_enabled=getattr(progress, "fibonacci_sphere_enabled", None),
+                fibonacci_sphere_refinable=getattr(progress, "fibonacci_sphere_refinable", True),
                 fibonacci_sphere_nn_radius_scale_coef=getattr(progress, "fibonacci_sphere_nn_radius_scale_coef", None),
                 recon=progress.recon,
                 training_frames=progress.frames,
@@ -3398,17 +3455,22 @@ def advance_colmap_import(viewer: object) -> None:
                 target_alpha_mode=progress.target_alpha_mode,
                 target_alpha_threshold=progress.target_alpha_threshold,
                 pointcloud_enabled=getattr(progress, "pointcloud_enabled", None),
+                pointcloud_refinable=getattr(progress, "pointcloud_refinable", True),
                 pointcloud_nn_radius_scale_coef=getattr(progress, "pointcloud_nn_radius_scale_coef", None),
                 diffused_enabled=getattr(progress, "diffused_enabled", None),
+                diffused_refinable=getattr(progress, "diffused_refinable", True),
                 diffused_diffusion_radius=getattr(progress, "diffused_diffusion_radius", None),
                 diffused_nn_radius_scale_coef=getattr(progress, "diffused_nn_radius_scale_coef", None),
                 custom_ply_enabled=getattr(progress, "custom_ply_enabled", None),
+                custom_ply_refinable=getattr(progress, "custom_ply_refinable", True),
                 custom_ply_nn_radius_scale_coef=getattr(progress, "custom_ply_nn_radius_scale_coef", None),
                 custom_mesh_enabled=getattr(progress, "custom_mesh_enabled", None),
+                custom_mesh_refinable=getattr(progress, "custom_mesh_refinable", True),
                 custom_mesh_path=getattr(progress, "custom_mesh_path", None),
                 custom_mesh_point_count=getattr(progress, "custom_mesh_point_count", None),
                 custom_mesh_nn_radius_scale_coef=getattr(progress, "custom_mesh_nn_radius_scale_coef", None),
                 fibonacci_sphere_enabled=getattr(progress, "fibonacci_sphere_enabled", None),
+                fibonacci_sphere_refinable=getattr(progress, "fibonacci_sphere_refinable", True),
                 fibonacci_sphere_nn_radius_scale_coef=getattr(progress, "fibonacci_sphere_nn_radius_scale_coef", None),
                 recon=progress.recon,
                 training_frames=progress.frames,

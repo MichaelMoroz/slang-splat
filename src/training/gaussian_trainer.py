@@ -18,7 +18,7 @@ from ..scan.prefix_sum import GPUPrefixSum
 from ..sort.radix_sort import GPURadixSort
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..scene._internal.colmap_types import COLMAP_PINHOLE_MODEL_ID
-from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
+from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8, point_nn_scales
 from .alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .dataset_texture_pool import DatasetTexturePool, PreloadedDatasetTextures
@@ -284,7 +284,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]; raster_grad_distance_power: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_power"]; raster_grad_distance_bias: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_bias"]
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; target_alpha_mode: int | None = None; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; target_alpha_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0; max_sh_band: int = 3
-    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; max_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["max_opacity"]; max_opacity_stage0: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage0", DEFAULT_MAX_OPACITY_STAGE0)); max_opacity_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage1", DEFAULT_MAX_OPACITY_STAGE1)); max_opacity_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage2", DEFAULT_MAX_OPACITY_STAGE2)); max_opacity_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage3", DEFAULT_MAX_OPACITY_STAGE3)); max_opacity_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage4", DEFAULT_MAX_OPACITY_STAGE4)); opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; opacity_reg_weight_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage1", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage2", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]))); position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
+    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; init_position_reg_weight: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("init_position_reg_weight", 0.001)); sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; max_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["max_opacity"]; max_opacity_stage0: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage0", DEFAULT_MAX_OPACITY_STAGE0)); max_opacity_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage1", DEFAULT_MAX_OPACITY_STAGE1)); max_opacity_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage2", DEFAULT_MAX_OPACITY_STAGE2)); max_opacity_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage3", DEFAULT_MAX_OPACITY_STAGE3)); max_opacity_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage4", DEFAULT_MAX_OPACITY_STAGE4)); opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; opacity_reg_weight_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage1", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage2", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]))); position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]; refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"]
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]; lr_pos_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage4_mul"]
     lr_scale_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"]; lr_scale_stage1_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage1_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage2_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage2_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage3_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage3_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage4_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage4_mul", TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage3_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])))
@@ -816,14 +816,17 @@ class GaussianTrainer:
         return {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
             "g_SrcSplatAge": self._refinement_buffers["splat_age"],
+            "g_SrcSplatInit": self._refinement_buffers["splat_init"],
             "g_SrcAdamMoments": self.adam_optimizer.buffers["adam_moments"],
             "g_DstSplatParams": self._refinement_buffers["dst_splat_params"],
             "g_DstSplatAge": self._refinement_buffers["dst_splat_age"],
+            "g_DstSplatInit": self._refinement_buffers["dst_splat_init"],
             "g_DstAdamMoments": self.adam_optimizer.buffers["adam_moments"] if dst_adam_moments is None else dst_adam_moments,
             "g_DstSplatContributionHistory": self._refinement_buffers["dst_splat_contribution_history"],
             "g_DstSplatViewedFractionHistory": self._refinement_buffers["dst_splat_viewed_fraction_history"],
             "g_AppendParams": self._refinement_buffers["append_params"],
             "g_AppendSplatAge": self._refinement_buffers["append_splat_age"],
+            "g_AppendSplatInit": self._refinement_buffers["append_splat_init"],
             "g_CloneCounts": self._refinement_buffers["clone_counts"],
             "g_SplatContributionInfo": self._refinement_buffers["splat_contribution"],
             "g_SplatVisibleAreaPx": self.renderer.work_buffers["splat_visible_area_px"],
@@ -1014,6 +1017,7 @@ class GaussianTrainer:
         self._refinement_output_capacity = 0
         self._refinement_packed_param_bytes = 0
         self._refinement_splat_age_capacity = 0
+        self._refinement_splat_init_capacity = 0
         self._refinement_camera_capacity = 0
         self._refinement_camera_signature: tuple[int, int, float, float, int] | None = None
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
@@ -1046,6 +1050,7 @@ class GaussianTrainer:
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_refinement_buffers(self._scene_count)
         self._reset_splat_ages()
+        self._reset_splat_init(scene)
         self._zero_optimizer_moments()
         if frame_targets_native is not None:
             if len(frame_targets_native) != len(self.frames):
@@ -1283,6 +1288,7 @@ class GaussianTrainer:
 
     def _ensure_post_refinement_source_buffer_capacity(self, splat_count: int) -> None:
         required = max(int(splat_count), 1)
+        self._ensure_splat_init_capacity(required)
         if required <= self._refinement_splat_capacity:
             return
         self._refinement_splat_capacity = _grow_trainer_buffer_capacity(required, self._refinement_splat_capacity)
@@ -1319,9 +1325,10 @@ class GaussianTrainer:
         grow_output = required_output > self._refinement_output_capacity or packed_param_bytes != self._refinement_packed_param_bytes
         grow_cameras = required_camera_count > self._refinement_camera_capacity
         age_buffers_ready = all(name in self._refinement_buffers for name in ("splat_age", "dst_splat_age", "append_splat_age")) and required_splats <= self._refinement_splat_age_capacity
+        init_buffers_ready = all(name in self._refinement_buffers for name in ("splat_init", "dst_splat_init", "append_splat_init")) and required_splats <= self._refinement_splat_init_capacity
         prune_buffers_ready = all(name in self._refinement_buffers for name in ("refinement_prune_mask", "refinement_prune_sort_keys", "refinement_prune_sort_values", "refinement_prune_prefix"))
-        if self._refinement_buffers and age_buffers_ready and prune_buffers_ready and not grow_splats and not grow_append and not grow_output and not grow_cameras:
-                return
+        if self._refinement_buffers and age_buffers_ready and init_buffers_ready and prune_buffers_ready and not grow_splats and not grow_append and not grow_output and not grow_cameras:
+            return
         reset_gradient_stats = False
         if "total_clone_counter" not in self._refinement_buffers:
             self._refinement_buffers["total_clone_counter"] = alloc_buffer(self.device, name="trainer.refinement.total_clone_counter", size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
@@ -1369,22 +1376,29 @@ class GaussianTrainer:
             self._refinement_append_capacity = _grow_trainer_buffer_capacity(required_append, self._refinement_append_capacity)
             self._set_refinement_buffer("append_params", alloc_buffer(self.device, name="trainer.refinement.append_params", size=self._refinement_append_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("append_splat_age", alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=self._refinement_append_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("append_splat_init", alloc_buffer(self.device, name="trainer.refinement.append_splat_init", size=self._refinement_append_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
         elif "append_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["append_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=max(self._refinement_append_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        if "append_splat_init" not in self._refinement_buffers:
+            self._refinement_buffers["append_splat_init"] = alloc_buffer(self.device, name="trainer.refinement.append_splat_init", size=max(self._refinement_append_capacity, 1) * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
         if grow_output or "dst_splat_params" not in self._refinement_buffers:
             self._refinement_output_capacity = _grow_trainer_buffer_capacity(required_output, self._refinement_output_capacity)
             self._set_refinement_buffer("dst_splat_params", alloc_buffer(self.device, name="trainer.refinement.dst_splat_params", size=self._refinement_output_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_age", alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("dst_splat_init", alloc_buffer(self.device, name="trainer.refinement.dst_splat_init", size=self._refinement_output_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_contribution_history", alloc_buffer(self.device, name="trainer.refinement.dst_splat_contribution_history", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_viewed_fraction_history", alloc_buffer(self.device, name="trainer.refinement.dst_splat_viewed_fraction_history", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "dst_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        if "dst_splat_init" not in self._refinement_buffers:
+            self._refinement_buffers["dst_splat_init"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_init", size=max(self._refinement_output_capacity, 1) * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
         if "dst_splat_contribution_history" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_contribution_history"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_contribution_history", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "dst_splat_viewed_fraction_history" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_viewed_fraction_history"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_viewed_fraction_history", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         self._refinement_packed_param_bytes = packed_param_bytes
         self._ensure_splat_age_capacity(required_splats)
+        self._ensure_splat_init_capacity(required_splats)
         if grow_cameras or "camera_rows" not in self._refinement_buffers:
             self._refinement_camera_capacity = _grow_trainer_buffer_capacity(required_camera_count, self._refinement_camera_capacity)
             self._set_refinement_buffer("camera_rows", alloc_buffer(
@@ -1425,6 +1439,50 @@ class GaussianTrainer:
         self._ensure_splat_age_capacity(splat_count)
         enc = self.device.create_command_encoder()
         enc.copy_buffer(self._refinement_buffers["splat_age"], 0, self._refinement_buffers["dst_splat_age"], 0, max(int(splat_count), 1) * self._U32_BYTES)
+        self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+
+    def _build_splat_init_array(self, scene: GaussianScene | None) -> np.ndarray:
+        if scene is None:
+            count = max(int(self._scene_count), 0)
+            positions = np.zeros((count, 3), dtype=np.float32)
+            refinable = np.ones((count,), dtype=bool)
+        else:
+            count = int(scene.count)
+            positions = np.ascontiguousarray(scene.positions[:, :3], dtype=np.float32)
+            refinable = np.ones((count,), dtype=bool) if scene.refinable is None else np.asarray(scene.refinable, dtype=bool).reshape(-1)
+        radii = point_nn_scales(positions)
+        init = np.zeros((count, 4), dtype=np.float32)
+        if count <= 0:
+            return init
+        init[:, :3] = positions
+        init[:, 3] = np.where(refinable, radii, -radii).astype(np.float32, copy=False)
+        return init
+
+    def _ensure_splat_init_capacity(self, splat_count: int, *, reset: bool = False) -> None:
+        required = max(int(splat_count), 1)
+        if not reset and "splat_init" in self._refinement_buffers and required <= self._refinement_splat_init_capacity:
+            return
+        capacity = _grow_trainer_buffer_capacity(required, self._refinement_splat_init_capacity)
+        splat_init = np.zeros((capacity, 4), dtype=np.float32)
+        if not reset and "splat_init" in self._refinement_buffers:
+            old_count = min(self._refinement_splat_init_capacity, capacity)
+            splat_init[:old_count] = buffer_to_numpy(self._refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:old_count]
+        self._set_refinement_buffer("splat_init", alloc_buffer(self.device, name="trainer.refinement.splat_init", size=capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
+        self._refinement_buffers["splat_init"].copy_from_numpy(splat_init)
+        self._refinement_splat_init_capacity = capacity
+
+    def _reset_splat_init(self, scene: GaussianScene | None) -> None:
+        self._ensure_splat_init_capacity(self._scene_count, reset=True)
+        splat_init = np.zeros((self._refinement_splat_init_capacity, 4), dtype=np.float32)
+        source = self._build_splat_init_array(scene)
+        splat_init[: source.shape[0]] = source
+        self._refinement_buffers["splat_init"].copy_from_numpy(splat_init)
+
+    def _copy_refinement_splat_init_to_source(self, splat_count: int) -> None:
+        self._ensure_splat_init_capacity(splat_count)
+        enc = self.device.create_command_encoder()
+        enc.copy_buffer(self._refinement_buffers["splat_init"], 0, self._refinement_buffers["dst_splat_init"], 0, max(int(splat_count), 1) * self._FLOAT4_BYTES)
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
@@ -1559,6 +1617,7 @@ class GaussianTrainer:
         self.device.wait()
 
         self._copy_refinement_splat_ages_to_source(next_count)
+        self._copy_refinement_splat_init_to_source(next_count)
         self.renderer.bind_scene_count(next_count)
         self._scene_count = next_count
         self.scene.count = next_count
@@ -2220,6 +2279,7 @@ class GaussianTrainer:
             self.optimizer.dispatch_projection(
                 encoder,
                 scene_buffers=self.renderer.scene_buffers,
+                splat_init_buffer=self._refinement_buffers["splat_init"],
                 splat_count=self._scene_count,
                 training_hparams=self.training,
                 frame_camera=frame_camera,
@@ -2252,6 +2312,7 @@ class GaussianTrainer:
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_refinement_buffers(self._scene_count)
         self._reset_splat_ages()
+        self._reset_splat_init(scene)
         self._refinement_camera_signature = None
         self._scale_reg_reference = float(max(np.median(np.max(np.exp(scales), axis=1)), 1e-8))
         self._zero_optimizer_moments()
@@ -2347,6 +2408,7 @@ class GaussianTrainer:
         self._ensure_refinement_buffers(self._scene_count)
         self._ensure_renderer_workspace(self._scene_count)
         self._reset_splat_ages()
+        self._reset_splat_init(scene if scene is not None else self.read_live_scene())
         self._refinement_camera_signature = None
         if scene is not None:
             self._scale_reg_reference = self._estimate_scale_reg_reference(scene)

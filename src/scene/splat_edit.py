@@ -157,7 +157,16 @@ def _index_scene(scene: GaussianScene, index: np.ndarray) -> GaussianScene:
         opacities=scene.opacities[index],
         colors=scene.colors[index],
         sh_coeffs=scene.sh_coeffs[index],
+        refinable=None if scene.refinable is None else scene.refinable[index],
     )
+
+
+def _concat_refinable(a: GaussianScene, b: GaussianScene) -> np.ndarray | None:
+    if a.refinable is None and b.refinable is None:
+        return None
+    left = np.ones((a.count,), dtype=bool) if a.refinable is None else a.refinable
+    right = np.ones((b.count,), dtype=bool) if b.refinable is None else b.refinable
+    return np.concatenate([left, right], axis=0)
 
 
 def _concat_scenes(a: GaussianScene, b: GaussianScene) -> GaussianScene:
@@ -168,6 +177,7 @@ def _concat_scenes(a: GaussianScene, b: GaussianScene) -> GaussianScene:
         opacities=np.concatenate([a.opacities, b.opacities], axis=0),
         colors=np.concatenate([a.colors, b.colors], axis=0),
         sh_coeffs=np.concatenate([a.sh_coeffs, b.sh_coeffs], axis=0),
+        refinable=_concat_refinable(a, b),
     )
 
 

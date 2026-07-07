@@ -40,6 +40,8 @@ uniform uint g_SHNonNegativeStepIndex;
 uniform uint g_StoredPackedParamCount;
 
 uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
+uniform StructuredBuffer<float4> g_SplatInit;
+uniform float g_InitPositionRegWeight;
 uniform float3 g_GaussianOptimizerRegularization;
 uniform float3 g_GaussianOptimizerRegularizationCameraPosition;
 uniform StructuredBuffer<uint4> g_GaussianOptimizerSplatContributionInfo;
@@ -213,6 +215,12 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         float opacity = opacity_from_raw(state.rawOpacity);
         state.rawOpacity -= opacitySettings.lr * g_GaussianOptimizerRegularization.y * opacity * (1.0 - opacity);
+    }
+    if (g_InitPositionRegWeight != 0.0)
+    {
+        float4 init = g_SplatInit[splatId];
+        float coeff = saturate(g_InitPositionRegWeight * abs(init.w));
+        state.position -= coeff * (state.position - init.xyz);
     }
 
     uint activeCoeffCount = min(g_SHBand == 0u ? 1u : g_SHBand == 1u ? 4u : g_SHBand == 2u ? 9u : SH_COEFF_COUNT, packed_sh_coeff_count(g_StoredPackedParamCount));
