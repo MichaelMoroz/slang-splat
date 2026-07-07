@@ -120,6 +120,8 @@ Camera controls:
 - `WASDQE`: move
 - mouse wheel: adjust move speed
 
+Drag ownership is latched at the mouse-down edge: a drag that begins on an Edit Splat gizmo (or any ImGui widget) manipulates only that gizmo, and a look/pan drag begun in empty viewport is not stolen when the cursor later crosses the gizmo. Only one of the camera and the gizmo moves per drag.
+
 When a training scene is initialized, the viewer prefers a real training-camera position when one is available. That startup path only copies the camera position and keeps the viewer orientation controls intact; if no usable training pose is available, the viewer falls back to a scene-bounds fit.
 
 The viewport `View Mode` menu includes a viewer-only `PPISP Tonemap` debug view for the free-fly camera. Selecting it uses a PPISP rasterizer resolve that applies the shared exposure, vignetting, chroma, and CRF shader to linear radiance before writing display RGB. Its debug-view parameters are still edited in the viewport overlay, while learned per-frame PPISP compensation now lives in the separate `Photometric Compensation` window.
@@ -138,6 +140,23 @@ The window provides:
 - a selected-frame control to inspect the currently learned PPISP parameters for an individual training image.
 
 The learned provider is versioned. When it is bound into the gaussian trainer, downscaled targets and native-subsample targets automatically refresh against the latest photometric parameters without rebuilding unrelated viewer state.
+
+## Edit Splat Window
+
+`View -> Edit Splat` opens the splat editor for the active scene (a loaded PLY or the live training state). All operations run as GPU compute kernels on the renderer's param buffer, so no scene data round-trips through the CPU: selection, property edits, and resampling never read back or re-upload the full splat set.
+
+Selection is a per-splat GPU mask that doubles as the render highlight, so selected splats are highlighted with no extra upload. Selections combine in `replace` / `add` / `subtract` / `intersect` modes:
+
+- an oriented bounding box (translate/rotate/scale via the viewport gizmo or the numeric fields),
+- histogram-range selection over per-splat scale, opacity, or color luminance,
+- invert and clear.
+
+Edits apply only to the selection:
+
+- `Resample` at `0%` deletes the selection, `< 100%` randomly sparsifies it, and `> 100%` subdivides it by cloning children from random selected parents (offset within each parent's covariance and shrunk by the 3DGS split factor). The button reads `Delete selection` at `0%`.
+- `Edit properties` overrides color (DC term, higher-order SH preserved), opacity, and/or geometric-mean scale (anisotropy preserved).
+
+Property edits are in place, so they preserve optimizer momentum during live training. Resampling changes the splat count, so — like an external scene swap — it renumbers survivors, appends children, and resets Adam moments, splat ages, and refinement bookkeeping while preserving the training step/schedule. Edits live in the GPU buffer and survive viewport resizes (the scene is copied GPU-to-GPU on renderer recreation), and PLY export reads the edited buffer.
 
 ## Frame Flow
 

@@ -577,6 +577,10 @@ class ViewerCore:
     def _export_source_scene(self) -> GaussianScene:
         if self.s.trainer is not None:
             return self.s.trainer.read_live_scene()
+        # Read the live GPU buffer so splat-editor edits are exported, not the loaded PLY.
+        renderer = getattr(self.s, "renderer", None)
+        if renderer is not None and int(getattr(renderer, "_scene_count", 0)) > 0 and hasattr(renderer, "read_live_scene"):
+            return renderer.read_live_scene()
         if isinstance(self.s.scene, GaussianScene):
             return self.s.scene
         raise RuntimeError("No gaussian scene is available to export.")
@@ -964,8 +968,18 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
             self.c("move_speed").value, self.s.scroll_delta = self.s.move_speed, 0.0
         mouse_delta = spy.float2(float(self.s.mouse_delta.x), float(self.s.mouse_delta.y))
         gizmo_busy = bool(getattr(getattr(self, "toolkit", None), "_values", {}).get("_splat_editor_gizmo_capturing", False))
-        mouse_left = bool(self.s.mouse_left) and not gizmo_busy
-        mouse_right = bool(self.s.mouse_right) and not gizmo_busy
+        # Latch drag ownership at the press edge: a drag that begins over the gizmo/UI never
+        # also drives the camera, and a camera drag begun in empty space is not stolen when the
+        # cursor later crosses the gizmo. Only one thing moves per drag.
+        any_mouse_down = bool(self.s.mouse_left) or bool(self.s.mouse_right)
+        if not any_mouse_down:
+            self.s.camera_drag_active = False
+        elif not self.s.prev_mouse_down:
+            self.s.camera_drag_active = not gizmo_busy
+        self.s.prev_mouse_down = any_mouse_down
+        camera_owns_drag = self.s.camera_drag_active
+        mouse_left = bool(self.s.mouse_left) and camera_owns_drag
+        mouse_right = bool(self.s.mouse_right) and camera_owns_drag
         target_rot = mouse_delta * self.s.look_speed if mouse_left else spy.float2(0.0, 0.0)
         self.s.rot_vel += (target_rot - self.s.rot_vel) * min(1.0, _LOOK_SMOOTH * dt)
         self.s.mouse_delta = spy.float2(0.0, 0.0)
