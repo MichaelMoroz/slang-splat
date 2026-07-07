@@ -122,6 +122,7 @@ class ColmapImportProgress:
     photometric_compensation_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
     selected_camera_ids: tuple[int, ...] = ()
     dataset_residency: str = str(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_residency", "auto"))
+    dataset_compression_threads: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_compression_threads", 0))
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH

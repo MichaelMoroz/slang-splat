@@ -242,7 +242,7 @@ def test_create_native_dataset_textures_ignores_mask_root_when_disabled(tmp_path
     assert np.all(captured[0][:, :, 3] == 32)
 
 
-def test_create_native_dataset_textures_uses_viewer_image_io_threads(tmp_path: Path, monkeypatch) -> None:
+def test_create_native_dataset_textures_uses_configured_compression_threads(tmp_path: Path, monkeypatch) -> None:
     images_root = (tmp_path / "images").resolve()
     images_root.mkdir()
     image_path = images_root / "frame.png"
@@ -259,7 +259,10 @@ def test_create_native_dataset_textures_uses_viewer_image_io_threads(tmp_path: P
         width=2,
         height=2,
     )
-    viewer = SimpleNamespace(s=SimpleNamespace(colmap_import=SimpleNamespace(images_root=images_root, alpha_mask_root=None, use_alpha_masks=False, compress_dataset_using_bc7=False)))
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"colmap_dataset_compression_threads": 5}),
+        s=SimpleNamespace(colmap_import=SimpleNamespace(images_root=images_root, alpha_mask_root=None, use_alpha_masks=False, compress_dataset_using_bc7=False)),
+    )
     calls: list[tuple[int, str]] = []
 
     class _Executor:
@@ -276,13 +279,54 @@ def test_create_native_dataset_textures_uses_viewer_image_io_threads(tmp_path: P
             return map(fn, items)
 
     monkeypatch.setattr(session, "ThreadPoolExecutor", _Executor)
-    monkeypatch.setattr(session, "_VIEWER_IMAGE_IO_THREADS", 5)
+    monkeypatch.setattr(session, "_MAX_DATASET_COMPRESSION_THREADS", 64)
     monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda _viewer, rgba8: "tex")
 
     textures = session._create_native_dataset_textures(viewer, [frame], compress_dataset_using_bc7=False)
 
     assert textures == ["tex"]
     assert calls == [(5, "viewer-target")]
+
+
+def test_resolve_dataset_compression_threads_clamps_and_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(session, "_MAX_DATASET_COMPRESSION_THREADS", 8)
+    monkeypatch.setattr(session, "DEFAULT_DATASET_COMPRESSION_THREADS", 7)
+    resolve = session._resolve_dataset_compression_threads
+    assert resolve(None) == 7  # unset -> machine default
+    assert resolve(0) == 7  # 0 sentinel -> machine default
+    assert resolve(-4) == 7  # negatives -> machine default
+    assert resolve(3) == 3  # in range -> as-is
+    assert resolve(9999) == 8  # clamped to logical CPU count
+
+
+def test_start_colmap_texture_loader_uses_progress_compression_threads(tmp_path: Path, monkeypatch) -> None:
+    progress = ColmapImportProgress(
+        dataset_root=tmp_path,
+        colmap_root=tmp_path,
+        database_path=None,
+        images_root=tmp_path,
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=2048,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.5,
+        dataset_compression_threads=3,
+    )
+    progress.frames = []
+    calls: list[int] = []
+
+    class _Executor:
+        def __init__(self, *, max_workers: int, thread_name_prefix: str) -> None:
+            calls.append(int(max_workers))
+
+        def map(self, fn, items):
+            return iter(())
+
+    monkeypatch.setattr(session, "ThreadPoolExecutor", _Executor)
+    monkeypatch.setattr(session, "_MAX_DATASET_COMPRESSION_THREADS", 64)
+    session._start_colmap_texture_loader(progress)
+    assert calls == [3]
 
 
 def test_advance_colmap_import_streaming_load_textures_skips_gpu_upload(tmp_path: Path, monkeypatch) -> None:

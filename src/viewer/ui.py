@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache, partial
 import importlib
 import math
+import os
 from pathlib import Path
 import re
 from types import SimpleNamespace
@@ -3261,6 +3262,17 @@ class ToolkitWindow:
                     ui._values[key] = bool(value)
                 ToolkitWindow._set_tooltip(tooltip)
                 imgui.spacing()
+            max_compression_cores = max(os.cpu_count() or 1, 1)
+            default_compression_cores = max(max_compression_cores - 1, 1)
+            stored_compression_cores = int(ui._values.get("colmap_dataset_compression_threads", 0) or 0)
+            compression_cores = stored_compression_cores if stored_compression_cores >= 1 else default_compression_cores
+            imgui.begin_disabled(not bool(ui._values.get("compress_dataset_using_bc7", False)))
+            cores_changed, cores_value = imgui.slider_int("Compression Cores", min(compression_cores, max_compression_cores), 1, max_compression_cores)
+            if cores_changed:
+                ui._values["colmap_dataset_compression_threads"] = int(cores_value)
+            ToolkitWindow._set_tooltip(f"Worker threads used to load and BC7-compress the dataset during import (1-{max_compression_cores}). Lower it to leave CPU cores free for other work; defaults to {default_compression_cores}.")
+            imgui.end_disabled()
+            imgui.spacing()
             alpha_mode = min(max(int(ui._values.get("target_alpha_mode", 0)), 0), len(TARGET_ALPHA_MODE_LABELS) - 1)
             if imgui.begin_combo("Target Alpha", TARGET_ALPHA_MODE_LABELS[alpha_mode]):
                 for idx, option in enumerate(TARGET_ALPHA_MODE_LABELS):

@@ -135,6 +135,21 @@ def _resolve_viewer_image_io_threads(available_cpu_threads: int | None = None) -
 
 
 _VIEWER_IMAGE_IO_THREADS = _resolve_viewer_image_io_threads()
+_MAX_DATASET_COMPRESSION_THREADS = max(int(os.cpu_count() or 1), 1)
+DEFAULT_DATASET_COMPRESSION_THREADS = _VIEWER_IMAGE_IO_THREADS
+
+
+def _resolve_dataset_compression_threads(value: int | None) -> int:
+    # 0/None means "use the machine default" (all cores but one); otherwise clamp to a
+    # sane worker count so a saved value can never exceed the logical CPU count.
+    if value is None or int(value) <= 0:
+        return DEFAULT_DATASET_COMPRESSION_THREADS
+    return max(1, min(int(value), _MAX_DATASET_COMPRESSION_THREADS))
+
+
+def _dataset_compression_threads_from_ui(viewer: object) -> int:
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    return _resolve_dataset_compression_threads(values.get("colmap_dataset_compression_threads"))
 
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "max_sh_band",
@@ -654,7 +669,7 @@ def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
     _close_colmap_texture_loader(progress)
     if bool(progress.compress_dataset_using_bc7):
         _ensure_dataset_bc7_texconv()
-    loader = ThreadPoolExecutor(max_workers=_VIEWER_IMAGE_IO_THREADS, thread_name_prefix="viewer-target")
+    loader = ThreadPoolExecutor(max_workers=_resolve_dataset_compression_threads(getattr(progress, "dataset_compression_threads", None)), thread_name_prefix="viewer-target")
     progress.native_rgba8_loader = loader
     active_alpha_mask_root = progress.alpha_mask_root if bool(progress.use_alpha_masks) else None
     active_alpha_mask_path_index = progress.alpha_mask_path_index if bool(progress.use_alpha_masks) else None
@@ -701,7 +716,7 @@ def _create_native_dataset_textures(
     textures: list[spy.Texture] = []
     if use_bc7:
         _ensure_dataset_bc7_texconv()
-    with ThreadPoolExecutor(max_workers=_VIEWER_IMAGE_IO_THREADS, thread_name_prefix="viewer-target") as executor:
+    with ThreadPoolExecutor(max_workers=_dataset_compression_threads_from_ui(viewer), thread_name_prefix="viewer-target") as executor:
         for payload in executor.map(
             lambda frame: _load_dataset_texture(frame, resolved_images_root, use_bc7, active_alpha_mask_root, alpha_mask_path_index),
             frames,
@@ -3250,6 +3265,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         fibonacci_sphere_nn_radius_scale_coef=float(max(fibonacci_sphere_nn_radius_scale_coef, 1e-4)),
         dataset_pool_size=_training_dataset_pool_size_from_ui(viewer),
         dataset_residency=dataset_residency,
+        dataset_compression_threads=_dataset_compression_threads_from_ui(viewer),
     )
     viewer.s.last_error = ""
 
