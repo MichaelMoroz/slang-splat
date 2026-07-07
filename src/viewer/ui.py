@@ -2243,7 +2243,10 @@ class ToolkitWindow:
             draw_list.add_line(imgui.ImVec2(base_x + float(x0), base_y + float(y0)), imgui.ImVec2(base_x + float(x1), base_y + float(y1)), color, thickness)
 
     def _draw_splat_editor_gizmo(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
+        # Always leave the capturing flag defined and false when the gizmo is not drawn, so a
+        # stale "capturing" from a prior hover cannot keep blocking the camera after it closes.
         if _IM_GUIZMO is None or not bool(ui._values.get("show_splat_editor", False)):
+            ui._values["_splat_editor_gizmo_capturing"] = False
             return
         state = ui._values.get("_splat_editor_state")
         gizmo = ui._values.get("_splat_editor_gizmo")

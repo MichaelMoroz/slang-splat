@@ -967,17 +967,18 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
             self.s.move_speed = max(self.s.move_speed * (_SCROLL_SPEED_BASE ** self.s.scroll_delta), 0.0)
             self.c("move_speed").value, self.s.scroll_delta = self.s.move_speed, 0.0
         mouse_delta = spy.float2(float(self.s.mouse_delta.x), float(self.s.mouse_delta.y))
-        gizmo_busy = bool(getattr(getattr(self, "toolkit", None), "_values", {}).get("_splat_editor_gizmo_capturing", False))
-        # Latch drag ownership at the press edge: a drag that begins over the gizmo/UI never
-        # also drives the camera, and a camera drag begun in empty space is not stolen when the
-        # cursor later crosses the gizmo. Only one thing moves per drag.
+        gizmo_busy = bool(getattr(getattr(self, "ui", None), "_values", {}).get("_splat_editor_gizmo_capturing", False))
+        # Assign each drag to exactly one consumer (camera vs gizmo/UI) on the first frame the
+        # mouse actually moves, then hold it until release. Deferring to first motion lets the
+        # gizmo register its grab from the press, so a gizmo drag never also moves the camera,
+        # and a camera drag begun in empty space is not stolen when it sweeps over the gizmo.
         any_mouse_down = bool(self.s.mouse_left) or bool(self.s.mouse_right)
+        mouse_moved = abs(float(mouse_delta.x)) > 0.0 or abs(float(mouse_delta.y)) > 0.0
         if not any_mouse_down:
-            self.s.camera_drag_active = False
-        elif not self.s.prev_mouse_down:
-            self.s.camera_drag_active = not gizmo_busy
-        self.s.prev_mouse_down = any_mouse_down
-        camera_owns_drag = self.s.camera_drag_active
+            self.s.drag_owner = ""
+        elif self.s.drag_owner == "" and mouse_moved:
+            self.s.drag_owner = "gizmo" if gizmo_busy else "camera"
+        camera_owns_drag = self.s.drag_owner == "camera"
         mouse_left = bool(self.s.mouse_left) and camera_owns_drag
         mouse_right = bool(self.s.mouse_right) and camera_owns_drag
         target_rot = mouse_delta * self.s.look_speed if mouse_left else spy.float2(0.0, 0.0)

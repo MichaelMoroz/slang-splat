@@ -23,8 +23,7 @@ def _viewer(keyboard_capture: bool = False, mouse_capture: bool = False) -> Simp
         mouse_left=False,
         mouse_right=False,
         mouse_delta=app.spy.float2(1.0, 2.0),
-        camera_drag_active=False,
-        prev_mouse_down=False,
+        drag_owner="",
         scroll_delta=0.0,
         last_interaction_time=0.0,
         last_time=0.0,
@@ -161,8 +160,7 @@ def test_update_camera_right_drag_pans_along_view_plane() -> None:
             mouse_delta=app.spy.float2(10.0, -20.0),
             mouse_left=False,
             mouse_right=True,
-            camera_drag_active=False,
-            prev_mouse_down=False,
+            drag_owner="",
             look_speed=0.003,
             rot_vel=app.spy.float2(0.0, 0.0),
             yaw=0.0,
@@ -181,6 +179,43 @@ def test_update_camera_right_drag_pans_along_view_plane() -> None:
     np.testing.assert_allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), np.array([-0.06, 0.12, -3.0], dtype=np.float32), rtol=0.0, atol=1e-6)
     assert viewer.s.mouse_delta.x == 0.0
     assert viewer.s.mouse_delta.y == 0.0
+
+
+def _drag_camera_viewer(gizmo_capturing: bool) -> SimpleNamespace:
+    controls = {"move_speed": SimpleNamespace(value=2.0), "fov": SimpleNamespace(value=60.0)}
+    return SimpleNamespace(
+        ui=SimpleNamespace(_values={"_splat_editor_gizmo_capturing": gizmo_capturing}),
+        s=SimpleNamespace(
+            move_speed=2.0, fov_y=60.0, scroll_delta=0.0,
+            mouse_delta=app.spy.float2(10.0, -20.0), mouse_left=False, mouse_right=True, drag_owner="",
+            look_speed=0.003, rot_vel=app.spy.float2(0.0, 0.0), yaw=0.0, pitch=0.0,
+            up=app.spy.float3(0.0, 1.0, 0.0), keys={}, move_vel=app.spy.float3(0.0, 0.0, 0.0),
+            camera_pos=app.spy.float3(0.0, 0.0, -3.0),
+        ),
+        c=lambda key: controls[key],
+        _forward=lambda: app.spy.float3(0.0, 0.0, 1.0),
+    )
+
+
+def test_gizmo_drag_does_not_move_camera() -> None:
+    # The capturing flag lives in ui._values; a drag over the gizmo must not pan/rotate.
+    viewer = _drag_camera_viewer(gizmo_capturing=True)
+    app.SplatViewer.update_camera(viewer, 0.1)
+    np.testing.assert_allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), np.array([0.0, 0.0, -3.0], dtype=np.float32), atol=1e-6)
+    assert viewer.s.drag_owner == "gizmo"
+
+
+def test_drag_in_empty_viewport_owns_camera_for_whole_drag() -> None:
+    viewer = _drag_camera_viewer(gizmo_capturing=False)
+    app.SplatViewer.update_camera(viewer, 0.1)
+    assert viewer.s.drag_owner == "camera"
+    # The gizmo becoming "busy" mid-drag (cursor sweeps over it) does not steal the drag.
+    viewer.ui._values["_splat_editor_gizmo_capturing"] = True
+    viewer.s.mouse_delta = app.spy.float2(5.0, 5.0)
+    moved_before = np.asarray(viewer.s.camera_pos, dtype=np.float32).copy()
+    app.SplatViewer.update_camera(viewer, 0.1)
+    assert viewer.s.drag_owner == "camera"
+    assert not np.allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), moved_before)
 
 
 def test_update_camera_marks_recent_interaction_while_keyboard_motion_is_active() -> None:
@@ -1145,8 +1180,7 @@ def test_apply_camera_pose_keeps_pan_controls_in_free_fly_plane() -> None:
         rot_vel=app.spy.float2(0.0, 0.0),
         mouse_left=False,
         mouse_right=True,
-        camera_drag_active=False,
-        prev_mouse_down=False,
+        drag_owner="",
         mouse_delta=app.spy.float2(10.0, -20.0),
         scroll_delta=0.0,
         look_speed=0.003,
