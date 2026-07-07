@@ -1422,7 +1422,8 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, source);
     float age = g_SrcSplatAge[splatId];
-    g_DstSplatAge[parentIndex] = max(isfinite(age) ? age : 0.0, 0.0) * 0.5;
+    float safeAge = max(isfinite(age) ? age : 0.0, 0.0);
+    g_DstSplatAge[parentIndex] = refinable ? safeAge * 0.5 : safeAge;
     g_DstSplatInit[parentIndex] = g_SrcSplatInit[splatId];
     g_DstSplatContributionHistory[parentIndex] = splat_contribution_ema_raw(splatId);
     g_DstSplatViewedFractionHistory[parentIndex] = splat_viewed_fraction_ema_raw(splatId);

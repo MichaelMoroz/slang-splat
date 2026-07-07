@@ -470,6 +470,9 @@ class GaussianRenderer:
     def _debug_grad_stats_var(self) -> dict[str, object]:
         return {"g_DebugGradStats": self._debug_grad_stats_buffer if self._debug_grad_stats_buffer is not None else self._work_buffers["debug_grad_stats"]}
 
+    def _debug_splat_init_var(self) -> dict[str, object]:
+        return {"g_DebugSplatInit": self._debug_splat_init_buffer if self._debug_splat_init_buffer is not None else self._work_buffers["debug_splat_init"]}
+
     def _debug_splat_age_var(self) -> dict[str, object]:
         return {"g_SplatAges": self._debug_splat_age_buffer if self._debug_splat_age_buffer is not None else self._work_buffers["debug_splat_age"]}
 
@@ -1133,6 +1136,7 @@ class GaussianRenderer:
         self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, training={}, grad={}, debug={})
         self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._debug_grad_stats_buffer: spy.Buffer | None = None
+        self._debug_splat_init_buffer: spy.Buffer | None = None
         self._debug_splat_age_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._debug_splat_viewed_fraction_buffer: spy.Buffer | None = None
@@ -1267,6 +1271,7 @@ class GaussianRenderer:
             "splat_visible_area_px": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "fallback_clone_counts": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_splat_age": max(self._work_splat_capacity, 1) * self._U32_BYTES,
+            "debug_splat_init": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_stats": max(self._work_splat_capacity, 1) * self._GRAD_STATS_STRIDE * self._U32_BYTES,
             "debug_splat_viewed_fraction": max(self._work_splat_capacity, 1) * self._U32_BYTES,
@@ -1369,6 +1374,7 @@ class GaussianRenderer:
         self._resource_groups.debug = {
             "fallback_clone_counts": allocated["fallback_clone_counts"],
             "debug_splat_age": allocated["debug_splat_age"],
+            "debug_splat_init": allocated["debug_splat_init"],
             "debug_grad_norm": allocated["debug_grad_norm"],
             "debug_grad_stats": allocated["debug_grad_stats"],
             "debug_splat_viewed_fraction": allocated["debug_splat_viewed_fraction"],
@@ -1378,6 +1384,7 @@ class GaussianRenderer:
         self._sorted_values_buffer = self._work_buffers["values"]
         self._work_buffers["fallback_clone_counts"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.ones((max(self._work_splat_capacity, 1),), dtype=np.float32))
+        self._work_buffers["debug_splat_init"].copy_from_numpy(np.tile(np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32), (max(self._work_splat_capacity, 1), 1)))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_stats"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), self._GRAD_STATS_STRIDE), dtype=np.float32))
         self._work_buffers["debug_splat_viewed_fraction"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
@@ -1791,6 +1798,8 @@ class GaussianRenderer:
             vars.update(self._debug_splat_contribution_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_VIEWED_FRACTION_EMA, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_viewed_fraction_var())
+        if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_REFINEMENT_DISTRIBUTION:
+            vars.update(self._debug_splat_init_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())
         if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
@@ -2415,6 +2424,9 @@ class GaussianRenderer:
 
     def set_debug_grad_stats_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_grad_stats_buffer = buffer
+
+    def set_debug_splat_init_buffer(self, buffer: spy.Buffer | None) -> None:
+        self._debug_splat_init_buffer = buffer
 
     def set_debug_splat_age_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_splat_age_buffer = buffer

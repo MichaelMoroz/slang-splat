@@ -1641,6 +1641,14 @@ def _training_debug_splat_age_buffer(viewer: object):
     )
 
 
+def _training_debug_splat_init_buffer(viewer: object):
+    return (
+        viewer.s.trainer.refinement_buffers["splat_init"]
+        if viewer.s.trainer is not None and "splat_init" in viewer.s.trainer.refinement_buffers
+        else None
+    )
+
+
 def _training_debug_splat_contribution_buffer(viewer: object):
     return (
         viewer.s.trainer.refinement_buffers["splat_contribution"]
@@ -1676,6 +1684,7 @@ def _clear_debug_buffers(renderer: GaussianRenderer | None) -> None:
     for setter_name in (
         "set_debug_grad_norm_buffer",
         "set_debug_grad_stats_buffer",
+        "set_debug_splat_init_buffer",
         "set_debug_splat_age_buffer",
         "set_debug_splat_contribution_buffer",
         "set_debug_splat_viewed_fraction_buffer",
@@ -1698,6 +1707,7 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
         else None
     )
     _set_optional_debug_binding(renderer, "set_debug_grad_stats_buffer", refinement_buffers.get("gradient_stats"))
+    _set_optional_debug_binding(renderer, "set_debug_splat_init_buffer", _training_debug_splat_init_buffer(viewer))
     _set_optional_debug_binding(renderer, "set_debug_splat_age_buffer", _training_debug_splat_age_buffer(viewer))
     _set_optional_debug_binding(renderer, "set_debug_splat_contribution_buffer", _training_debug_splat_contribution_buffer(viewer))
     _set_optional_debug_binding(renderer, "set_debug_splat_viewed_fraction_buffer", _training_debug_splat_viewed_fraction_buffer(viewer))

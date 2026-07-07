@@ -2963,6 +2963,44 @@ def test_refinement_distribution_histograms_use_viewed_fraction_and_variance(dev
     np.testing.assert_allclose(ranges.max_values, np.log10(np.array([4.0, 0.75, 1.0], dtype=np.float32)), rtol=0.0, atol=1e-6)
 
 
+def test_refinement_distribution_histograms_skip_non_refinable_splats(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=3, seed=178)
+    scene.refinable = np.array([True, False, True], dtype=bool)
+    frame = _make_frame(tmp_path, image_name="refinement_hist_refinable_target.png", image_id=178)
+    renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_grad_variance_weight_exponent=1.0, refinement_contribution_weight_exponent=1.0, refinement_viewed_fraction_zero_threshold=0.0),
+        seed=123,
+    )
+    _write_refinement_distribution_inputs(
+        trainer,
+        np.array([0.5, 100.0, 2.0], dtype=np.float32),
+        np.array([0.25, 100.0, 0.75], dtype=np.float32),
+        np.array([1.0, 100.0, 4.0], dtype=np.float32),
+        viewed_fractions=np.array([0.5, 1.0, 0.25], dtype=np.float32),
+    )
+
+    ranges = trainer.compute_refinement_distribution_ranges(scene.count)
+    hist = trainer.compute_refinement_distribution_histograms(
+        scene.count,
+        bin_count=4,
+        min_log10=-1.0,
+        max_log10=1.0,
+        param_min_values=ranges.min_values,
+        param_max_values=ranges.max_values,
+    )
+
+    np.testing.assert_allclose(ranges.min_values, np.log10(np.array([1.0, 0.25, 0.25], dtype=np.float32)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values, np.log10(np.array([4.0, 0.75, 0.5], dtype=np.float32)), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(hist.counts[0].sum(), 2)
+    np.testing.assert_array_equal(hist.counts[1].sum(), 2)
+    np.testing.assert_array_equal(hist.counts[2].sum(), 2)
+
+
 def test_refinement_distribution_ranges_preserve_negative_viewed_fraction_exponent(device, tmp_path: Path) -> None:
     scene = _make_scene(count=3, seed=278)
     frame = _make_frame(tmp_path, image_name="refinement_negative_exponent_target.png", image_id=278)
@@ -3750,6 +3788,7 @@ def test_refinement_preserves_non_refinable_splats_without_clones(device, tmp_pa
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height
     clone_counts = np.array([3, 1], dtype=np.uint32)
     trainer.refinement_buffers["clone_counts"].copy_from_numpy(clone_counts)
+    trainer.refinement_buffers["splat_age"].copy_from_numpy(np.array([0.25, 0.75], dtype=np.float32))
     _write_contribution_info(trainer, [0.0, 200.0])
     trainer._run_refinement(clone_counts_override=clone_counts)
 
@@ -3759,9 +3798,12 @@ def test_refinement_preserves_non_refinable_splats_without_clones(device, tmp_pa
     non_ref_index = int(np.argmin(np.linalg.norm(positions - scene.positions[0][None, :], axis=1)))
     refinable_indices = np.array([idx for idx in range(trainer.scene.count) if idx != non_ref_index], dtype=np.intp)
     splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[: trainer.scene.count]
+    splat_age = buffer_to_numpy(trainer.refinement_buffers["splat_age"], np.float32)[: trainer.scene.count]
 
     np.testing.assert_allclose(positions[non_ref_index], scene.positions[0], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(_actual_opacity(groups["color_alpha"][non_ref_index, 3]), np.float32(0.6), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(splat_age[non_ref_index], np.float32(0.25), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(splat_age[refinable_indices], np.ones((2,), dtype=np.float32), rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(splat_init[non_ref_index, :3], scene.positions[0], rtol=0.0, atol=1e-6)
     assert float(splat_init[non_ref_index, 3]) < 0.0
     np.testing.assert_allclose(splat_init[refinable_indices, :3], np.repeat(scene.positions[1][None, :], 2, axis=0), rtol=0.0, atol=1e-6)

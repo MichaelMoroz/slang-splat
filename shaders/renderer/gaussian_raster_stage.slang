@@ -567,6 +567,7 @@ float raster_grad_variance(uint splatId)
 
 float raster_refinement_distribution(uint splatId)
 {
+    if (g_DebugSplatInit[splatId].w < 0.0) return 0.0;
     float varianceWeight = pow(raster_grad_variance(splatId), g_Raster.debugRefinementGradientVarianceWeightExponent);
     float contribution = raster_refinement_distribution_viewed_fraction(splatId);
     float contributionWeight = pow(max(contribution, 0.0), g_Raster.debugRefinementContributionWeightExponent);
