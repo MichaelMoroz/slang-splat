@@ -1842,7 +1842,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
         monkeypatch,
         recon="recon",
         load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): calls.append(("load_recon", Path(root), rotation_mode, tuple(custom_rotation_deg))) or "recon",
-        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("build_frames", recon_obj, tuple(selected_camera_ids))) or ["frame"],
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0, max_pose_subset=0: calls.append(("build_frames", recon_obj, tuple(selected_camera_ids))) or ["frame"],
         create_textures=lambda viewer_obj, frames: calls.append(("create_textures", list(frames))) or ["tex"],
         finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"])),
     )
@@ -2602,7 +2602,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         monkeypatch,
         recon=recon,
         load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon if rotation_mode == COLMAP_ROTATION_MODE_AUTO else (_ for _ in ()).throw(AssertionError("expected aligned reconstruction")),
-        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0, max_pose_subset=0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
         create_textures=lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")),
         finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"], kwargs["training_image_color_init"], kwargs["target_alpha_threshold"])),
     )
@@ -2647,7 +2647,7 @@ def test_import_colmap_dataset_can_skip_aligned_reconstruction(monkeypatch) -> N
         monkeypatch,
         recon=raw_recon,
         load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): raw_recon if rotation_mode == COLMAP_ROTATION_MODE_NONE else (_ for _ in ()).throw(AssertionError("expected raw reconstruction")),
-        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0, max_pose_subset=0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
         create_textures=lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")),
         finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"])),
     )
@@ -3234,7 +3234,7 @@ def test_refresh_training_frames_uses_cached_reconstruction(monkeypatch) -> None
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
-        lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: [frame] if recon_obj is recon and tuple(selected_camera_ids) == () else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")),
+        lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0, max_pose_subset=0: [frame] if recon_obj is recon and tuple(selected_camera_ids) == () else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")),
     )
 
     session._refresh_training_frames(viewer)

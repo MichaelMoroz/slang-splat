@@ -64,6 +64,7 @@ class ColmapImportSettings:
     image_downscale_max_size: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_max_size"])
     image_downscale_scale: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_image_scale"])
     nn_radius_scale_coef: float = 0.5
+    max_pose_subset: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_max_pose_subset", 0))
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH
@@ -123,6 +124,7 @@ class ColmapImportProgress:
     selected_camera_ids: tuple[int, ...] = ()
     dataset_residency: str = str(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_residency", "auto"))
     dataset_compression_threads: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_compression_threads", 0))
+    max_pose_subset: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_max_pose_subset", 0))
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH

@@ -31,7 +31,7 @@ from ..scene import (
     sample_colmap_fibonacci_sphere_points,
     sample_mesh_surface_points,
 )
-from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
+from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size, select_wide_coverage_image_ids
 from ..training import resolve_sh_band
 from ..scene._internal.colmap_ops import (
     DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
@@ -150,6 +150,13 @@ def _resolve_dataset_compression_threads(value: int | None) -> int:
 def _dataset_compression_threads_from_ui(viewer: object) -> int:
     values = getattr(getattr(viewer, "ui", None), "_values", {})
     return _resolve_dataset_compression_threads(values.get("colmap_dataset_compression_threads"))
+
+
+def _max_pose_subset_from_ui(viewer: object) -> int:
+    # 0 / absent keeps every pose; a positive value caps the training set to that many
+    # widest-coverage poses.
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    return max(int(values.get("colmap_max_pose_subset", 0) or 0), 0)
 
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "max_sh_band",
@@ -571,6 +578,20 @@ def _profile_images_subdir(viewer: object) -> str | None:
         return str(images_path.relative_to(root)).replace("\\", "/")
     except ValueError:
         return images_path.name
+
+
+def _select_import_image_items(progress: ColmapImportProgress) -> list[tuple[int, object]]:
+    """Image (id, record) pairs to build frames for: camera-model filtered, then the
+    widest-coverage subset when a pose cap is set."""
+    items = sorted(progress.recon.images.items())
+    selected = {int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())}
+    if selected:
+        items = [(image_id, image) for image_id, image in items if int(image.camera_id) in selected]
+    target = int(getattr(progress, "max_pose_subset", 0))
+    if 0 < target < len(items):
+        keep = set(select_wide_coverage_image_ids(progress.recon, [image_id for image_id, _ in items], target))
+        items = [(image_id, image) for image_id, image in items if int(image_id) in keep]
+    return items
 
 
 def _append_training_frame(progress: ColmapImportProgress, image_id: int, image: object) -> None:
@@ -2374,6 +2395,7 @@ def _refresh_training_frames(viewer: object) -> None:
         downscale_mode=str(getattr(import_cfg, "image_downscale_mode", _COLMAP_IMAGE_DOWNSCALE_ORIGINAL)),
         downscale_max_size=int(getattr(import_cfg, "image_downscale_max_size", 2048)),
         downscale_scale=float(getattr(import_cfg, "image_downscale_scale", 1.0)),
+        max_pose_subset=int(getattr(import_cfg, "max_pose_subset", 0)),
     )
 
 
@@ -2784,6 +2806,7 @@ def _finish_import_colmap_dataset(
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    max_pose_subset: int = 0,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
@@ -2853,6 +2876,7 @@ def _finish_import_colmap_dataset(
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        max_pose_subset=max_pose_subset,
         min_track_length=min_track_length,
         init_neighbor_count=init_neighbor_count,
         init_anisotropy_strength=init_anisotropy_strength,
@@ -2937,6 +2961,7 @@ def import_colmap_dataset(
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    max_pose_subset: int = 0,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
@@ -3025,6 +3050,7 @@ def import_colmap_dataset(
         downscale_mode=image_downscale_mode,
         downscale_max_size=image_downscale_max_size,
         downscale_scale=image_downscale_scale,
+        max_pose_subset=int(max_pose_subset),
     )
     pool_size = _resolve_import_dataset_pool_size(
         viewer,
@@ -3074,6 +3100,7 @@ def import_colmap_dataset(
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        max_pose_subset=max_pose_subset,
         min_track_length=min_track_length,
         init_neighbor_count=init_neighbor_count,
         init_anisotropy_strength=init_anisotropy_strength,
@@ -3266,6 +3293,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         dataset_pool_size=_training_dataset_pool_size_from_ui(viewer),
         dataset_residency=dataset_residency,
         dataset_compression_threads=_dataset_compression_threads_from_ui(viewer),
+        max_pose_subset=_max_pose_subset_from_ui(viewer),
     )
     viewer.s.last_error = ""
 
@@ -3281,7 +3309,7 @@ def advance_colmap_import(viewer: object) -> None:
                 rotation_mode=progress.rotation_mode,
                 custom_rotation_deg=progress.custom_rotation_deg,
             )
-            progress.image_items = sorted(progress.recon.images.items())
+            progress.image_items = _select_import_image_items(progress)
             progress.image_path_index = build_colmap_image_path_index(progress.images_root)
             progress.alpha_mask_path_index = None if progress.alpha_mask_root is None else build_colmap_image_path_index(progress.alpha_mask_root)
             progress.depth_index = build_depth_path_index(progress.depth_root) if progress.init_mode == _COLMAP_IMPORT_DEPTH and progress.depth_root is not None else None
@@ -3376,6 +3404,7 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_max_size=progress.image_downscale_max_size,
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                max_pose_subset=int(getattr(progress, "max_pose_subset", 0)),
                 min_track_length=progress.min_track_length,
                 init_neighbor_count=getattr(progress, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT),
                 init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH),
@@ -3469,6 +3498,7 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_max_size=progress.image_downscale_max_size,
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                max_pose_subset=int(getattr(progress, "max_pose_subset", 0)),
                 min_track_length=progress.min_track_length,
                 init_neighbor_count=getattr(progress, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT),
                 init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH),

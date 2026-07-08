@@ -796,6 +796,7 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
                     image_downscale_max_size=import_cfg.image_downscale_max_size,
                     image_downscale_scale=import_cfg.image_downscale_scale,
                     nn_radius_scale_coef=import_cfg.nn_radius_scale_coef,
+                    max_pose_subset=int(getattr(import_cfg, "max_pose_subset", 0)),
                     selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(import_cfg, "selected_camera_ids", ())),
                     min_track_length=int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
                     init_neighbor_count=int(getattr(import_cfg, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT)),

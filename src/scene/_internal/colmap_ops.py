@@ -520,6 +520,7 @@ def build_training_frames_from_root(
     downscale_mode: str = "original",
     downscale_max_size: int | None = None,
     downscale_scale: float = 1.0,
+    max_pose_subset: int = 0,
 ) -> list[ColmapFrame]:
     images_root = Path(images_root).resolve()
     if not images_root.exists():
@@ -533,6 +534,9 @@ def build_training_frames_from_root(
         image_path, camera = resolve_colmap_image_path(images_root, image.name, image_path_index=image_path_index), recon.cameras.get(image.camera_id)
         if camera is None or image_path is None: continue
         tasks.append((image_id, image, camera, image_path, downscale_mode, downscale_max_size, downscale_scale))
+    if 0 < int(max_pose_subset) < len(tasks):
+        keep = set(select_wide_coverage_image_ids(recon, [task[0] for task in tasks], int(max_pose_subset)))
+        tasks = [task for task in tasks if int(task[0]) in keep]
     frames: list[ColmapFrame] = []
     if tasks:
         with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="colmap-frame") as executor:
@@ -540,6 +544,106 @@ def build_training_frames_from_root(
     if not frames:
         raise RuntimeError(f"No training frames were found in {images_root}.")
     return frames
+
+
+def _image_point_columns(recon: ColmapReconstruction, image_ids: list[int]) -> tuple[list[np.ndarray], np.ndarray]:
+    """Per-image arrays of distinct tracked-point column indices, plus the point count."""
+    images = getattr(recon, "images", {})
+    per_image_points = []
+    for image_id in image_ids:
+        image = images.get(int(image_id))
+        raw = np.asarray(getattr(image, "points2d_point3d_ids", ()), dtype=np.int64).reshape(-1) if image is not None else np.zeros((0,), dtype=np.int64)
+        per_image_points.append(np.unique(raw[raw > 0]))
+    all_points = np.unique(np.concatenate(per_image_points)) if any(points.size for points in per_image_points) else np.zeros((0,), dtype=np.int64)
+    remap = {int(point_id): column for column, point_id in enumerate(all_points.tolist())}
+    columns = [np.array([remap[int(point_id)] for point_id in points.tolist()], dtype=np.int64) for points in per_image_points]
+    return columns, all_points
+
+
+def _select_max_coverage_subset(recon: ColmapReconstruction, image_ids: list[int], target_count: int) -> list[int]:
+    """Greedily grow the subset that covers the most distinct tracked 3D points.
+
+    Each step adds the view contributing the most not-yet-covered points, so the
+    selection maximizes the union of scene points seen (the "scene capture fraction")
+    while implicitly avoiding redundant, heavily-overlapping views.
+    """
+    from scipy.sparse import csr_matrix
+
+    columns, all_points = _image_point_columns(recon, image_ids)
+    observation_counts = np.array([column.size for column in columns], dtype=np.int64)
+    count, point_count = len(image_ids), int(all_points.size)
+    rows = np.concatenate([np.full(column.size, index, dtype=np.int64) for index, column in enumerate(columns)]) if point_count else np.zeros((0,), dtype=np.int64)
+    cols = np.concatenate(columns) if point_count else np.zeros((0,), dtype=np.int64)
+    incidence_by_point = csr_matrix((np.ones(rows.size, dtype=np.float32), (cols, rows)), shape=(point_count, count), dtype=np.float32)
+
+    new_point_counts = observation_counts.astype(np.float64).copy()
+    covered = np.zeros(point_count, dtype=bool)
+    chosen = np.zeros(count, dtype=bool)
+    selected: list[int] = []
+
+    def _take(index: int) -> None:
+        selected.append(index)
+        chosen[index] = True
+        fresh = columns[index][~covered[columns[index]]] if columns[index].size else columns[index]
+        if fresh.size:
+            covered[fresh] = True
+            np.subtract(new_point_counts, np.asarray(incidence_by_point[fresh].sum(axis=0), dtype=np.float64).ravel(), out=new_point_counts)
+        new_point_counts[index] = -np.inf
+
+    _take(int(np.argmax(observation_counts)))
+    while len(selected) < target_count:
+        best = int(np.argmax(new_point_counts))
+        if not (new_point_counts[best] > 0.0):
+            # Remaining views add no new coverage; fill deterministically by observation count.
+            remaining = [index for index in np.argsort(-observation_counts, kind="stable").tolist() if not chosen[index]]
+            selected.extend(remaining[: target_count - len(selected)])
+            break
+        _take(best)
+    return [int(image_ids[index]) for index in selected]
+
+
+def _select_pose_spread_subset(recon: ColmapReconstruction, image_ids: list[int], target_count: int) -> list[int]:
+    """Farthest-first camera selection by position + viewing-direction spread (fallback)."""
+    images = getattr(recon, "images", {})
+    centers, directions = np.zeros((len(image_ids), 3)), np.zeros((len(image_ids), 3))
+    for index, image_id in enumerate(image_ids):
+        image = images.get(int(image_id))
+        rotation = Rotation.from_quat(np.asarray(image.q_wxyz, dtype=np.float64)[[1, 2, 3, 0]]).as_matrix()
+        centers[index] = -rotation.T @ np.asarray(image.t_xyz, dtype=np.float64).reshape(3)
+        directions[index] = rotation.T @ np.array([0.0, 0.0, 1.0])
+    span = np.linalg.norm(centers - centers.mean(axis=0), axis=1)
+    position_scale = max(float(np.median(span[span > 0.0])) if np.any(span > 0.0) else 1.0, 1e-6)
+    min_distance = np.full(len(image_ids), np.inf)
+    selected: list[int] = []
+
+    def _take(index: int) -> None:
+        selected.append(index)
+        position_distance = np.linalg.norm(centers - centers[index], axis=1) / position_scale
+        orientation_distance = 1.0 - directions @ directions[index]
+        np.minimum(min_distance, position_distance + orientation_distance, out=min_distance)
+        min_distance[index] = -np.inf
+
+    _take(int(np.argmax(span)))
+    while len(selected) < target_count:
+        _take(int(np.argmax(min_distance)))
+    return [int(image_ids[index]) for index in selected]
+
+
+def select_wide_coverage_image_ids(recon: ColmapReconstruction, image_ids, target_count: int) -> list[int]:
+    """Return ``target_count`` image ids that cover the scene most widely.
+
+    Uses the tracked-point covisibility to greedily maximize the union of scene
+    points seen; falls back to camera pose (position + orientation) spread when no
+    tracked points are available. Returns a sorted subset of ``image_ids`` (all of
+    them when ``target_count`` covers everything).
+    """
+    ids = sorted({int(image_id) for image_id in image_ids})
+    target = int(target_count)
+    if target <= 0 or target >= len(ids):
+        return ids
+    _, all_points = _image_point_columns(recon, ids)
+    selected = _select_max_coverage_subset(recon, ids, target) if all_points.size > 0 else _select_pose_spread_subset(recon, ids, target)
+    return sorted(selected)
 
 
 def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "images_4") -> list[ColmapFrame]:

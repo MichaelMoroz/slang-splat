@@ -189,6 +189,7 @@ _VIEWER_IMPORT_EXPORT_FIELDS = (
     ("colmap_photometric_compensation_enabled", bool),
     ("colmap_dataset_residency", str),
     ("colmap_dataset_compression_threads", int),
+    ("colmap_max_pose_subset", int),
     ("colmap_use_alpha_masks", bool),
     ("colmap_image_downscale_mode", int),
     ("colmap_image_max_size", int),

@@ -220,6 +220,8 @@ The import window exposes four key toggles:
 - `Compress Dataset using BC7`: compress imported training images into reusable BC7 DDS cache files under the image-folder cache.
 - `Photometric Compensation`: after images are loaded, build the photometric observation dataset and run 1000 photometric optimization steps before the scene opens. The import progress bar switches to dataset-preparation and optimization progress, and the import status line shows the live loss.
 - `Use Alpha Mask`: treat transparent target pixels as masked-out training pixels.
+- `Compression Cores`: worker threads used to load and BC7-compress the dataset during import (1..logical CPUs), so the load can be dialed back to leave cores free.
+- `Best Pose Subset`: shown once cameras are detected and there are more than 16 poses. Trains on only the N camera poses that cover the scene most widely instead of all of them — fewer poses means less VRAM. The subset is chosen greedily to maximize the union of tracked 3D points seen (the scene-capture fraction), dropping redundant, heavily-overlapping views; when a reconstruction has no tracked points it falls back to spreading the selection across camera positions and viewing directions. The slider's Full setting keeps every pose.
 
 ### Image Downscale Modes
 

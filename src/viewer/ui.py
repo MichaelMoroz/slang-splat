@@ -3273,6 +3273,20 @@ class ToolkitWindow:
             ToolkitWindow._set_tooltip(f"Worker threads used to load and BC7-compress the dataset during import (1-{max_compression_cores}). Lower it to leave CPU cores free for other work; defaults to {default_compression_cores}.")
             imgui.end_disabled()
             imgui.spacing()
+            selected_camera_ids = {int(camera_id) for camera_id in ui._values.get("colmap_selected_camera_ids", ())}
+            pose_count = sum(
+                int(row.get("frame_count", 0))
+                for row in ui._values.get("_colmap_camera_rows", ())
+                if not selected_camera_ids or int(row.get("camera_id", -1)) in selected_camera_ids
+            )
+            if pose_count > 16:
+                stored_pose_subset = int(ui._values.get("colmap_max_pose_subset", 0) or 0)
+                pose_subset = stored_pose_subset if 16 <= stored_pose_subset < pose_count else pose_count
+                subset_changed, subset_value = imgui.slider_int("Best Pose Subset", pose_subset, 16, pose_count)
+                if subset_changed:
+                    ui._values["colmap_max_pose_subset"] = 0 if int(subset_value) >= pose_count else int(subset_value)
+                ToolkitWindow._set_tooltip(f"Train on only the N camera poses that cover the scene most widely (16-{pose_count}), instead of all {pose_count}. Fewer poses -> less VRAM; the subset is chosen from tracked-point covisibility (or pose spread when tracks are absent). Full = keep every pose.")
+                imgui.spacing()
             alpha_mode = min(max(int(ui._values.get("target_alpha_mode", 0)), 0), len(TARGET_ALPHA_MODE_LABELS) - 1)
             if imgui.begin_combo("Target Alpha", TARGET_ALPHA_MODE_LABELS[alpha_mode]):
                 for idx, option in enumerate(TARGET_ALPHA_MODE_LABELS):

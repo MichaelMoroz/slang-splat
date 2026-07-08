@@ -273,6 +273,7 @@ def _update_import_settings(
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    max_pose_subset: int = 0,
     min_track_length: int,
     init_neighbor_count: int,
     init_anisotropy_strength: float,
@@ -348,6 +349,7 @@ def _update_import_settings(
         image_downscale_max_size=max(int(image_downscale_max_size), 1),
         image_downscale_scale=float(np.clip(image_downscale_scale, 1e-6, 1.0)),
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+        max_pose_subset=max(int(max_pose_subset), 0),
         min_track_length=max(int(min_track_length), 0),
         init_neighbor_count=max(int(init_neighbor_count), 2),
         init_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
@@ -402,6 +404,7 @@ def _update_import_settings(
     viewer.ui._values["colmap_image_max_size"] = max(int(image_downscale_max_size), 1)
     viewer.ui._values["colmap_image_scale"] = float(np.clip(image_downscale_scale, 1e-6, 1.0))
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
+    viewer.ui._values["colmap_max_pose_subset"] = max(int(max_pose_subset), 0)
     viewer.ui._values["colmap_min_track_length"] = max(int(min_track_length), 0)
     viewer.ui._values["colmap_init_neighbor_count"] = max(int(init_neighbor_count), 2)
     viewer.ui._values["colmap_init_anisotropy_strength"] = float(np.clip(init_anisotropy_strength, 0.0, 1.0))
