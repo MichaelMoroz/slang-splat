@@ -3066,11 +3066,14 @@ class ToolkitWindow:
         rows = tuple(ui._values.get("_colmap_camera_rows", ()))
         if not rows:
             return []
+        selected_camera_ids = {int(camera_id) for camera_id in ui._values.get("colmap_selected_camera_ids", ())}
         mode = ("original", "max_size", "scale")[min(max(int(ui._values.get("colmap_image_downscale_mode", 1)), 0), 2)]
         max_size = int(ui._values.get("colmap_image_max_size", 2048))
         scale = float(ui._values.get("colmap_image_scale", 1.0))
         sizes: list[tuple[int, int]] = []
         for row in rows:
+            if selected_camera_ids and int(row.get("camera_id", -1)) not in selected_camera_ids:
+                continue
             try:
                 width_text, height_text = str(row.get("resolution_text", "")).lower().split("x")
                 width, height = int(width_text), int(height_text)
@@ -3078,6 +3081,12 @@ class ToolkitWindow:
                 continue
             dw, dh = resolve_training_frame_image_size(width, height, downscale_mode=mode, downscale_max_size=max_size, downscale_scale=scale)
             sizes.extend([(dw, dh)] * max(int(row.get("frame_count", 0)), 0))
+        # The "Best Pose Subset" cap trains on fewer poses; reflect that in the estimate by
+        # evenly subsampling the resolution multiset down to the requested pose count.
+        pose_cap = int(ui._values.get("colmap_max_pose_subset", 0) or 0)
+        if 0 < pose_cap < len(sizes):
+            step = len(sizes) / pose_cap
+            sizes = [sizes[int(index * step)] for index in range(pose_cap)]
         return sizes
 
     def _draw_colmap_memory_controls(self, ui: ViewerUI) -> None:
