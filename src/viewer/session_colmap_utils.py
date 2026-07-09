@@ -292,6 +292,7 @@ def _update_import_settings(
     diffused_enabled: bool | None = None,
     diffused_refinable: bool = True,
     diffused_diffusion_radius: float = 1.0,
+    diffused_visibility_strength: float = 0.5,
     diffused_nn_radius_scale_coef: float | None = None,
     custom_ply_enabled: bool | None = None,
     custom_ply_refinable: bool = True,
@@ -311,6 +312,7 @@ def _update_import_settings(
     resolved_diffused_enabled = bool(diffused_enabled)
     resolved_diffused_refinable = bool(diffused_refinable)
     resolved_diffused_diffusion_radius = max(float(diffused_diffusion_radius), 0.0)
+    resolved_diffused_visibility_strength = float(np.clip(float(diffused_visibility_strength), 0.0, 1.0))
     resolved_diffused_nn_radius_scale_coef = float(max(diffused_nn_radius_scale_coef if diffused_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4))
     resolved_custom_ply_enabled = bool(custom_ply_enabled)
     resolved_custom_ply_refinable = bool(custom_ply_refinable)
@@ -368,6 +370,7 @@ def _update_import_settings(
         diffused_enabled=resolved_diffused_enabled,
         diffused_refinable=resolved_diffused_refinable,
         diffused_diffusion_radius=resolved_diffused_diffusion_radius,
+        diffused_visibility_strength=resolved_diffused_visibility_strength,
         diffused_nn_radius_scale_coef=resolved_diffused_nn_radius_scale_coef,
         custom_ply_enabled=resolved_custom_ply_enabled,
         custom_ply_refinable=resolved_custom_ply_refinable,
@@ -416,6 +419,7 @@ def _update_import_settings(
     viewer.ui._values["colmap_diffused_refinable"] = resolved_diffused_refinable
     viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
     viewer.ui._values["colmap_diffused_diffusion_radius"] = resolved_diffused_diffusion_radius
+    viewer.ui._values["colmap_diffused_visibility_strength"] = resolved_diffused_visibility_strength
     viewer.ui._values["colmap_diffused_nn_radius_scale_coef"] = resolved_diffused_nn_radius_scale_coef
     viewer.ui._values["colmap_custom_ply_enabled"] = resolved_custom_ply_enabled
     viewer.ui._values["colmap_custom_ply_refinable"] = resolved_custom_ply_refinable

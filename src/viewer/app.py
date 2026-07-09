@@ -816,6 +816,7 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
                     pointcloud_nn_radius_scale_coef=getattr(import_cfg, "pointcloud_nn_radius_scale_coef", None),
                     diffused_enabled=bool(getattr(import_cfg, "diffused_enabled", False)),
                     diffused_diffusion_radius=getattr(import_cfg, "diffused_diffusion_radius", None),
+                    diffused_visibility_strength=float(getattr(import_cfg, "diffused_visibility_strength", 0.5)),
                     diffused_nn_radius_scale_coef=getattr(import_cfg, "diffused_nn_radius_scale_coef", None),
                     custom_ply_enabled=bool(getattr(import_cfg, "custom_ply_enabled", False)),
                     custom_ply_nn_radius_scale_coef=getattr(import_cfg, "custom_ply_nn_radius_scale_coef", None),
