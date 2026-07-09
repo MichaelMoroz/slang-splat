@@ -1827,7 +1827,7 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     assert capture_rects == [(12.0, 34.0, child_sizes[0][0], child_sizes[0][1])]
     assert combo_labels == [("##training_camera_view", "Rendered")]
     assert slider_calls == [("##training_camera_frame", 3, 0, 12)]
-    assert checkbox_calls == [("Full Resolution", False), ("PPISP Tonemap", True), ("COLMAP Point Matches", False)]
+    assert checkbox_calls == [("Full Resolution", False), ("Live Trainer View", False), ("PPISP Tonemap", True), ("COLMAP Point Matches", False)]
     assert button_labels == ["Move Main View Here"]
     assert disabled_text == [
         "frame.png",

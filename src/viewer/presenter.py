@@ -59,6 +59,27 @@ def _training_camera_ppisp_tonemap(viewer: object) -> bool:
         return True
 
 
+def _training_camera_live_output(viewer: object) -> bool:
+    try:
+        return bool(viewer.ui._values.get("training_camera_live_output", False))
+    except Exception:
+        return False
+
+
+def _live_training_snapshot(viewer: object) -> tuple[int, int] | None:
+    """(frame_index, step) of the most recent executed training step, when live-follow
+    is enabled. The debug view then replays that step's exact sampling — frame, crop or
+    jitter plan, background seed, sort dither — against the current scene, showing what
+    the trainer is training on right now."""
+    if not _training_camera_live_output(viewer):
+        return None
+    trainer = getattr(viewer.s, "trainer", None)
+    state = getattr(trainer, "state", None)
+    if trainer is None or state is None or int(getattr(state, "step", 0)) <= 0:
+        return None
+    return max(int(getattr(state, "last_frame_index", 0)), 0), int(state.step) - 1
+
+
 def _ppisp_struct_sections(params: PPISPTonemapParams, *, title_prefix: str | None = None) -> tuple[tuple[str, tuple[tuple[str, object], ...]], ...]:
     sections: list[tuple[str, tuple[tuple[str, object], ...]]] = []
     for title, prefix in (("Exposure", "exposure"), ("Vignette", "vignette"), ("Chroma", "chroma"), ("Curve", "crf")):
@@ -1095,11 +1116,33 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
     return payload
 
 
-def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, render_frame_index: int) -> tuple[spy.Texture, dict[str, int | bool | float], int, int, dict[str, object] | None]:
-    step = _training_debug_step(viewer)
-    debug_width, debug_height = _training_debug_resolution(viewer, frame_idx, step)
+def _publish_live_training_status(viewer: object, frame_idx: int, live_step: int | None) -> None:
+    if live_step is None:
+        _set_ui_value(viewer, "_training_camera_live_status", "")
+        return
+    trainer = viewer.s.trainer
+    suffix = ""
+    if hasattr(trainer, "training_sample_plan"):
+        plan = trainer.training_sample_plan(frame_idx, live_step)
+        if plan.crop:
+            suffix = f" · crop ({plan.crop_x}, {plan.crop_y})"
+        elif int(trainer.effective_train_subsample_factor(frame_idx, live_step)) > 1:
+            suffix = " · stratified"
+    _set_ui_value(viewer, "_training_camera_live_status", f"live: step {live_step} · frame {frame_idx}{suffix}")
+
+
+def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx: int, render_frame_index: int, live_step: int | None = None) -> tuple[spy.Texture, dict[str, int | bool | float], int, int, dict[str, object] | None]:
+    step = _training_debug_step(viewer) if live_step is None else int(live_step)
+    if live_step is None:
+        debug_width, debug_height = _training_debug_resolution(viewer, frame_idx, step)
+        frame_camera = viewer.s.trainer.make_frame_camera(frame_idx, debug_width, debug_height)
+    else:
+        # Live mode replays the last training step's exact view: training resolution
+        # (full-resolution checkbox does not apply) and the plan-matched camera, which
+        # is the crop camera on crop steps.
+        debug_width, debug_height = viewer.s.trainer.training_resolution(frame_idx, step)
+        frame_camera = viewer.s.trainer._training_frame_camera(frame_idx, step)
     native_width, native_height = _training_debug_frame_size(viewer, frame_idx)
-    frame_camera = viewer.s.trainer.make_frame_camera(frame_idx, debug_width, debug_height)
     native_camera = viewer.s.trainer.make_frame_camera(frame_idx, native_width, native_height)
     debug_renderer = require_not_none(viewer.s.training_renderer, "Training renderer is unavailable for debug rendering.")
     set_resolution = getattr(debug_renderer, "set_render_resolution", None)
@@ -1113,7 +1156,7 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
         step=step,
         use_trainer_hparams=True,
     )
-    sample_vars = _training_debug_sample_vars(viewer, frame_idx, step, render_frame_index)
+    sample_vars = _training_debug_sample_vars(viewer, frame_idx, step, render_frame_index) if live_step is None else viewer.s.trainer._training_sample_vars(frame_idx, step)
     sort_dither = viewer.s.trainer.sorting_dither(frame_idx, step, frame_camera) if hasattr(viewer.s.trainer, "sorting_dither") else None
     training = viewer.s.trainer.training
     workspace_getter = getattr(viewer.s.trainer, "renderer_training_workspace", None)
@@ -1130,7 +1173,7 @@ def _render_debug_source(viewer: object, encoder: spy.CommandEncoder, frame_idx:
         sort_camera_dither_sigma=0.0 if sort_dither is None else sort_dither.sigma,
         sort_camera_dither_seed=0 if sort_dither is None else sort_dither.seed,
         training_background_mode=int(getattr(training, "background_mode", 0)),
-        training_background_seed=_training_debug_background_seed(viewer, render_frame_index),
+        training_background_seed=_training_debug_background_seed(viewer, render_frame_index if live_step is None else step),
         training_native_camera=native_camera,
         training_sample_vars=sample_vars,
         clone_counts_buffer=clone_counts_buffer,
@@ -1211,8 +1254,15 @@ def _render_debug_target(viewer: object, encoder: spy.CommandEncoder, frame_idx:
 
 def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int, render_frame_index: int) -> spy.Texture:
     with debug_region(encoder, "Viewer Debug View", 148):
-        frame_idx = _debug_frame_idx(viewer)
-        debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index)
+        live = _live_training_snapshot(viewer)
+        frame_idx = _debug_frame_idx(viewer) if live is None else live[0]
+        live_step = None if live is None else live[1]
+        if _training_camera_live_output(viewer):
+            _publish_live_training_status(viewer, frame_idx, live_step)
+        if live_step is None:
+            debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index)
+        else:
+            debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index, live_step=live_step)
         debug_view = _debug_view_key(viewer)
         if debug_view != "dssim":
             session._release_debug_dssim_runtime(viewer)
@@ -1227,7 +1277,7 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
             apply_loss_colorspace = False
             source_uses_target_loss_colorspace = False
         else:
-            target_tex, target_is_linear = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
+            target_tex, target_is_linear = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer) if live_step is None else live_step, sample_vars)
             apply_loss_colorspace = debug_view == "target"
             if debug_view == "target":
                 source_tex = target_tex

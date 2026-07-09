@@ -1334,3 +1334,21 @@ def test_dispatch_viewport_present_does_not_apply_extra_srgb_transform(device) -
     image = np.asarray(output.to_numpy(), dtype=np.float32)
     expected = np.array([0.25, 0.5, 1.0], dtype=np.float32)
     np.testing.assert_allclose(image[0, 0, :3], expected, rtol=0.0, atol=1e-5)
+
+
+def test_live_training_snapshot_resolves_last_executed_step() -> None:
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"training_camera_live_output": True}),
+        s=SimpleNamespace(trainer=SimpleNamespace(state=SimpleNamespace(step=42, last_frame_index=7))),
+    )
+    assert presenter._live_training_snapshot(viewer) == (7, 41)
+
+    viewer.ui._values["training_camera_live_output"] = False
+    assert presenter._live_training_snapshot(viewer) is None
+
+    viewer.ui._values["training_camera_live_output"] = True
+    viewer.s.trainer.state.step = 0  # nothing trained yet
+    assert presenter._live_training_snapshot(viewer) is None
+
+    viewer.s.trainer = None  # no trainer at all
+    assert presenter._live_training_snapshot(viewer) is None

@@ -1903,9 +1903,11 @@ class ToolkitWindow:
         line_height = float(imgui.get_text_line_height_with_spacing())
         frame_height = float(imgui.get_frame_height())
         spacing_y = float(imgui.get_style().item_spacing.y)
-        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
+        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
         if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
             height += frame_height + spacing_y
+        if bool(ui._values.get("training_camera_live_output", False)) and str(ui._values.get("_training_camera_live_status", "")).strip():
+            height += line_height + spacing_y
         if bool(ui._values.get("show_training_camera_colmap_points", False)):
             height += line_height + spacing_y
         for key, _suffix_only in _TRAINING_CAMERA_DEBUG_TEXT_FIELDS:
@@ -1936,6 +1938,13 @@ class ToolkitWindow:
         changed, full_res = imgui.checkbox("Full Resolution", bool(ui._values.get("training_camera_full_resolution", False)))
         if changed:
             ui._values["training_camera_full_resolution"] = bool(full_res)
+        changed, live_output = imgui.checkbox("Live Trainer View", bool(ui._values.get("training_camera_live_output", False)))
+        if changed:
+            ui._values["training_camera_live_output"] = bool(live_output)
+        if bool(ui._values.get("training_camera_live_output", False)):
+            live_status = str(ui._values.get("_training_camera_live_status", "")).strip()
+            if live_status:
+                imgui.text_disabled(live_status)
         changed, ppisp_tonemap = imgui.checkbox("PPISP Tonemap", bool(ui._values.get("training_camera_ppisp_tonemap", True)))
         if changed:
             ui._values["training_camera_ppisp_tonemap"] = bool(ppisp_tonemap)
