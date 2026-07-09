@@ -251,18 +251,23 @@ def _open_stats_writer(stats: dict[str, Any]) -> tuple[Any | None, csv.DictWrite
     return handle, writer
 
 
-def _emit_stats(viewer: HeadlessViewer, stats: dict[str, Any], writer: csv.DictWriter | None, step: int, *, force: bool = False) -> bool:
+def _emit_stats(viewer: HeadlessViewer, stats: dict[str, Any], writer: csv.DictWriter | None, step: int, *, force: bool = False, handle: Any | None = None) -> bool:
     interval = int(stats.get("log_interval", 0) or 0)
     if not force and (interval <= 0 or int(step) % interval != 0):
         return False
     row = _stats_row(viewer)
+    # Flush eagerly: headless stdout/CSV are usually redirected to files, and block
+    # buffering would otherwise delay progress output by thousands of steps.
     print(
         "step={step} splats={splats} loss={avg_loss:.6g} psnr={avg_psnr:.3f}dB ssim={avg_ssim:.5f}".format(
             **row
-        )
+        ),
+        flush=True,
     )
     if writer is not None:
         writer.writerow(row)
+        if handle is not None:
+            handle.flush()
     return True
 
 
@@ -403,6 +408,47 @@ def _render_snapshots(viewer: HeadlessViewer, render_cfg: object, *, step: int |
     return tuple(paths)
 
 
+def _dump_training_gradients(viewer: HeadlessViewer, event: ScheduledAction, run: dict[str, Any], step: int) -> Path:
+    """Snapshot per-splat params, last-step gradients, and Adam moments to an .npz.
+
+    The raster backward's ``param_grads`` are a single-step sample; the Adam moments are
+    EMAs (~10 steps for m, ~1000 for v), so their per-parameter distribution captures the
+    gradient statistics around ``step``. A fixed, seeded subsample keeps successive dumps
+    row-aligned with each other and file sizes manageable for multi-million-splat scenes.
+    """
+    trainer = viewer.s.trainer
+    if trainer is None:
+        raise RuntimeError("dump_grads requires an active trainer.")
+    renderer = trainer.renderer
+    count = int(getattr(trainer.scene, "count", 0))
+    if count <= 0:
+        raise RuntimeError("dump_grads requires a non-empty scene.")
+    sample_count = min(int(event.config.get("sample_count", 200_000)), count)
+    rng = np.random.default_rng(int(event.config.get("sample_seed", 20260709)))
+    indices = np.sort(rng.choice(count, size=sample_count, replace=False))
+    params = renderer.read_scene_groups(count)
+    grads = renderer.read_grad_groups(count)
+    packed = int(renderer.packed_trainable_param_count)
+    moments = renderer._read_array(trainer.adam_optimizer.buffers["adam_moments"], np.float32, count * packed * 2)
+    moments = moments.reshape(packed, count, 2)[:, indices, :]
+    out_dir = _event_output_dir(event, run, "grads")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"grads_step{int(step):06d}.npz"
+    np.savez_compressed(
+        path,
+        step=np.int64(step),
+        indices=indices.astype(np.int64),
+        positions=np.asarray(params["positions"][indices], dtype=np.float32),
+        scales=np.asarray(params["scales"][indices], dtype=np.float32),
+        color_alpha=np.asarray(params["color_alpha"][indices], dtype=np.float32),
+        grad_positions=np.asarray(grads["grad_positions"][indices], dtype=np.float32),
+        grad_scales=np.asarray(grads["grad_scales"][indices], dtype=np.float32),
+        grad_color_alpha=np.asarray(grads["grad_color_alpha"][indices], dtype=np.float32),
+        adam_moments=np.ascontiguousarray(moments, dtype=np.float32),
+    )
+    return path
+
+
 def _run_post_step_events(viewer: HeadlessViewer, run: dict[str, Any], events: tuple[ScheduledAction, ...], step: int) -> None:
     for event in events:
         if event.action in {"capture_python", "capture_renderdoc"}:
@@ -413,6 +459,27 @@ def _run_post_step_events(viewer: HeadlessViewer, run: dict[str, Any], events: t
         elif event.action == "render":
             for path in _render_snapshots(viewer, event.config, step=step):
                 print(f"Render snapshot: {path}")
+        elif event.action in {"dump_grads", "capture_grads"}:
+            try:
+                path = _dump_training_gradients(viewer, event, run, step)
+                print(f"Gradient dump: {path}", flush=True)
+            except Exception as error:  # noqa: BLE001 - a failed dump must not kill the run
+                print(f"Gradient dump failed at step {step}: {error}", flush=True)
+        elif event.action in {"zero_adam_moments", "reset_init_anchors", "reset_refinement_history"}:
+            # Diagnostic in-place state resets: isolate which piece of accumulated
+            # optimizer/refinement state is responsible for late-training decay without
+            # the full state wipe a PLY resume performs.
+            trainer = viewer.s.trainer
+            if trainer is None:
+                raise RuntimeError(f"{event.action} requires an active trainer.")
+            if event.action == "zero_adam_moments":
+                trainer._zero_optimizer_moments()
+            elif event.action == "reset_init_anchors":
+                trainer._reset_splat_init(trainer.read_live_scene())
+            else:
+                trainer._reset_splat_ages()
+                trainer._clear_clone_counts()
+            print(f"Applied {event.action} at step {step}", flush=True)
         else:
             raise ValueError(f"Unsupported headless scheduled action: {event.action}")
 
@@ -450,10 +517,38 @@ def _run_photometric_stage(viewer: HeadlessViewer, run: dict[str, Any]) -> None:
     session.set_photometric_active(viewer, False)
 
 
+def _apply_training_resume(viewer: HeadlessViewer, run: dict[str, Any]) -> None:
+    """Optional trained-scene resume for cheap replay experiments.
+
+    ``resume_ply`` swaps a previously exported scene into the trainer (optimizer
+    bookkeeping resets, schedule step is preserved); ``train_start_step`` fast-forwards
+    the trainer step so every staged/interpolated hyperparameter resumes mid-schedule
+    instead of restarting at stage 0. Checkpoint once (train to N with ``output_ply``),
+    then replay from step N under different hyperparameters at a fraction of the cost.
+    Note the replay is not bit-identical to an uninterrupted run: Adam moments, splat
+    ages, contribution history, and init anchors restart from the checkpoint scene.
+    """
+    trainer = viewer.s.trainer
+    if trainer is None:
+        return
+    start_step = int(run.get("train_start_step", 0) or 0)
+    resume_ply = _path_or_none(run.get("resume_ply"))
+    if start_step <= 0 and resume_ply is None:
+        return
+    if start_step > 0:
+        trainer.state.step = start_step
+    if resume_ply is not None:
+        scene = load_gaussian_ply(resume_ply)
+        trainer.replace_scene(scene)
+        print(f"Resumed scene from {resume_ply} ({scene.count:,} gaussians) at step {int(trainer.state.step)}", flush=True)
+    trainer.update_hyperparams(trainer.adam, trainer.stability, trainer.training)
+
+
 def _run_training_stage(viewer: HeadlessViewer, run: dict[str, Any]) -> None:
     train_iters = int(run.get("train_iters", 0) or 0)
     if train_iters <= 0:
         return
+    _apply_training_resume(viewer, run)
     stats = _stats_cfg(run)
     events = _events_from_schedule(run.get("schedule", ()), train_iters)
     stats_handle, stats_writer = _open_stats_writer(stats)
@@ -485,11 +580,11 @@ def _run_training_stage(viewer: HeadlessViewer, run: dict[str, Any]) -> None:
                 viewer.s.training_runtime_factor_changed = False
             step = int(viewer.s.trainer.state.step)
             _run_post_step_events(viewer, run, _events_at(events, step), step)
-            if _emit_stats(viewer, stats, stats_writer, step):
+            if _emit_stats(viewer, stats, stats_writer, step, handle=stats_handle):
                 last_stats_step = step
         final_step = int(getattr(viewer.s.trainer.state, "step", 0)) if viewer.s.trainer is not None else train_iters
         if final_step != last_stats_step:
-            _emit_stats(viewer, stats, stats_writer, final_step, force=True)
+            _emit_stats(viewer, stats, stats_writer, final_step, force=True, handle=stats_handle)
     finally:
         if stats_handle is not None:
             stats_handle.close()

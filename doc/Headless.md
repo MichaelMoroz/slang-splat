@@ -44,6 +44,8 @@ Training is optional: `train_iters: 0` runs everything else. Examples: `colmap �
 | `photometric` | `{ "steps": N }` | Standalone PPISP calibration before training; runs only if `steps > 0`. (In-import photometric is controlled by `viewer.import.colmap_photometric_compensation_enabled`.) Requires a COLMAP source. |
 | `reinitialize` | bool | Re-seed gaussians from the configured sources before training. |
 | `train_iters` | int | Training steps. `0` (or omitted) skips the training stage. |
+| `resume_ply` | path | Swap this exported scene into the trainer before training (checkpoint replay). Optimizer bookkeeping resets; combine with `train_start_step`. |
+| `train_start_step` | int | Fast-forward the trainer to this step before training so staged/interpolated schedules resume mid-run. `train_iters` stays the absolute final step (start 19000 + iters 26500 trains 7500 steps). |
 | `metrics` | `{ "output": path, "scene_ply": path }` | Present (non-null) runs the dataset-metrics stage. **Requires `source: "colmap"`** (needs frames + trainer, with training/photometric/import idle). `output` is the report path; `scene_ply` scores an external PLY by swapping it into the trainer. |
 | `render` | `{ "views": [...], "width": N, "height": N, "output_dir": path }` | Final render snapshots (see Views below). Defaults: `views: ["rendered"]`, `1280x720`, `outputs/headless/renders`. |
 | `output_ply` | path | Export the trained/loaded scene. SH inclusion follows the training `use_sh` setting. |
@@ -68,6 +70,7 @@ Recurring or point-in-time actions are a list, each keyed by training step:
   - `capture_python` / `capture_renderdoc` — wrap that step's GPU submission in a Python / RenderDoc capture.
   - `capture_buffers` — write a resource/allocation log (via `collect_resource_debug_snapshot`); not a raw GPU-memory dump.
   - `render` — render snapshots at that step (same options as `viewer.run.render`).
+  - `dump_grads` — write an `.npz` snapshot of per-splat params, last-step gradients, and Adam moments for a seeded splat subsample (`sample_count`, default 200k; `sample_seed`). For gradient-distribution analysis.
 - Output directory resolves from the action's `output_dir`, else `viewer.run.capture_output_dir`, else `outputs/headless/<kind>`.
 
 ## Views
