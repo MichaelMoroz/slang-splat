@@ -2951,6 +2951,17 @@ class ToolkitWindow:
                 tooltip="Local diffusion multiplier applied before point synthesis.",
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
+            ToolkitWindow._draw_clamped_float(
+                ui,
+                key="colmap_diffused_visibility_strength",
+                label="##colmap_diffused_visibility_strength",
+                default=0.5,
+                speed=0.005,
+                min_value=0.0,
+                max_value=1.0,
+                fmt="%.3f",
+                tooltip="Importance sampling toward visible image area (1/d^2 to camera poses). 0 keeps the original sparse-point density, 1 makes the diffused density uniform per visible area; 0.5 blends half and half.",
+            )
             imgui.end_disabled()
             _row_refinable("colmap_diffused_refinable", diffused_enabled)
             _row_nn_scale("colmap_diffused_nn_radius_scale_coef", 0.5, diffused_enabled)

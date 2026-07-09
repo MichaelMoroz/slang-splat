@@ -720,13 +720,34 @@ def test_diffused_visible_area_weights_follow_inverse_square_camera_distance() -
 
 def test_diffused_sampling_densifies_near_cameras() -> None:
     recon, _ = _diffused_two_cluster_recon(near_z=1.0, far_z=3.0)
-    positions, colors = sample_colmap_diffused_points(recon, point_count=4000, diffusion_radius=0.0, seed=11, min_track_length=0)
+    positions, colors = sample_colmap_diffused_points(recon, point_count=4000, diffusion_radius=0.0, seed=11, min_track_length=0, visibility_strength=1.0)
 
     assert positions.shape == (4000, 3)
     near_count = int(np.count_nonzero(positions[:, 2] < 2.0))
     far_count = int(np.count_nonzero(positions[:, 2] > 2.0))
     assert far_count > 0
     assert 6.0 < near_count / far_count < 13.0
+
+
+def test_diffused_visibility_strength_blends_toward_original_density() -> None:
+    recon, _ = _diffused_two_cluster_recon(near_z=1.0, far_z=3.0)
+
+    def cluster_ratio(strength: float) -> float:
+        positions, _ = sample_colmap_diffused_points(recon, point_count=4000, diffusion_radius=0.0, seed=17, min_track_length=0, visibility_strength=strength)
+        near = int(np.count_nonzero(positions[:, 2] < 2.0))
+        far = int(np.count_nonzero(positions[:, 2] > 2.0))
+        return near / max(far, 1)
+
+    # Strength 0 -> original density (equal clusters); default 0.5 -> half original +
+    # half 1/d^2 importance, so with per-point weights ~9:1 the expected cluster ratio is
+    # (0.5*0.9 + 0.25) / (0.5*0.1 + 0.25) ~= 2.3; strength 1 -> full ~9:1.
+    ratio_off = cluster_ratio(0.0)
+    ratio_half = cluster_ratio(0.5)
+    ratio_full = cluster_ratio(1.0)
+    assert 0.8 < ratio_off < 1.25
+    assert 1.7 < ratio_half < 3.2
+    assert 6.0 < ratio_full < 13.0
+    assert ratio_off < ratio_half < ratio_full
 
 
 def test_diffused_sampling_falls_back_to_uniform_without_camera_poses() -> None:

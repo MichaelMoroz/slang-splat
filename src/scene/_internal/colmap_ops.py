@@ -1278,7 +1278,15 @@ def sample_colmap_diffused_points(
     diffusion_radius: float,
     seed: int,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    visibility_strength: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Sample diffused init points from the sparse cloud.
+
+    ``visibility_strength`` blends the base-point distribution between the original
+    sparse-point density (0.0) and the visible-area importance weights (1.0, density
+    uniform per image area via nn_radius^3 * sum(1/d^2)); the default 0.5 draws half the
+    samples from each.
+    """
     xyz, rgb = point_tables(recon, min_track_length=min_track_length)
     if xyz.shape[0] == 0:
         raise RuntimeError(_min_track_length_error(min_track_length))
@@ -1290,12 +1298,15 @@ def sample_colmap_diffused_points(
         xyz, rgb = xyz[keep], rgb[keep]
     count = max(int(point_count), 1)
     radius = max(float(diffusion_radius), 0.0)
+    strength = float(np.clip(visibility_strength, 0.0, 1.0))
     rng = np.random.default_rng(int(seed))
-    weights = diffused_visible_area_weights(xyz, colmap_camera_centers(recon))
+    weights = diffused_visible_area_weights(xyz, colmap_camera_centers(recon)) if strength > 0.0 else None
     if weights is None:
         base_indices = rng.integers(0, xyz.shape[0], size=count, dtype=np.int64)
     else:
-        base_indices = rng.choice(xyz.shape[0], size=count, replace=True, p=weights)
+        blended = (1.0 - strength) / float(xyz.shape[0]) + strength * weights
+        blended /= blended.sum()
+        base_indices = rng.choice(xyz.shape[0], size=count, replace=True, p=blended)
     positions = np.ascontiguousarray(xyz[base_indices], dtype=np.float32)
     colors = np.ascontiguousarray(rgb[base_indices], dtype=np.float32)
     if radius <= 0.0:
@@ -1347,6 +1358,7 @@ def initialize_scene_from_colmap_diffused_points(
     seed: int,
     init_hparams: GaussianInitHyperParams | None = None,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    visibility_strength: float = 0.5,
 ) -> GaussianScene:
-    positions, colors = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed, min_track_length=min_track_length)
+    positions, colors = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed, min_track_length=min_track_length, visibility_strength=visibility_strength)
     return _build_scene_from_positions_colors(positions, colors, seed, init_hparams)

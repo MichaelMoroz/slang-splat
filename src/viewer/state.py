@@ -83,6 +83,7 @@ class ColmapImportSettings:
     diffused_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_enabled", False))
     diffused_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_refinable", True))
     diffused_diffusion_radius: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_diffusion_radius", 1.0))
+    diffused_visibility_strength: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_visibility_strength", 0.5))
     diffused_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
     custom_ply_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_enabled", False))
     custom_ply_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_refinable", True))
@@ -145,6 +146,7 @@ class ColmapImportProgress:
     diffused_enabled: bool = False
     diffused_refinable: bool = True
     diffused_diffusion_radius: float = 1.0
+    diffused_visibility_strength: float = 0.5
     diffused_nn_radius_scale_coef: float = 0.5
     custom_ply_enabled: bool = False
     custom_ply_refinable: bool = True

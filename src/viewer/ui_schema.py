@@ -206,6 +206,7 @@ _VIEWER_IMPORT_EXPORT_FIELDS = (
     ("colmap_diffused_refinable", bool),
     ("colmap_diffused_point_count", int),
     ("colmap_diffused_diffusion_radius", float),
+    ("colmap_diffused_visibility_strength", float),
     ("colmap_diffused_nn_radius_scale_coef", float),
     ("colmap_custom_ply_enabled", bool),
     ("colmap_custom_ply_refinable", bool),

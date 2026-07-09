@@ -1068,6 +1068,10 @@ def _diffused_diffusion_radius(import_cfg: object) -> float:
     return max(float(getattr(import_cfg, "diffused_diffusion_radius", 1.0)), 0.0)
 
 
+def _diffused_visibility_strength(import_cfg: object) -> float:
+    return float(np.clip(float(getattr(import_cfg, "diffused_visibility_strength", 0.5)), 0.0, 1.0))
+
+
 def _custom_mesh_path(import_cfg: object) -> Path | None:
     mesh_path = getattr(import_cfg, "custom_mesh_path", None)
     return None if mesh_path is None else Path(mesh_path)
@@ -1267,6 +1271,7 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
         round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "pointcloud_nn_radius_scale_coef")), 6),
         int(getattr(import_cfg, "diffused_point_count", 0)),
         round(float(_diffused_diffusion_radius(import_cfg)), 6),
+        round(float(_diffused_visibility_strength(import_cfg)), 6),
         round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "diffused_nn_radius_scale_coef")), 6),
         None if getattr(import_cfg, "custom_ply_path", None) is None else str(Path(import_cfg.custom_ply_path).resolve()),
         round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "custom_ply_nn_radius_scale_coef", default=1.0, fallback_attr=None)), 6),
@@ -1336,6 +1341,7 @@ def _load_enabled_init_source_payloads(viewer: object, init: object) -> None:
                 _diffused_diffusion_radius(import_cfg),
                 int(init.seed),
                 min_track_length=min_track_length,
+                visibility_strength=_diffused_visibility_strength(import_cfg),
             )
             _store_point_source_cache(viewer, source_name, positions, colors)
             continue
@@ -2825,6 +2831,7 @@ def _finish_import_colmap_dataset(
     diffused_enabled: bool | None = None,
     diffused_refinable: bool = True,
     diffused_diffusion_radius: float = 1.0,
+    diffused_visibility_strength: float = 0.5,
     diffused_nn_radius_scale_coef: float | None = None,
     custom_ply_enabled: bool | None = None,
     custom_ply_refinable: bool = True,
@@ -2895,6 +2902,7 @@ def _finish_import_colmap_dataset(
         diffused_enabled=diffused_enabled,
         diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
+        diffused_visibility_strength=diffused_visibility_strength,
         diffused_nn_radius_scale_coef=diffused_nn_radius_scale_coef,
         custom_ply_enabled=custom_ply_enabled,
         custom_ply_refinable=custom_ply_refinable,
@@ -2983,6 +2991,7 @@ def import_colmap_dataset(
     diffused_enabled: bool | None = None,
     diffused_refinable: bool = True,
     diffused_diffusion_radius: float = 1.0,
+    diffused_visibility_strength: float = 0.5,
     diffused_nn_radius_scale_coef: float | None = None,
     custom_ply_enabled: bool | None = None,
     custom_ply_refinable: bool = True,
@@ -3023,6 +3032,7 @@ def import_colmap_dataset(
         diffused_enabled=bool(diffused_enabled),
         diffused_refinable=bool(diffused_refinable),
         diffused_diffusion_radius=max(float(diffused_diffusion_radius), 0.0),
+        diffused_visibility_strength=float(np.clip(float(diffused_visibility_strength), 0.0, 1.0)),
         diffused_nn_radius_scale_coef=float(max(diffused_nn_radius_scale_coef if diffused_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
         custom_ply_enabled=bool(custom_ply_enabled),
         custom_ply_refinable=bool(custom_ply_refinable),
@@ -3119,6 +3129,7 @@ def import_colmap_dataset(
         diffused_enabled=diffused_enabled,
         diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
+        diffused_visibility_strength=diffused_visibility_strength,
         diffused_nn_radius_scale_coef=diffused_nn_radius_scale_coef,
         custom_ply_enabled=custom_ply_enabled,
         custom_ply_refinable=custom_ply_refinable,
@@ -3186,6 +3197,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     diffused_enabled = bool(viewer.ui._values.get("colmap_diffused_enabled", False))
     diffused_refinable = bool(viewer.ui._values.get("colmap_diffused_refinable", True))
     diffused_diffusion_radius = max(float(viewer.ui._values.get("colmap_diffused_diffusion_radius", 1.0)), 0.0)
+    diffused_visibility_strength = float(np.clip(float(viewer.ui._values.get("colmap_diffused_visibility_strength", 0.5)), 0.0, 1.0))
     diffused_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_diffused_nn_radius_scale_coef", nn_radius_scale_coef))
     custom_ply_enabled = bool(viewer.ui._values.get("colmap_custom_ply_enabled", False))
     custom_ply_refinable = bool(viewer.ui._values.get("colmap_custom_ply_refinable", True))
@@ -3278,6 +3290,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         diffused_enabled=diffused_enabled,
         diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
+        diffused_visibility_strength=diffused_visibility_strength,
         diffused_nn_radius_scale_coef=float(max(diffused_nn_radius_scale_coef, 1e-4)),
         custom_ply_enabled=custom_ply_enabled,
         custom_ply_refinable=custom_ply_refinable,
@@ -3421,6 +3434,7 @@ def advance_colmap_import(viewer: object) -> None:
                 diffused_enabled=getattr(progress, "diffused_enabled", None),
                 diffused_refinable=getattr(progress, "diffused_refinable", True),
                 diffused_diffusion_radius=getattr(progress, "diffused_diffusion_radius", None),
+                diffused_visibility_strength=float(getattr(progress, "diffused_visibility_strength", 0.5)),
                 diffused_nn_radius_scale_coef=getattr(progress, "diffused_nn_radius_scale_coef", None),
                 custom_ply_enabled=getattr(progress, "custom_ply_enabled", None),
                 custom_ply_refinable=getattr(progress, "custom_ply_refinable", True),
@@ -3516,6 +3530,7 @@ def advance_colmap_import(viewer: object) -> None:
                 diffused_enabled=getattr(progress, "diffused_enabled", None),
                 diffused_refinable=getattr(progress, "diffused_refinable", True),
                 diffused_diffusion_radius=getattr(progress, "diffused_diffusion_radius", None),
+                diffused_visibility_strength=float(getattr(progress, "diffused_visibility_strength", 0.5)),
                 diffused_nn_radius_scale_coef=getattr(progress, "diffused_nn_radius_scale_coef", None),
                 custom_ply_enabled=getattr(progress, "custom_ply_enabled", None),
                 custom_ply_refinable=getattr(progress, "custom_ply_refinable", True),
