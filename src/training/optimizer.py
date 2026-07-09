@@ -208,6 +208,18 @@ class GaussianOptimizer:
         camera_position = np.zeros((3,), dtype=np.float32) if frame_camera is None else np.asarray(frame_camera.position, dtype=np.float32).reshape(3)
         push_step = 0.0 if frame_camera is None else float(resolve_position_push_away_from_camera_step(training_hparams, int(step_index)))
         opacity_reg_weight = float(resolve_opacity_reg_weight(training_hparams, int(step_index)))
+        opacity_binarize_weight = float(getattr(training_hparams, "opacity_binarize_reg_weight", 0.0))
+        # The init-position pull is an L2 loss term, so its per-step strength must track
+        # the position step size through the LR schedule. Applied as a constant-strength
+        # projection it wins over the shrinking data gradient late in training and drags
+        # the scene back toward the (coarse) init cloud — measured as monotonic loss/PSNR
+        # decay from ~19.5k on default schedules. Normalized to step 0 so the configured
+        # weight keeps its established early-training meaning.
+        init_position_reg_weight = float(getattr(training_hparams, "init_position_reg_weight", 0.0))
+        if init_position_reg_weight != 0.0:
+            start_position_scale = float(resolve_learning_rate_scale(training_hparams, 0)) * float(resolve_position_lr_mul(training_hparams, 0))
+            current_position_scale = float(resolve_learning_rate_scale(training_hparams, int(step_index))) * float(resolve_position_lr_mul(training_hparams, int(step_index)))
+            init_position_reg_weight *= current_position_scale / max(start_position_scale, 1e-12)
         dispatch(
             kernel=self._kernels["project_params"],
             thread_count=self._threads(splat_count),
@@ -217,8 +229,8 @@ class GaussianOptimizer:
                 **camera_vars,
                 "g_SplatCount": int(splat_count),
                 "g_OptimizerParamSettings": self.param_settings,
-                "g_InitPositionRegWeight": float(getattr(training_hparams, "init_position_reg_weight", 0.0)),
-                "g_GaussianOptimizerRegularization": spy.float3(float(training_hparams.scale_abs_reg_weight), opacity_reg_weight, push_step),
+                "g_InitPositionRegWeight": init_position_reg_weight,
+                "g_GaussianOptimizerRegularization": spy.float4(float(training_hparams.scale_abs_reg_weight), opacity_reg_weight, push_step, opacity_binarize_weight),
                 "g_GaussianOptimizerRegularizationCameraPosition": spy.float3(*camera_position.tolist()),
                 "g_GaussianOptimizerSplatContributionInfo": self.renderer.work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
                 "g_MaxViewAngleSlope": float(math.tan(math.radians(float(resolve_max_visible_angle_deg(training_hparams, int(step_index)))))),

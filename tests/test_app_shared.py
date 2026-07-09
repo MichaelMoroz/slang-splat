@@ -178,6 +178,15 @@ def test_build_training_params_preserves_sorting_order_dithering() -> None:
     assert high.training.sorting_order_dithering_stage3 == 0.25
 
 
+def test_build_training_params_exposes_opacity_binarize_reg_weight() -> None:
+    params = build_training_params(background=(1.0, 1.0, 1.0), opacity_binarize_reg_weight=0.05)
+    default = build_training_params(background=(1.0, 1.0, 1.0))
+
+    assert params.training.opacity_binarize_reg_weight == 0.05
+    expected_default = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_binarize_reg_weight", 0.0))
+    assert abs(default.training.opacity_binarize_reg_weight - expected_default) < 1e-12
+
+
 def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
     params = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=1.5)
     clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=-2.0)

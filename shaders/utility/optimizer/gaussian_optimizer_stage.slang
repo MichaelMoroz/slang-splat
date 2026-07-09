@@ -42,7 +42,9 @@ uniform uint g_StoredPackedParamCount;
 uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
 uniform StructuredBuffer<float4> g_SplatInit;
 uniform float g_InitPositionRegWeight;
-uniform float3 g_GaussianOptimizerRegularization;
+// x = scale abs reg, y = opacity reg (downward), z = push-away-from-camera step,
+// w = opacity binarization reg (pushes opacity toward 0 or 1).
+uniform float4 g_GaussianOptimizerRegularization;
 uniform float3 g_GaussianOptimizerRegularizationCameraPosition;
 uniform StructuredBuffer<uint4> g_GaussianOptimizerSplatContributionInfo;
 uniform RWStructuredBuffer<float> g_SplatParamsRW;
@@ -215,6 +217,16 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         float opacity = opacity_from_raw(state.rawOpacity);
         state.rawOpacity -= opacitySettings.lr * g_GaussianOptimizerRegularization.y * opacity * (1.0 - opacity);
+    }
+    if (g_GaussianOptimizerRegularization.w != 0.0)
+    {
+        // Binarization penalty R = w * a * (1 - a) pushes opacity toward 0 or 1; through
+        // the sigmoid (da/draw = a(1-a)) the raw-space step is w * (1-2a) * a * (1-a).
+        // A co-located splat pair sharing one composite alpha sits on a symmetric split
+        // that this penalty turns into a local maximum: one splat wins while the loser
+        // decays toward zero opacity, where refinement's alpha cull removes it.
+        float opacity = opacity_from_raw(state.rawOpacity);
+        state.rawOpacity -= opacitySettings.lr * g_GaussianOptimizerRegularization.w * (1.0 - 2.0 * opacity) * opacity * (1.0 - opacity);
     }
     if (g_InitPositionRegWeight != 0.0)
     {
