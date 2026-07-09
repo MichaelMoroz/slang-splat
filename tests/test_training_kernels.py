@@ -3867,8 +3867,100 @@ def test_trainer_resample_selection_preserves_non_refinable_flags(device, tmp_pa
     splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:new_count]
 
     assert new_count == 2
-    np.testing.assert_allclose(splat_init[:, :3], scene.positions[[0, 2]], rtol=0.0, atol=1e-6)
+    # Deletion goes through the refinement rewrite, which repacks survivors atomically,
+    # so compare positions order-insensitively.
+    survivors = splat_init[np.argsort(splat_init[:, 0]), :3]
+    expected = scene.positions[[0, 2]]
+    np.testing.assert_allclose(survivors, expected[np.argsort(expected[:, 0])], rtol=0.0, atol=1e-6)
     assert np.all(splat_init[:, 3] < 0.0)
+
+
+def test_trainer_resample_delete_routes_through_refinement_prune(device, tmp_path: Path) -> None:
+    # Editor deletion rides the refinement prune mask: unselected splats carry through
+    # (with their init data / refinable flags), and frozen selected splats can still be
+    # deleted because the explicit mask wins over the refinable check.
+    scene = _make_scene(count=5, seed=515)
+    scene.refinable = np.array([True, True, False, True, False], dtype=bool)
+    frame = _make_frame(tmp_path, image_name="resample_delete_target.png", image_id=515)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_growth_start_step=0, refinement_interval=9999),
+        seed=123,
+    )
+
+    # Delete splats 1 (refinable) and 2 (frozen).
+    renderer.set_selection_highlight(np.array([False, True, True, False, False], dtype=bool))
+    new_count = trainer.resample_selection(0.0, seed=9)
+
+    assert new_count == 3
+    splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:new_count]
+    survivors = splat_init[np.argsort(splat_init[:, 0]), :3]
+    expected = scene.positions[[0, 3, 4]]
+    np.testing.assert_allclose(survivors, expected[np.argsort(expected[:, 0])], rtol=0.0, atol=1e-6)
+    # Survivor flags carry through: splats 0 and 3 refinable, splat 4 frozen.
+    assert int(np.count_nonzero(splat_init[:, 3] >= 0.0)) == 2
+    assert renderer.edit_selection_count() == 0  # selection cleared after the rewrite
+
+    # Deleting every last splat is refused (the trainer cannot run on an empty scene).
+    renderer.set_selection_highlight(np.ones((3,), dtype=bool))
+    assert trainer.resample_selection(0.0, seed=11) == 3
+
+
+def test_trainer_resample_fractional_sparsify_drops_exact_count(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=8, seed=516)
+    frame = _make_frame(tmp_path, image_name="resample_fractional_target.png", image_id=516)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_growth_start_step=0, refinement_interval=9999),
+        seed=123,
+    )
+
+    selection = np.array([True] * 4 + [False] * 4, dtype=bool)
+    renderer.set_selection_highlight(selection)
+    assert trainer.resample_selection(0.5, seed=3) == 6  # drops exactly half the selection
+
+    # Every unselected splat must have survived the rewrite untouched.
+    splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:6]
+    survivor_x = set(np.round(splat_init[:, 0].astype(np.float64), 5).tolist())
+    expected_x = np.round(scene.positions[4:, 0].astype(np.float64), 5).tolist()
+    assert all(x in survivor_x for x in expected_x)
+
+
+def test_trainer_resample_densify_reuses_refinement_split(device, tmp_path: Path) -> None:
+    # Growing the selection must reuse the refinement split: only refinable, selected
+    # splats spawn children, every other splat is carried through unculled, and the
+    # children inherit the parent's refinable flag.
+    scene = _make_scene(count=4, seed=414)
+    scene.refinable = np.array([True, True, False, False], dtype=bool)
+    frame = _make_frame(tmp_path, image_name="resample_densify_target.png", image_id=414)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_growth_start_step=0, refinement_interval=9999),
+        seed=123,
+    )
+
+    # Select the two refinable splats and grow the selection to 200% (adds two children).
+    renderer.set_selection_highlight(np.array([True, True, False, False], dtype=bool))
+    new_count = trainer.resample_selection(2.0, seed=9)
+
+    assert new_count == 6  # 4 originals kept (nothing pruned) + 2 children
+    splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:new_count]
+    # 2 refinable originals + 2 refinable children; the 2 non-refinable survivors stay frozen.
+    assert int(np.count_nonzero(splat_init[:, 3] >= 0.0)) == 4
+    assert int(np.count_nonzero(splat_init[:, 3] < 0.0)) == 2
+    assert renderer.edit_selection_count() == 0  # selection cleared after the split
 
 
 def test_refinement_opacity_mul_rewrites_unsplit_survivor_alpha(device, tmp_path: Path) -> None:
@@ -4700,6 +4792,132 @@ def test_init_position_regularizer_pulls_live_positions_toward_initial_scene(dev
     np.testing.assert_allclose(splat_init[:, :3], scene.positions, rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(splat_init[:, 3], np.array([-2.0, 2.0], dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(after, expected, rtol=0.0, atol=1e-6)
+
+
+def test_opacity_binarize_regularizer_pushes_opacity_toward_extremes(device, tmp_path: Path) -> None:
+    # R = w * a * (1 - a): opacity below 0.5 is pushed down, above 0.5 pushed up. This is
+    # the symmetry breaker for stacked splat pairs sharing one composite alpha.
+    scene = _make_scene(count=3, seed=117)
+    scene.opacities[:] = np.array([0.3, 0.7, 0.5], dtype=np.float32)
+    frame = _make_frame(tmp_path, image_name="opacity_binarize_target.png", image_id=117)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+
+    def _project(weight: float) -> np.ndarray:
+        trainer = GaussianTrainer(
+            device=device,
+            renderer=renderer,
+            scene=scene,
+            frames=[frame],
+            training_hparams=TrainingHyperParams(
+                opacity_binarize_reg_weight=weight,
+                scale_abs_reg_weight=0.0,
+                opacity_reg_weight=0.0,
+                sh1_reg_weight=0.0,
+                init_position_reg_weight=0.0,
+                max_opacity=1.0,
+                max_opacity_stage0=1.0,
+                max_opacity_stage1=1.0,
+                max_opacity_stage2=1.0,
+                max_opacity_stage3=1.0,
+                max_opacity_stage4=1.0,
+            ),
+            seed=123,
+        )
+        enc = device.create_command_encoder()
+        trainer.optimizer.dispatch_projection(
+            enc,
+            scene_buffers=renderer.scene_buffers,
+            splat_init_buffer=trainer.refinement_buffers["splat_init"],
+            splat_count=scene.count,
+            training_hparams=trainer.training,
+            step_index=0,
+        )
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        color_alpha = _read_scene_groups(renderer, scene.count)["color_alpha"]
+        return 1.0 / (1.0 + np.exp(-np.asarray(color_alpha[:, 3], dtype=np.float64)))
+
+    unchanged = _project(0.0)
+    np.testing.assert_allclose(unchanged, scene.opacities, rtol=0.0, atol=1e-5)  # weight 0 -> no-op
+
+    after = _project(50.0)
+    assert after[0] < scene.opacities[0] - 1e-4  # below 0.5 -> pushed toward 0
+    assert after[1] > scene.opacities[1] + 1e-4  # above 0.5 -> pushed toward 1
+    assert abs(after[2] - 0.5) < 1e-3  # exactly 0.5 is the (unstable) equilibrium
+
+
+def test_init_position_regularizer_tracks_lr_schedule(device, tmp_path: Path) -> None:
+    # The init-position pull is an L2 loss term: its strength must decay with the
+    # position LR schedule. A constant-strength pull wins over the shrinking data
+    # gradient late in training and drags the scene back toward the init cloud
+    # (measured as monotonic PSNR decay from ~19.5k on default schedules).
+    scene = _make_scene(count=1, seed=118)
+    scene.positions[:] = np.array([[0.0, 0.0, 2.0]], dtype=np.float32)
+    scene.refinable = np.array([True], dtype=bool)
+    frame = _make_frame(tmp_path, image_name="init_reg_schedule_target.png", image_id=118)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.0, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(
+            init_position_reg_weight=0.25,
+            scale_abs_reg_weight=0.0,
+            opacity_reg_weight=0.0,
+            sh1_reg_weight=0.0,
+            lr_schedule_enabled=True,
+            lr_schedule_start_lr=0.002,
+            lr_schedule_stage1_lr=0.001,
+            lr_schedule_stage2_lr=0.001,
+            lr_schedule_stage3_lr=0.001,
+            lr_schedule_end_lr=0.001,
+            lr_schedule_steps=1000,
+            lr_schedule_stage1_step=100,
+            lr_schedule_stage2_step=200,
+            lr_schedule_stage3_step=300,
+            lr_pos_mul=0.2,
+            lr_pos_stage1_mul=0.2,
+            lr_pos_stage2_mul=0.2,
+            lr_pos_stage3_mul=0.2,
+            lr_pos_stage4_mul=0.2,
+        ),
+        seed=123,
+    )
+
+    def _pull_fraction(step_index: int) -> float:
+        groups = _read_scene_groups(renderer, scene.count)
+        moved = groups["positions"].copy()
+        moved[:, :3] = scene.positions + np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+        renderer.write_scene_groups(scene.count, positions=moved, scales=groups["scales"], rotations=groups["rotations"], sh_coeffs=groups["sh_coeffs"], color_alpha=groups["color_alpha"])
+        enc = device.create_command_encoder()
+        trainer.optimizer.dispatch_projection(
+            enc,
+            scene_buffers=renderer.scene_buffers,
+            splat_init_buffer=trainer.refinement_buffers["splat_init"],
+            splat_count=scene.count,
+            training_hparams=trainer.training,
+            step_index=step_index,
+        )
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        after = _read_scene_groups(renderer, scene.count)["positions"][:, :3]
+        # fraction of the displacement pulled back toward the anchor
+        return float((moved[0, 0] - after[0, 0]) / 1.0)
+
+    # init radius |init.w| = 2.0 (from _reset_splat_init NN scales of a 1-splat scene the
+    # radius clamps; read it to compute the expected coefficient exactly).
+    splat_init = buffer_to_numpy(trainer.refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[: scene.count]
+    radius = float(abs(splat_init[0, 3]))
+    coeff_start = min(0.25 * radius, 1.0)
+    early = _pull_fraction(0)
+    np.testing.assert_allclose(early, coeff_start, rtol=5e-3)
+
+    # At step 500 the base LR interpolated to 0.001 (half of start) with flat pos muls,
+    # so the pull must be exactly half of its step-0 strength.
+    late = _pull_fraction(500)
+    np.testing.assert_allclose(late, min(0.25 * 0.5 * radius, 1.0), rtol=5e-3)
+    assert late < early
 
 
 def test_box_downscale_matches_expected_mean(device, tmp_path: Path) -> None:

@@ -26,7 +26,6 @@ static const uint EDIT_FLAG_SCALE = 4u;
 
 static const float EDIT_SH_C0 = 0.28209479177387814;
 static const float3 EDIT_LUMA_WEIGHTS = float3(0.2126, 0.7152, 0.0722);
-static const float EDIT_DENSIFY_SCALE_SHRINK = 1.6;
 static const uint EDIT_RESAMPLE_HASH = 0x9e3779b9u;
 
 uniform RWStructuredBuffer<float> g_SplatParams;
@@ -55,15 +54,21 @@ uniform RWStructuredBuffer<uint> g_SrcMask;
 uniform RWStructuredBuffer<uint> g_DstMask;
 uniform RWStructuredBuffer<uint> g_KeepFlags;
 uniform RWStructuredBuffer<uint> g_KeepPrefix;
-uniform RWStructuredBuffer<uint> g_SelectedIds;
-uniform RWStructuredBuffer<uint> g_SelectedPrefix;
 uniform RWStructuredBuffer<uint> g_ResampleCounter;
 uniform uint g_ResampleSrcCount;
 uniform uint g_ResampleSurvivorCount;
 uniform uint g_ResampleChildCount;
-uniform uint g_ResampleSelectedCount;
 uniform float g_ResampleRatio;
 uniform uint g_ResampleSeed;
+
+// Histogram / bounds reduction outputs so the editor UI never has to read the whole
+// scene back to the CPU. g_EditStats layout: scalar pass -> [0]=min bits, [1]=max bits,
+// [2]=positive count; bounds pass -> [0..2]=min xyz, [3..5]=max xyz (ordered-uint encoded).
+uniform RWStructuredBuffer<uint> g_EditStats;
+uniform RWStructuredBuffer<uint> g_EditHistogram;
+uniform uint g_EditHistogramBins;
+uniform float2 g_EditScalarClamp;       // (vMin, vMax) in linear value space
+uniform float2 g_EditHistogramLogRange; // (log10 vMin, log10 vMax)
 
 float edit_selection_scalar(uint splatId)
 {
@@ -157,6 +162,64 @@ void csEditProperties(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
 }
 
+// Maps a float to a uint that preserves ordering across the full signed range, so
+// position bounds can use plain InterlockedMin/Max. (Positive floats already order like
+// their raw bits, which the scalar min/max kernel relies on directly.)
+uint edit_ordered_float_bits(float value)
+{
+    uint bits = asuint(value);
+    return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
+}
+
+[shader("compute")]
+[numthreads(EDIT_GROUP_SIZE, 1, 1)]
+void csEditScalarMinMax(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_EditSplatCount) return;
+    float value = edit_selection_scalar(splatId);
+    if (!isfinite(value) || value <= 0.0) return;
+    uint bits = asuint(value);
+    InterlockedMin(g_EditStats[0], bits);
+    InterlockedMax(g_EditStats[1], bits);
+    uint _;
+    InterlockedAdd(g_EditStats[2], 1u, _);
+}
+
+// Mirrors splat_edit.log10_histogram: every finite sample is clamped into the positive
+// value range and binned uniformly in log10 space (so negatives land in bin 0).
+[shader("compute")]
+[numthreads(EDIT_GROUP_SIZE, 1, 1)]
+void csEditScalarHistogram(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_EditSplatCount) return;
+    float value = edit_selection_scalar(splatId);
+    if (!isfinite(value)) return;
+    value = clamp(value, g_EditScalarClamp.x, g_EditScalarClamp.y);
+    float logSpan = max(g_EditHistogramLogRange.y - g_EditHistogramLogRange.x, 1e-12);
+    float t = (log10(value) - g_EditHistogramLogRange.x) / logSpan;
+    uint bin = min(uint(max(t, 0.0) * float(g_EditHistogramBins)), g_EditHistogramBins - 1u);
+    uint _;
+    InterlockedAdd(g_EditHistogram[bin], 1u, _);
+}
+
+[shader("compute")]
+[numthreads(EDIT_GROUP_SIZE, 1, 1)]
+void csEditPositionBounds(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint splatId = dispatchThreadID.x;
+    if (splatId >= g_EditSplatCount) return;
+    float3 position = load_splat_param_vector<3>(g_SplatParams, g_EditSplatCount, PARAM_POSITION_X, splatId);
+    if (!all(isfinite(position))) return;
+    [unroll] for (uint axis = 0u; axis < 3u; axis++)
+    {
+        uint encoded = edit_ordered_float_bits(position[axis]);
+        InterlockedMin(g_EditStats[axis], encoded);
+        InterlockedMax(g_EditStats[3u + axis], encoded);
+    }
+}
+
 float resample_hash01(uint splatId)
 {
     uint state = hash_u32(g_ResampleSeed ^ ((splatId + 1u) * EDIT_RESAMPLE_HASH));
@@ -174,7 +237,6 @@ void csResampleMarkKeep(uint3 dispatchThreadID : SV_DispatchThreadID)
     // so ratio 0 deletes the whole selection and ratio 1 keeps it.
     bool keep = !selected || resample_hash01(splatId) < g_ResampleRatio;
     g_KeepFlags[splatId] = keep ? 1u : 0u;
-    g_SelectedIds[splatId] = selected ? 1u : 0u;
 }
 
 [shader("compute")]
@@ -190,45 +252,4 @@ void csResampleCompactSurvivors(uint3 dispatchThreadID : SV_DispatchThreadID)
             g_SrcParams[splat_param_index(g_ResampleSrcCount, paramId, splatId)];
     }
     g_DstMask[dstId] = g_SrcMask[splatId];
-}
-
-// Compacts the ids of selected splats into g_SelectedIds[0 .. selectedCount) so children
-// can pick a random parent. g_SelectedPrefix is the exclusive scan of the selected flags.
-[shader("compute")]
-[numthreads(EDIT_GROUP_SIZE, 1, 1)]
-void csResampleCompactSelected(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    uint splatId = dispatchThreadID.x;
-    if (splatId >= g_ResampleSrcCount || g_SrcMask[splatId] == 0u) return;
-    g_SelectedIds[g_SelectedPrefix[splatId]] = splatId;
-}
-
-[shader("compute")]
-[numthreads(EDIT_GROUP_SIZE, 1, 1)]
-void csResampleEmitChildren(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    uint childId = dispatchThreadID.x;
-    if (childId >= g_ResampleChildCount || g_ResampleSelectedCount == 0u) return;
-
-    uint totalCount = g_ResampleSurvivorCount + g_ResampleChildCount;
-    uint rngState = hash_u32(g_ResampleSeed ^ ((childId + 1u) * EDIT_RESAMPLE_HASH));
-    uint parentSlot = uint(rng_uniform_open01(rngState) * float(g_ResampleSelectedCount));
-    parentSlot = min(parentSlot, g_ResampleSelectedCount - 1u);
-    uint parentId = g_SelectedIds[parentSlot];
-    uint dstId = g_ResampleSurvivorCount + childId;
-
-    [loop] for (uint paramId = 0u; paramId < g_PackedParamCount; paramId++)
-    {
-        g_DstParams[splat_param_index(totalCount, paramId, dstId)] =
-            g_SrcParams[splat_param_index(g_ResampleSrcCount, paramId, parentId)];
-    }
-
-    float3 position = load_splat_param_vector<3>(g_SrcParams, g_ResampleSrcCount, PARAM_POSITION_X, parentId);
-    float3 logScale = load_splat_param_vector<3>(g_SrcParams, g_ResampleSrcCount, PARAM_SCALE_X, parentId);
-    float4 rotation = load_splat_param_vector<4>(g_SrcParams, g_ResampleSrcCount, PARAM_ROTATION_X, parentId);
-    float3 localOffset = rng_normal3_box_muller(rngState) * exp(logScale);
-    float3 worldOffset = rotate_by_quat(localOffset, float4(rotation.x, -rotation.y, -rotation.z, -rotation.w));
-    store_splat_param_vector<3>(g_DstParams, totalCount, PARAM_POSITION_X, dstId, position + worldOffset);
-    store_splat_param_vector<3>(g_DstParams, totalCount, PARAM_SCALE_X, dstId, logScale - log(EDIT_DENSIFY_SCALE_SHRINK));
-    g_DstMask[dstId] = 1u;
 }

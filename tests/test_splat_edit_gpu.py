@@ -112,17 +112,37 @@ def test_resample_zero_percent_deletes_selection(device) -> None:
     assert renderer.edit_selection_count() == 0
 
 
-def test_resample_densify_adds_expected_children(device) -> None:
+def test_gpu_scalar_histogram_matches_cpu_reference(device) -> None:
+    scene = _scene(300, seed=21)
+    renderer = _renderer(device, scene)
+    kind_ids = {"scale": renderer.SELECT_SCALAR_SCALE, "opacity": renderer.SELECT_SCALAR_OPACITY, "color": renderer.SELECT_SCALAR_COLOR}
+    for kind in splat_edit.SELECTION_SCALARS:
+        cpu_counts, cpu_edges = splat_edit.log10_histogram(splat_edit.selection_scalar(scene, kind), 64)
+        gpu_counts, gpu_edges = renderer.edit_scalar_histogram(kind_ids[kind], 64)
+        np.testing.assert_allclose(gpu_edges, cpu_edges, rtol=1e-4)
+        assert int(gpu_counts.sum()) == scene.count
+        assert int(cpu_counts.sum()) == scene.count
+        # float32 (GPU) vs float64 (CPU) log10 can shift borderline samples one bin.
+        assert int(np.abs(gpu_counts - cpu_counts).sum()) <= 6, kind
+
+
+def test_gpu_scene_bounds_match_cpu_reference(device) -> None:
+    scene = _scene(300, seed=22)
+    renderer = _renderer(device, scene)
+    bounds = renderer.edit_scene_bounds()
+    assert bounds is not None
+    lo_cpu, hi_cpu = splat_edit.scene_bounds(scene)
+    np.testing.assert_allclose(bounds[0], lo_cpu, atol=1e-6)
+    np.testing.assert_allclose(bounds[1], hi_cpu, atol=1e-6)
+
+
+def test_resample_densify_is_not_handled_by_renderer(device) -> None:
+    # Densification reuses the training refinement split via GaussianTrainer; the
+    # trainer-free renderer path must leave the scene untouched for ratios above 1.
     scene = _scene(300, seed=6)
     renderer = _renderer(device, scene)
-    sel = splat_edit.select_in_range(splat_edit.selection_scalar(scene, "scale"), 0.05, 0.3)
-    n_sel = int(sel.sum())
     renderer.edit_select_range(renderer.SELECT_SCALAR_SCALE, 0.05, 0.3, renderer.SELECT_MODE_REPLACE)
-    total = renderer.edit_resample(2.5, seed=2)
-    assert total == scene.count + int(round(1.5 * n_sel))
-    # Children (appended after the originals) are shrunk by the 3DGS split factor.
-    child_scale = np.exp(renderer.read_scene_groups(total)["scales"][scene.count:, :3])
-    assert 0.4 < child_scale.mean() / np.exp(scene.scales[sel]).mean() < 0.9
+    assert renderer.edit_resample(2.5, seed=2) == scene.count
 
 
 def _projected_colors(renderer: GaussianRenderer, scene: GaussianScene, camera) -> np.ndarray:

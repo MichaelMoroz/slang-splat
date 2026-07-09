@@ -111,68 +111,9 @@ def test_log10_histogram_handles_nonpositive_and_empty() -> None:
     assert edges.shape[0] == 5
 
 
-def test_resample_sparsify_removes_only_selected() -> None:
-    scene = _make_scene(100, seed=1)
-    mask = np.zeros(100, dtype=bool)
-    mask[:40] = True
-    new_scene, new_mask = splat_edit.resample_selection(scene, mask, 0.5, rng=np.random.default_rng(7))
-    # 60 unselected kept + 20 of the selected retained.
-    assert new_scene.count == 80
-    assert int(new_mask.sum()) == 20
-    # Unselected splats (originals 40..99) are preserved verbatim somewhere in the result.
-    assert new_scene.count == int((~mask).sum()) + 20
-
-
-def test_resample_densify_adds_selected_children() -> None:
-    scene = _make_scene(20, seed=2)
-    mask = np.zeros(20, dtype=bool)
-    mask[:10] = True
-    new_scene, new_mask = splat_edit.resample_selection(scene, mask, 2.0, rng=np.random.default_rng(9))
-    assert new_scene.count == 30  # 20 original + 10 new children
-    assert int(new_mask.sum()) == 20  # 10 selected originals + 10 children
-    # Children are shrunk relative to their parents.
-    child_scales = new_scene.scales[20:, :3]
-    assert np.all(child_scales < scene.scales[:10, :3].max() + 1e-3)
-
-
-def test_resample_densify_inherits_refinable_from_parent() -> None:
-    scene = _make_scene(6, seed=4)
-    scene.refinable = np.array([True, False, True, True, False, True], dtype=bool)
-    mask = np.zeros(6, dtype=bool)
-    mask[:3] = True
-    selected_idx = np.where(mask)[0]
-    expected_parents = selected_idx[np.random.default_rng(15).integers(0, selected_idx.shape[0], size=3)]
-
-    new_scene, new_mask = splat_edit.resample_selection(scene, mask, 2.0, rng=np.random.default_rng(15))
-
-    assert new_scene.refinable is not None
-    assert new_scene.count == 9
-    np.testing.assert_array_equal(new_scene.refinable[:6], scene.refinable)
-    np.testing.assert_array_equal(new_scene.refinable[6:], scene.refinable[expected_parents])
-    np.testing.assert_array_equal(new_mask, np.concatenate([mask, np.ones((3,), dtype=bool)]))
-
-
-def test_concat_scenes_defaults_missing_refinable_to_true() -> None:
-    left = _make_scene(2, seed=6)
-    right = _make_scene(1, seed=7)
-    right.refinable = np.array([False], dtype=bool)
-
-    merged = splat_edit._concat_scenes(left, right)
-
-    assert merged.refinable is not None
-    np.testing.assert_array_equal(merged.refinable, np.array([True, True, False], dtype=bool))
-
-
-def test_resample_noop_when_ratio_one_or_empty_selection() -> None:
-    scene = _make_scene(10)
-    mask = np.zeros(10, dtype=bool)
-    mask[:5] = True
-    same_scene, same_mask = splat_edit.resample_selection(scene, mask, 1.0)
-    assert same_scene is scene
-    np.testing.assert_array_equal(same_mask, mask)
-    empty = np.zeros(10, dtype=bool)
-    s2, m2 = splat_edit.resample_selection(scene, empty, 0.1)
-    assert s2 is scene and not m2.any()
+# Resampling (sparsify/densify) is intentionally absent here: the trainer routes both
+# through the training refinement pass (GaussianTrainer.resample_selection), and the
+# trainer-free renderer path is GPU-only (GaussianRenderer.edit_resample).
 
 
 def test_edit_properties_sets_color_opacity_scale_on_selection_only() -> None:
@@ -207,7 +148,5 @@ def test_edit_properties_preserves_anisotropy_ratio() -> None:
 
 def test_mask_length_validation() -> None:
     scene = _make_scene(4)
-    with pytest.raises(ValueError):
-        splat_edit.resample_selection(scene, np.zeros(3, dtype=bool), 0.5)
     with pytest.raises(ValueError):
         splat_edit.edit_properties(scene, np.zeros(5, dtype=bool), opacity=0.5)

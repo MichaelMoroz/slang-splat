@@ -331,8 +331,13 @@ uint refinement_effective_clone_count(uint splatId)
 
 bool should_cull_refinement_splat(uint splatId, float alpha)
 {
+    // The prune mask wins even for non-refinable splats: training only ever marks
+    // refinable splats (csMarkRefinementPruneMask ranks eligible splats, and eligibility
+    // requires refinable), but the splat editor uploads an explicit mask to delete a
+    // user selection, which may deliberately include frozen splats.
+    if (g_RefinementPruneMask[splatId] != 0u) return true;
     if (!refinement_is_refinable(splatId)) return false;
-    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || splat_refinement_contribution_raw(splatId) < g_RefinementMinContributionThreshold;
+    return alpha < g_RefinementAlphaCullThreshold || splat_refinement_contribution_raw(splatId) < g_RefinementMinContributionThreshold;
 }
 
 uint refinement_prune_target_count(uint candidateCount)

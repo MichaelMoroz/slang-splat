@@ -19,7 +19,6 @@ from ..sort.radix_sort import GPURadixSort
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..scene._internal.colmap_types import COLMAP_PINHOLE_MODEL_ID
 from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8, point_nn_scales
-from ..scene.splat_edit import resample_selection as resample_scene_selection
 from .alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .dataset_texture_pool import DatasetTexturePool, PreloadedDatasetTextures
@@ -125,6 +124,56 @@ def _refinement_hash_combine(seed: int, value: int) -> np.uint32:
 
 def _refinement_camera_hash(camera_id: int) -> np.uint32:
     return _refinement_hash_combine(_REFINEMENT_HASH_INIT, int(camera_id))
+
+
+@dataclass(slots=True)
+class _TrainingSamplePlan:
+    """How one training step samples its frame: stratified jitter or a native crop."""
+
+    crop: bool
+    crop_x: int
+    crop_y: int
+
+
+# Must match REFINEMENT_MAX_CLONES_PER_SPLAT in gaussian_training_stage.slang: a single
+# refinement pass caps how many children one parent can spawn, so an editor densify has
+# to respect the same ceiling or the split kernel silently drops the overflow.
+_REFINEMENT_MAX_CLONES_PER_SPLAT = 8
+
+
+def _build_editor_clone_counts(
+    parent_idx: np.ndarray,
+    add_count: int,
+    scene_count: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Spread ``add_count`` clones uniformly over the selected parents.
+
+    Mirrors how refinement hands out clone budget (a random multinomial draw), but with a
+    uniform distribution over the user's selection and capped per parent so the split
+    kernel emits every requested child. Returns a full-scene ``uint32`` clone-count array.
+    """
+    counts = np.zeros((scene_count,), dtype=np.uint32)
+    parents = np.asarray(parent_idx, dtype=np.intp).reshape(-1)
+    n_parents = int(parents.shape[0])
+    remaining = min(int(add_count), n_parents * _REFINEMENT_MAX_CLONES_PER_SPLAT)
+    if n_parents == 0 or remaining <= 0:
+        return counts
+    per_parent = np.zeros((n_parents,), dtype=np.int64)
+    # `per_parent` stays aligned to `parents`; clones that overflow a parent's cap are
+    # redrawn among the parents that still have room, so a few passes converge on the
+    # exact target unless every selected parent saturates.
+    for _ in range(16):
+        available = np.where(per_parent < _REFINEMENT_MAX_CLONES_PER_SPLAT)[0]
+        if available.shape[0] == 0 or remaining <= 0:
+            break
+        draws = available[rng.integers(0, available.shape[0], size=remaining)]
+        added = np.bincount(draws, minlength=n_parents)
+        take = np.minimum(added, _REFINEMENT_MAX_CLONES_PER_SPLAT - per_parent)
+        per_parent += take
+        remaining = int((added - take).sum())
+    counts[parents] = per_parent.astype(np.uint32)
+    return counts
 
 
 def _u32_bits_to_f32(value: int) -> np.float32:
@@ -286,6 +335,8 @@ class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]; raster_grad_distance_power: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_power"]; raster_grad_distance_bias: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_bias"]
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; target_alpha_mode: int | None = None; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; target_alpha_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0; max_sh_band: int = 3
     scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; init_position_reg_weight: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("init_position_reg_weight", 0.001)); sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; max_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["max_opacity"]; max_opacity_stage0: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage0", DEFAULT_MAX_OPACITY_STAGE0)); max_opacity_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage1", DEFAULT_MAX_OPACITY_STAGE1)); max_opacity_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage2", DEFAULT_MAX_OPACITY_STAGE2)); max_opacity_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage3", DEFAULT_MAX_OPACITY_STAGE3)); max_opacity_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage4", DEFAULT_MAX_OPACITY_STAGE4)); opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; opacity_reg_weight_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage1", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage2", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]))); position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
+    opacity_binarize_reg_weight: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_binarize_reg_weight", 0.0))
+    train_subsample_crop_probability: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("train_subsample_crop_probability", 0.0))
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]; refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"]
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]; lr_pos_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage4_mul"]
     lr_scale_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"]; lr_scale_stage1_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage1_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage2_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage2_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage3_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage3_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage4_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage4_mul", TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage3_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])))
@@ -516,7 +567,16 @@ class GaussianTrainer:
         return resolve_effective_refinement_interval(self.training, len(self.frames))
 
     def refinement_contribution_ema_decay(self) -> float:
-        return math.pow(self.training.refinement_ema_pose_count_decay, 1.0 / max(len(self.frames), 1))
+        # Crop steps only observe splats inside the crop window (~1/factor^2 of the
+        # image), so under the hybrid sampler a splat is seen at rate
+        # (1 - p_crop) + p_crop / factor^2. Stretch the EMA horizon by the reciprocal so
+        # contribution statistics average over the same number of *observations* as
+        # full-frame sampling (~1.5-1.6x at p=0.5, factor=2).
+        crop_probability = float(np.clip(getattr(self.training, "train_subsample_crop_probability", 0.0), 0.0, 1.0))
+        factor = self.effective_train_subsample_factor(0, self.state.step) if len(self.frames) > 0 else 1
+        observation_rate = 1.0 if factor <= 1 or crop_probability <= 0.0 else (1.0 - crop_probability) + crop_probability / float(factor * factor)
+        effective_frames = float(max(len(self.frames), 1)) / max(observation_rate, 1e-6)
+        return math.pow(self.training.refinement_ema_pose_count_decay, 1.0 / effective_frames)
 
     def refinement_due(self, step: int | None = None) -> bool:
         resolved_step = self.state.step if step is None else int(step)
@@ -589,11 +649,37 @@ class GaussianTrainer:
         width, height = self.frame_size(frame_index)
         return self.make_frame_camera(frame_index, width, height)
 
-    def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None) -> dict[str, object]:
+    def training_sample_plan(self, frame_index: int, step: int | None = None) -> _TrainingSamplePlan:
+        """Resolve how this step samples the frame: stratified jitter or a native crop.
+
+        Crop steps render a contiguous native-resolution window through a crop camera
+        (exact native-scale SSIM); stratified steps keep the decorrelated per-block
+        jitter. The decision and the crop origin are deterministic in (seed, step,
+        frame) so every consumer of the plan sees the same sampling.
+        """
+        resolved_step = self.state.step if step is None else int(step)
+        frame = self._frame(frame_index)
+        subsample_factor = self.effective_train_subsample_factor(frame_index, resolved_step)
+        crop_probability = float(np.clip(getattr(self.training, "train_subsample_crop_probability", 0.0), 0.0, 1.0))
+        if subsample_factor <= 1 or crop_probability <= 0.0:
+            return _TrainingSamplePlan(crop=False, crop_x=0, crop_y=0)
+        native_width, native_height = max(int(frame.width), 1), max(int(frame.height), 1)
+        crop_width, crop_height = self.training_resolution(frame_index, resolved_step)
+        seed = _refinement_hash_combine(_refinement_hash_combine(self._seed ^ 0x3C6EF372, resolved_step + 1), int(frame_index) + 1)
+        if (int(seed) & 0xFFFF) / 65536.0 >= crop_probability:
+            return _TrainingSamplePlan(crop=False, crop_x=0, crop_y=0)
+        max_x = max(native_width - int(crop_width), 0)
+        max_y = max(native_height - int(crop_height), 0)
+        crop_x = int(_refinement_hash_combine(seed, 2)) % (max_x + 1)
+        crop_y = int(_refinement_hash_combine(seed, 3)) % (max_y + 1)
+        return _TrainingSamplePlan(crop=True, crop_x=crop_x, crop_y=crop_y)
+
+    def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None, plan: _TrainingSamplePlan | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
         resolved_sample_step = resolved_step if sample_seed_step is None else int(sample_seed_step)
         frame = self._frame(frame_index)
         subsample_factor = self.effective_train_subsample_factor(frame_index, resolved_step)
+        resolved_plan = _TrainingSamplePlan(crop=False, crop_x=0, crop_y=0) if plan is None else plan
         return {
             "g_TrainingSubsample": {
                 "enabled": np.uint32(1 if subsample_factor > 1 else 0),
@@ -602,11 +688,33 @@ class GaussianTrainer:
                 "nativeHeight": np.uint32(max(int(frame.height), 1)),
                 "frameIndex": np.uint32(max(int(frame_index), 0)),
                 "stepIndex": np.uint32(max(resolved_sample_step, 0)),
+                "mode": np.uint32(1 if resolved_plan.crop else 0),
+                "cropX": np.uint32(max(int(resolved_plan.crop_x), 0)),
+                "cropY": np.uint32(max(int(resolved_plan.crop_y), 0)),
             }
         }
 
     def _training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
-        return self.training_sample_vars(frame_index, step)
+        # Plan-aware: every internal consumer (forward, backward, loss, SSIM target
+        # downscale) resolves the same deterministic (seed, step, frame) plan, so crop
+        # steps stay consistent across the whole dispatch chain without threading state.
+        resolved_step = self.state.step if step is None else int(step)
+        return self.training_sample_vars(frame_index, resolved_step, plan=self.training_sample_plan(frame_index, resolved_step))
+
+    def _training_frame_camera(self, frame_index: int, step: int | None = None, plan: _TrainingSamplePlan | None = None) -> Camera:
+        """Camera matching the step's sample plan.
+
+        Crop steps render through a crop camera (native focal, shifted principal point)
+        so the prepass bins splats for exactly the window the raster samples; stratified
+        steps keep the resolution-scaled frame camera.
+        """
+        resolved_plan = self.training_sample_plan(frame_index, step) if plan is None else plan
+        if resolved_plan.crop:
+            frame = self._frame(frame_index)
+            camera = frame.make_camera()
+            camera.min_camera_distance = float(self.training.camera_min_dist)
+            return camera.cropped(resolved_plan.crop_x, resolved_plan.crop_y, max(int(frame.width), 1), max(int(frame.height), 1))
+        return self.make_frame_camera(frame_index, int(self.renderer.width), int(self.renderer.height))
 
     def _native_training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
@@ -619,6 +727,9 @@ class GaussianTrainer:
                 "nativeHeight": np.uint32(max(int(frame.height), 1)),
                 "frameIndex": np.uint32(max(int(frame_index), 0)),
                 "stepIndex": np.uint32(max(resolved_step, 0)),
+                "mode": np.uint32(0),
+                "cropX": np.uint32(0),
+                "cropY": np.uint32(0),
             }
         }
 
@@ -810,11 +921,12 @@ class GaussianTrainer:
         survivor_count: int = 0,
         refinement_sample_count: int = 0,
         dst_adam_moments: spy.Buffer | None = None,
+        overrides: dict[str, object] | None = None,
     ) -> dict[str, object]:
         self._ensure_gradient_stats_buffer()
         refinement_threshold = resolve_refinement_min_contribution(self.training, max(self.state.step - 1, 0), len(self.frames))
         prune_ratio = self.refinement_prune_ratio(step=self.state.step)
-        return {
+        vars: dict[str, object] = {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
             "g_SrcSplatAge": self._refinement_buffers["splat_age"],
             "g_SrcSplatInit": self._refinement_buffers["splat_init"],
@@ -873,6 +985,9 @@ class GaussianTrainer:
             "g_RefinementPruneLowestContributionRatio": float(prune_ratio),
             "g_RefinementRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
+        if overrides:
+            vars.update(overrides)
+        return vars
 
     def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
         self.adam = adam_hparams
@@ -1576,20 +1691,56 @@ class GaussianTrainer:
         self.device.wait()
         self._observed_contribution_pixel_count = 0
 
-    def _run_refinement(self, clone_counts_override: np.ndarray | None = None) -> None:
+    def _run_refinement(
+        self,
+        clone_counts_override: np.ndarray | None = None,
+        *,
+        editor_mode: bool = False,
+        seed_override: int | None = None,
+        prune_mask_override: np.ndarray | None = None,
+    ) -> None:
+        """Run one refinement iteration (clone/split + prune).
+
+        When ``editor_mode`` is set the pass is scoped to the explicit overrides supplied
+        by the splat editor: ``clone_counts_override`` names the splats to split and
+        ``prune_mask_override`` the splats to delete. No threshold-based culling, ratio
+        pruning, opacity scaling, or min-screen-size clamping runs, so every splat not
+        named by an override is copied through unchanged.
+        """
         self._refresh_refinement_camera_buffer()
+        overrides: dict[str, object] | None = None
+        if editor_mode:
+            overrides = {
+                "g_RefinementAlphaCullThreshold": 0.0,
+                "g_RefinementMinContributionThreshold": -3.0e38,
+                "g_RefinementPruneLowestContributionRatio": 0.0,
+                "g_RefinementOpacityMul": 1.0,
+            }
+            if seed_override is not None:
+                overrides["g_RefinementSeed"] = np.uint32(int(seed_override) & 0xFFFFFFFF)
         if clone_counts_override is None:
             self._dispatch_refinement_clone_sampling()
         else:
-            self._update_refinement_prune_mask()
+            if editor_mode:
+                self._ensure_refinement_buffers(self._scene_count)
+                prune_mask = np.zeros((max(self._refinement_splat_capacity, 1),), dtype=np.uint32)
+                if prune_mask_override is not None:
+                    editor_prune = np.ascontiguousarray(prune_mask_override, dtype=np.uint32).reshape(-1)
+                    if editor_prune.shape[0] != self._scene_count:
+                        raise ValueError("prune_mask_override must match the current scene count.")
+                    prune_mask[: editor_prune.shape[0]] = editor_prune
+                self._refinement_buffers["refinement_prune_mask"].copy_from_numpy(prune_mask)
+            else:
+                self._update_refinement_prune_mask()
             sampled_clone_counts = np.ascontiguousarray(clone_counts_override, dtype=np.uint32).reshape(-1)
             if sampled_clone_counts.shape[0] != self._scene_count:
                 raise ValueError("clone_counts_override must match the current scene count.")
             self._refinement_buffers["clone_counts"].copy_from_numpy(np.pad(sampled_clone_counts, (0, max(self._refinement_splat_capacity - sampled_clone_counts.shape[0], 0))))
         enc = self.device.create_command_encoder()
-        self._dispatch("clamp_refinement_min_screen_size", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars())
-        self._dispatch("clear_refinement_counters", enc, spy.uint3(1, 1, 1), self._refinement_vars())
-        self._dispatch("prepare_refinement_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars())
+        if not editor_mode:
+            self._dispatch("clamp_refinement_min_screen_size", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars())
+        self._dispatch("clear_refinement_counters", enc, spy.uint3(1, 1, 1), self._refinement_vars(overrides=overrides))
+        self._dispatch("prepare_refinement_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars(overrides=overrides))
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
@@ -1610,6 +1761,7 @@ class GaussianTrainer:
             append_splat_count=capped_clone_total,
             survivor_count=survivor_count,
             dst_adam_moments=dst_adam_moments,
+            overrides=overrides,
         )
         enc = self.device.create_command_encoder()
         self._dispatch("clear_refinement_counters", enc, spy.uint3(1, 1, 1), vars)
@@ -2398,18 +2550,81 @@ class GaussianTrainer:
         self._reset_edited_scene_state(scene)
 
     def resample_selection(self, ratio: float, seed: int) -> int:
-        """Resample the live selection, then reset optimizer bookkeeping."""
-        scene = self.read_live_scene()
-        selection = self.renderer.read_selection_mask()
-        new_scene, new_selection = resample_scene_selection(scene, selection, ratio, rng=np.random.default_rng(int(seed) & 0xFFFFFFFF))
-        new_count = int(new_scene.count)
-        if new_count == self._scene_count and new_scene is scene:
-            return new_count
-        self.renderer.set_scene(new_scene)
-        self.renderer.set_selection_highlight(new_selection)
-        self._scene_count, self.scene = new_count, _SceneCountProxy(new_count)
-        self._reset_edited_scene_state(new_scene)
-        return new_count
+        """Resample the live selection through the training refinement pass.
+
+        Densification (``ratio > 1``) hands the refinement split a per-splat clone-count
+        override; sparsification and deletion (``ratio < 1``) hand it an explicit prune
+        mask. Either way the scene rewrite is the exact one training refinement runs, so
+        Adam moments, splat ages, init data, and contribution history carry through for
+        surviving splats instead of being reset.
+        """
+        resample_ratio = max(float(ratio), 0.0)
+        if abs(resample_ratio - 1.0) < 1e-9:
+            return int(self._scene_count)
+        if resample_ratio > 1.0:
+            return self._densify_selection_via_refinement(resample_ratio, seed)
+        return self._sparsify_selection_via_refinement(resample_ratio, seed)
+
+    def _densify_selection_via_refinement(self, ratio: float, seed: int) -> int:
+        """Grow the selection to ``ratio`` of its size using the refinement split."""
+        count = int(self._scene_count)
+        if count <= 0:
+            return count
+        selection = np.asarray(self.renderer.read_selection_mask(), dtype=bool).reshape(-1)
+        if selection.shape[0] != count:
+            return count
+        splat_init = buffer_to_numpy(self._refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:count]
+        refinable = splat_init[:, 3] >= 0.0
+        selected = int(np.count_nonzero(selection))
+        parent_idx = np.where(selection & refinable)[0]
+        if selected == 0 or parent_idx.shape[0] == 0:
+            return count
+        add_count = int(round(ratio * selected)) - selected
+        if add_count <= 0:
+            return count
+        clone_counts = _build_editor_clone_counts(
+            parent_idx, add_count, count, np.random.default_rng(int(seed) & 0xFFFFFFFF)
+        )
+        if int(clone_counts.sum()) == 0:
+            return count
+        self._run_refinement(clone_counts, editor_mode=True, seed_override=int(seed))
+        self.renderer.edit_select_set_all(self.renderer.SELECT_SET_CLEAR)
+        return int(self._scene_count)
+
+    def _sparsify_selection_via_refinement(self, ratio: float, seed: int) -> int:
+        """Drop ``1 - ratio`` of the selection using the refinement prune path.
+
+        Unlike training pruning this may delete non-refinable splats: the selection is an
+        explicit user action, so the uploaded prune mask wins over the frozen flag.
+        """
+        count = int(self._scene_count)
+        if count <= 0:
+            return count
+        selection = np.asarray(self.renderer.read_selection_mask(), dtype=bool).reshape(-1)
+        if selection.shape[0] != count:
+            return count
+        selected_idx = np.where(selection)[0]
+        n_selected = int(selected_idx.shape[0])
+        if n_selected == 0:
+            return count
+        drop_count = n_selected - int(round(ratio * n_selected))
+        if drop_count <= 0:
+            return count
+        if drop_count >= count:
+            # The refinement rewrite cannot produce an empty scene (and the trainer
+            # cannot run on one); deleting every last splat stays a no-op.
+            return count
+        rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
+        prune_mask = np.zeros((count,), dtype=np.uint32)
+        prune_mask[rng.permutation(selected_idx)[:drop_count]] = 1
+        self._run_refinement(
+            np.zeros((count,), dtype=np.uint32),
+            editor_mode=True,
+            seed_override=int(seed),
+            prune_mask_override=prune_mask,
+        )
+        self.renderer.edit_select_set_all(self.renderer.SELECT_SET_CLEAR)
+        return int(self._scene_count)
 
     def _reset_edited_scene_state(self, scene: GaussianScene | None) -> None:
         self._ensure_training_buffers(self._scene_count, 1)
@@ -2500,7 +2715,7 @@ class GaussianTrainer:
                     frame_indices.append(frame_index)
                     self._ensure_frame_render_resolution(frame_index, training_step)
                     self._observed_contribution_pixel_count += max(int(self.renderer.width) * int(self.renderer.height), 0)
-                    frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
+                    frame_camera = self._training_frame_camera(frame_index, training_step)
                     native_camera = self._native_frame_camera(frame_index)
                     self._apply_renderer_training_hparams(training_step)
                     self._maybe_sync_prepass_capacity(frame_camera, training_step)
@@ -2579,7 +2794,7 @@ class GaussianTrainer:
             training_sample_vars = self._native_training_sample_vars(resolved_frame_index, resolved_step)
         else:
             self._ensure_frame_render_resolution(resolved_frame_index, resolved_step)
-            frame_camera = self.make_frame_camera(resolved_frame_index, int(self.renderer.width), int(self.renderer.height))
+            frame_camera = self._training_frame_camera(resolved_frame_index, resolved_step)
             native_camera = self._native_frame_camera(resolved_frame_index)
             target_texture = self.get_frame_target_texture(
                 resolved_frame_index,

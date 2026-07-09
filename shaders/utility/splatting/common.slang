@@ -51,6 +51,9 @@ static const uint TRAIN_SUBSAMPLE_HASH_X = 0xc2b2ae35u;
 static const uint TRAIN_SUBSAMPLE_HASH_Y = 0x27d4eb2fu;
 static const uint TRAIN_SUBSAMPLE_HASH_FACTOR = 0x165667b1u;
 
+static const uint TRAIN_SUBSAMPLE_MODE_STRATIFIED = 0u;
+static const uint TRAIN_SUBSAMPLE_MODE_CROP = 1u;
+
 struct TrainingSubsampleParams
 {
     uint enabled;
@@ -59,6 +62,14 @@ struct TrainingSubsampleParams
     uint nativeHeight;
     uint frameIndex;
     uint stepIndex;
+    // TRAIN_SUBSAMPLE_MODE_STRATIFIED renders one hash-jittered native pixel per
+    // factor x factor block (decorrelated samples, SSIM sees a factor-times-wider
+    // window). TRAIN_SUBSAMPLE_MODE_CROP renders a contiguous native-resolution crop at
+    // cropX/cropY through a crop camera (exact native-scale SSIM); both modes render the
+    // same pixel budget into the same low-res buffer.
+    uint mode;
+    uint cropX;
+    uint cropY;
 };
 
 uint training_subsample_hash(uint2 lowResPixel, TrainingSubsampleParams params)
@@ -75,6 +86,13 @@ uint2 training_sample_native_pixel(uint2 lowResPixel, TrainingSubsampleParams pa
     uint stride = max(params.factor, 1u);
     uint2 basePixel = lowResPixel * stride;
     if (params.enabled == 0u) return basePixel;
+    if (params.mode == TRAIN_SUBSAMPLE_MODE_CROP)
+    {
+        return uint2(
+            min(params.cropX + lowResPixel.x, params.nativeWidth - 1u),
+            min(params.cropY + lowResPixel.y, params.nativeHeight - 1u)
+        );
+    }
 
     uint blockWidth = max(min(stride, params.nativeWidth - min(basePixel.x, params.nativeWidth - 1u)), 1u);
     uint blockHeight = max(min(stride, params.nativeHeight - min(basePixel.y, params.nativeHeight - 1u)), 1u);

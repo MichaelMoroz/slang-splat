@@ -407,6 +407,9 @@ class GaussianRenderer:
                 "nativeHeight": np.uint32(max(int(self.height), 1)),
                 "frameIndex": np.uint32(0),
                 "stepIndex": np.uint32(0),
+                "mode": np.uint32(0),
+                "cropX": np.uint32(0),
+                "cropY": np.uint32(0),
             }
         }
 
@@ -543,8 +546,9 @@ class GaussianRenderer:
                 "edit_properties": "csEditProperties",
                 "resample_mark_keep": "csResampleMarkKeep",
                 "resample_compact_survivors": "csResampleCompactSurvivors",
-                "resample_compact_selected": "csResampleCompactSelected",
-                "resample_emit_children": "csResampleEmitChildren",
+                "edit_scalar_min_max": "csEditScalarMinMax",
+                "edit_scalar_histogram": "csEditScalarHistogram",
+                "edit_position_bounds": "csEditPositionBounds",
             },
         )
 
@@ -778,6 +782,75 @@ class GaussianRenderer:
     def _alloc_edit_scratch(self, name: str, element_count: int, dtype_bytes: int = 4) -> spy.Buffer:
         return alloc_buffer(self.device, name=f"renderer.edit.{name}", size=max(int(element_count), 1) * dtype_bytes, usage=self._RW_BUFFER_USAGE)
 
+    @staticmethod
+    def _decode_ordered_float_bits(encoded: np.ndarray) -> np.ndarray:
+        """Inverse of the shader's edit_ordered_float_bits encoding."""
+        encoded = np.asarray(encoded, dtype=np.uint32)
+        bits = np.where((encoded & np.uint32(0x80000000)) != 0, encoded ^ np.uint32(0x80000000), ~encoded)
+        return bits.astype(np.uint32).view(np.float32)
+
+    def edit_scalar_histogram(self, scalar_kind: int, bins: int) -> tuple[np.ndarray, np.ndarray]:
+        """GPU log10-spaced histogram of a selection scalar (scale/opacity/luminance).
+
+        Mirrors ``splat_edit.log10_histogram(selection_scalar(...))`` but never reads the
+        scene back to the CPU — only ``bins`` counters and a min/max pair cross the bus,
+        so the editor histograms stay cheap for multi-million-splat scenes.
+        """
+        bin_count = max(int(bins), 1)
+        empty = (np.zeros((bin_count,), dtype=np.int64), np.logspace(-1.0, 0.0, bin_count + 1))
+        if self._scene_count <= 0:
+            return empty
+        stats = self._alloc_edit_scratch("edit_stats", 8)
+        stats.copy_from_numpy(np.array([0x7F800000, 0, 0, 0, 0, 0, 0, 0], dtype=np.uint32))  # +inf bits / 0
+        self._dispatch_edit_kernel("edit_scalar_min_max", {"g_SelectScalarKind": np.uint32(scalar_kind), "g_EditStats": stats})
+        raw = self._read_array(stats, np.uint32, 3)
+        if int(raw[2]) == 0:
+            return empty
+        v_min = float(raw[:1].view(np.float32)[0])
+        v_max = float(raw[1:2].view(np.float32)[0])
+        log_min = float(np.log10(max(v_min, 1e-30)))
+        log_max = float(np.log10(max(v_max, 1e-30)))
+        if not np.isfinite(log_max) or log_max <= log_min:
+            log_max = log_min + 1.0
+        histogram = self._alloc_edit_scratch("edit_histogram", bin_count)
+        histogram.copy_from_numpy(np.zeros((bin_count,), dtype=np.uint32))
+        self._dispatch_edit_kernel(
+            "edit_scalar_histogram",
+            {
+                "g_SelectScalarKind": np.uint32(scalar_kind),
+                "g_EditHistogram": histogram,
+                "g_EditHistogramBins": np.uint32(bin_count),
+                "g_EditScalarClamp": spy.float2(v_min, float(10.0**log_max)),
+                "g_EditHistogramLogRange": spy.float2(log_min, log_max),
+            },
+        )
+        counts = self._read_array(histogram, np.uint32, bin_count).astype(np.int64)
+        edges = np.power(10.0, np.linspace(log_min, log_max, bin_count + 1))
+        return counts, edges
+
+    def edit_scene_bounds(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """GPU min/max of splat positions; ``None`` when the scene has no finite splats."""
+        if self._scene_count <= 0:
+            return None
+        stats = self._alloc_edit_scratch("edit_stats", 8)
+        init = np.zeros((8,), dtype=np.uint32)
+        init[0:3] = 0xFFFFFFFF
+        stats.copy_from_numpy(init)
+        self._dispatch_edit_kernel("edit_position_bounds", {"g_EditStats": stats})
+        raw = self._read_array(stats, np.uint32, 6)
+        if np.any(raw[0:3] > raw[3:6]):
+            return None
+        lo = self._decode_ordered_float_bits(raw[0:3]).astype(np.float32)
+        hi = self._decode_ordered_float_bits(raw[3:6]).astype(np.float32)
+        return lo, hi
+
+    def _dispatch_edit_kernel(self, kernel_name: str, extra_vars: dict[str, object]) -> None:
+        """Dispatch a per-splat edit kernel and wait, without touching selection state."""
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels[kernel_name].dispatch(thread_count=thread_count_1d(self._scene_count), vars={**self._edit_common_vars(), **extra_vars}, command_encoder=encoder)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+
     def _run_selection_kernel(self, kernel_name: str, extra_vars: dict[str, object]) -> int:
         if self._scene_count <= 0:
             return 0
@@ -848,18 +921,19 @@ class GaussianRenderer:
         self._current_scene = SceneBinding(count=self._scene_count)
 
     def edit_resample(self, ratio: float, seed: int) -> int:
-        """Sparsify/densify/delete the selection on GPU, rebuilding the scene buffer.
+        """Sparsify/delete the selection on GPU, rebuilding the scene buffer.
 
-        ``ratio == 0`` deletes the whole selection; ``ratio < 1`` drops that fraction;
-        ``ratio > 1`` clones children from random selected parents. Returns the new count.
+        ``ratio == 0`` deletes the whole selection; ``ratio < 1`` drops that fraction.
+        Returns the new count. Densification (``ratio > 1``) is not handled here — growing
+        splats reuses the training refinement split via ``GaussianTrainer``.
         """
         src_count = int(self._scene_count)
         ratio = max(float(ratio), 0.0)
         selected = self.edit_selection_count()
-        if src_count <= 0 or selected == 0 or abs(ratio - 1.0) < 1e-9:
+        if src_count <= 0 or selected == 0 or ratio >= 1.0:
             return src_count
         packed = int(self.packed_trainable_param_count)
-        child_count = max(int(round(ratio * selected)) - selected, 0) if ratio > 1.0 else 0
+        child_count = 0
         src_params = self._scene_buffers["splat_params"]
         src_mask = self._ensure_highlight_buffer(src_count)
         keep_flags = self._alloc_edit_scratch("keep_flags", src_count)
@@ -891,16 +965,6 @@ class GaussianRenderer:
         encoder = self.device.create_command_encoder()
         if total_count > 0:
             self._edit_kernels["resample_compact_survivors"].dispatch(thread_count=thread_count_1d(src_count), vars=resample_vars, command_encoder=encoder)
-        if child_count > 0:
-            selected_prefix = self._alloc_edit_scratch("selected_prefix", src_count)
-            selected_ids = self._alloc_edit_scratch("selected_ids", selected)
-            self._prefix_sum.scan_uint(encoder, src_mask, selected_prefix, src_count, exclusive=True)
-            self._edit_kernels["resample_compact_selected"].dispatch(thread_count=thread_count_1d(src_count), vars={"g_SrcMask": src_mask, "g_SelectedPrefix": selected_prefix, "g_SelectedIds": selected_ids, "g_ResampleSrcCount": np.uint32(src_count)}, command_encoder=encoder)
-            self._edit_kernels["resample_emit_children"].dispatch(
-                thread_count=thread_count_1d(child_count),
-                vars={**resample_vars, "g_SelectedIds": selected_ids, "g_ResampleSelectedCount": np.uint32(selected), "g_ResampleSeed": np.uint32(seed & 0xFFFFFFFF)},
-                command_encoder=encoder,
-            )
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
 

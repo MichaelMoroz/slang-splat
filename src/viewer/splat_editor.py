@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..scene.gaussian_scene import GaussianScene
 from ..scene import splat_edit
 from .state import SceneCountProxy
 
@@ -131,17 +130,6 @@ def _display_renderer(viewer: object) -> object | None:
     return getattr(viewer.s, "renderer", None)
 
 
-def current_scene(viewer: object) -> GaussianScene | None:
-    """Read the editable scene from the GPU param buffer (for histograms / bounds)."""
-    renderer = _display_renderer(viewer)
-    if renderer is None or int(getattr(renderer, "_scene_count", 0)) <= 0:
-        return None
-    try:
-        return renderer.read_live_scene()
-    except Exception:
-        return None
-
-
 def has_editable_scene(viewer: object) -> bool:
     return _scene_count(viewer) > 0
 
@@ -171,18 +159,23 @@ def sync_selection_to_scene(viewer: object) -> object | None:
     return renderer
 
 
+def _scalar_kind_id(renderer: object, kind: str) -> int:
+    return {"scale": renderer.SELECT_SCALAR_SCALE, "opacity": renderer.SELECT_SCALAR_OPACITY, "color": renderer.SELECT_SCALAR_COLOR}[kind]
+
+
 def refresh_histograms(viewer: object, *, force: bool = False) -> None:
     state = editor_state(viewer)
     if not (force or state.histograms_dirty):
         return
-    scene = current_scene(viewer)
-    if scene is None or scene.count == 0:
+    renderer = _display_renderer(viewer)
+    if renderer is None or _scene_count(viewer) == 0:
         state.histograms = {}
         state.histograms_dirty = False
         return
+    # Histograms and ranges come from GPU reductions: only the bin counters cross the
+    # bus, so opening the editor never reads the full scene back to the CPU.
     for kind in splat_edit.SELECTION_SCALARS:
-        values = splat_edit.selection_scalar(scene, kind)
-        counts, edges = splat_edit.log10_histogram(values, _HISTOGRAM_BINS)
+        counts, edges = renderer.edit_scalar_histogram(_scalar_kind_id(renderer, kind), _HISTOGRAM_BINS)
         state.histograms[kind] = (counts, edges)
         if kind not in state.ranges:
             state.ranges[kind] = (float(edges[0]), float(edges[-1]))
@@ -193,10 +186,11 @@ def init_box_to_scene(viewer: object, *, force: bool = False) -> None:
     state = editor_state(viewer)
     if state.box_initialized and not force:
         return
-    scene = current_scene(viewer)
-    if scene is None or scene.count == 0:
+    renderer = _display_renderer(viewer)
+    bounds = renderer.edit_scene_bounds() if (renderer is not None and _scene_count(viewer) > 0) else None
+    if bounds is None:
         return
-    lo, hi = splat_edit.scene_bounds(scene)
+    lo, hi = bounds
     center = (lo + hi) * 0.5
     extent = np.maximum((hi - lo) * 0.5, 1e-4)
     state.box_center = center.astype(np.float32)
@@ -227,8 +221,7 @@ def select_range(viewer: object, kind: str, mode: str = "add") -> int:
     if renderer is None or _scene_count(viewer) == 0:
         return 0
     low, high = state.ranges.get(kind, (float("-inf"), float("inf")))
-    scalar_kind = {"scale": renderer.SELECT_SCALAR_SCALE, "opacity": renderer.SELECT_SCALAR_OPACITY, "color": renderer.SELECT_SCALAR_COLOR}[kind]
-    hit = renderer.edit_select_range(scalar_kind, low, high, _SELECT_MODES.get(mode, 1))
+    hit = renderer.edit_select_range(_scalar_kind_id(renderer, kind), low, high, _SELECT_MODES.get(mode, 1))
     state.selected_count = int(hit)
     sync_highlight(viewer)
     state.status = f"Selected {int(hit)} splats total by {kind} range."
@@ -341,6 +334,10 @@ def apply_resample(viewer: object) -> bool:
     if is_editing_trainer(viewer):
         new_count = int(viewer.s.trainer.resample_selection(ratio, seed))
         viewer.s.scene = SceneCountProxy(new_count)
+    elif ratio > 1.0:
+        # Densify reuses the training refinement split, which only exists on a trainer.
+        state.status = "Densify needs an active training session (it reuses the refinement split)."
+        return False
     else:
         new_count = int(renderer.edit_resample(ratio, seed))
     state.scene_count = new_count

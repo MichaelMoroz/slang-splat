@@ -135,17 +135,21 @@ def test_resample_sparsify_deletes_selection_at_zero_percent(device) -> None:
     assert state.selected_count == 0
 
 
-def test_resample_densify_grows_scene(device) -> None:
+def test_resample_densify_requires_trainer(device) -> None:
+    # Densify reuses the training refinement split, so without a trainer it is a no-op
+    # (the trainer-backed path is exercised in test_training_kernels). Sparsify/delete
+    # still work trainer-free.
     scene = _scene(100, seed=5)
     viewer = _loaded_viewer(device, scene)
     state = ed.editor_state(viewer)
     ed.init_box_to_scene(viewer)
     state.box_center = np.zeros(3, dtype=np.float32)
     state.box_half_extents = np.array([0.5, 0.5, 0.5], dtype=np.float32)
-    selected = ed.select_box(viewer, mode="replace")
+    ed.select_box(viewer, mode="replace")
     state.resample_percent = 200.0
-    assert ed.apply_resample(viewer) is True
-    assert int(viewer.s.renderer._scene_count) == scene.count + selected
+    assert ed.apply_resample(viewer) is False
+    assert int(viewer.s.renderer._scene_count) == scene.count  # scene untouched
+    assert "training session" in state.status
 
 
 def test_edit_properties_sets_opacity_on_selection_only(device) -> None:
