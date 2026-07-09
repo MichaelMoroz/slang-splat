@@ -129,6 +129,11 @@ images/*  ─┘                                              │
 
 ## 2. Splat project support — save/load a project (settings + dataset + result)
 
+> Deep dive: [SplatProjectDesign.md](SplatProjectDesign.md) expands this section with
+> the project format, save/open/resume flows, relinking, UI, and a staged plan.
+> Sequenced before feature 3; the format already carries the `scene.objects` list the
+> hierarchy will extend.
+
 ### Goal
 
 Persist everything needed to reopen a working session: current settings, the dataset
@@ -225,6 +230,9 @@ flat single-PLY field) so the format doesn't break later.
 ---
 
 ## 3. Scene hierarchy — splat objects, camera-pose objects, per-object training
+
+> Deep dive: [SceneHierarchyDesign.md](SceneHierarchyDesign.md) expands this section
+> with the trainer/renderer rework, editor/gizmo UX, UI mockups, and a staged plan.
 
 ### Goal
 
