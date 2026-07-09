@@ -1071,6 +1071,53 @@ def generate_depth_init_points(
     return np.ascontiguousarray(np.stack(positions, axis=0), dtype=np.float32), np.ascontiguousarray(np.stack(colors, axis=0), dtype=np.float32)
 
 
+# Bidirectional neighbor-stat outlier filter: a point is judged against its 2-hop
+# neighborhood, so even a pair of mutually-close floaters is measured against the dense
+# surface their neighbor-of-neighbor sets reach into, not just against each other.
+_OUTLIER_FILTER_NEIGHBOR_COUNT = 8
+_OUTLIER_FILTER_DISTANCE_RATIO = 5.0
+_OUTLIER_FILTER_REFERENCE_FRACTION = 0.25
+_OUTLIER_FILTER_POINT_CHUNK = 65536
+
+
+def point_outlier_keep_mask(
+    points: np.ndarray,
+    neighbor_count: int = _OUTLIER_FILTER_NEIGHBOR_COUNT,
+    distance_ratio: float = _OUTLIER_FILTER_DISTANCE_RATIO,
+    reference_fraction: float = _OUTLIER_FILTER_REFERENCE_FRACTION,
+) -> np.ndarray:
+    """Keep-mask dropping points whose neighbor spacing is far off local consensus.
+
+    Each point's characteristic spacing is the mean distance to its ``neighbor_count``
+    nearest neighbors. It is compared against the superset of itself, its neighbors, and
+    its neighbors' neighbors: if its spacing exceeds ``distance_ratio`` times the mean of
+    the smallest ``reference_fraction`` of spacings in that superset, the point is an
+    outlier and dropped. Returns all-True when the cloud is too small to judge.
+    """
+    pts = np.ascontiguousarray(points, dtype=np.float32).reshape(-1, 3)
+    count = pts.shape[0]
+    k = min(max(int(neighbor_count), 1), max(count - 1, 1))
+    if count <= max(k, 3):
+        return np.ones((count,), dtype=bool)
+    dists, indices = cKDTree(pts).query(pts, k=k + 1, workers=-1)
+    neighbor_idx = np.asarray(indices[:, 1:], dtype=np.int64)  # column 0 is the point itself
+    spacing = np.asarray(dists[:, 1:], dtype=np.float32).mean(axis=1)
+    superset_size = 1 + k + k * k
+    reference_count = max(int(np.ceil(superset_size * float(np.clip(reference_fraction, 0.0, 1.0)))), 1)
+    keep = np.ones((count,), dtype=bool)
+    for start in range(0, count, _OUTLIER_FILTER_POINT_CHUNK):
+        rows = neighbor_idx[start : start + _OUTLIER_FILTER_POINT_CHUNK]
+        two_hop = neighbor_idx[rows.reshape(-1)].reshape(rows.shape[0], k * k)
+        superset = np.concatenate([np.arange(start, start + rows.shape[0], dtype=np.int64)[:, None], rows, two_hop], axis=1)
+        pooled = spacing[superset]
+        pooled.sort(axis=1)
+        reference = pooled[:, :reference_count].mean(axis=1)
+        keep[start : start + rows.shape[0]] = spacing[start : start + rows.shape[0]] <= float(distance_ratio) * np.maximum(reference, 1e-12)
+    if not keep.any():
+        return np.ones((count,), dtype=bool)
+    return keep
+
+
 def point_nn_scales(points: np.ndarray) -> np.ndarray:
     pts = np.ascontiguousarray(points, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[0] == 0:
@@ -1175,6 +1222,56 @@ def _build_scene_from_positions_colors(
     )
 
 
+# Camera-pose cap and chunk size for the visible-area weighting: sum(1/d^2) over more
+# than this many poses adds nothing to the density target but scales the distance matrix.
+_DIFFUSED_VISIBILITY_CAMERA_CAP = 256
+_DIFFUSED_VISIBILITY_POINT_CHUNK = 16384
+# Points sitting almost on top of a camera would otherwise absorb the whole sampling
+# budget through the 1/d^2 singularity.
+_DIFFUSED_WEIGHT_CLIP_PERCENTILE = 99.9
+
+
+def diffused_visible_area_weights(xyz: np.ndarray, camera_centers: np.ndarray) -> np.ndarray | None:
+    """Sampling weights that make the resampled density uniform per visible image area.
+
+    A surface patch at distance ``d`` from a camera covers image area proportional to
+    ``1/d^2``, so the target world-space density at a point is ``sum_j 1/d_j^2`` over the
+    camera poses. Uniform sampling over the sparse points reproduces the *sparse* density
+    instead, so each point is weighted by target density / local sparse density, with the
+    local density estimated from the nearest-neighbor radius (``density ~ 1/r_nn^3``).
+    Returns normalized weights, or ``None`` when there is nothing to weight by (no
+    cameras / degenerate weights) and uniform sampling should be used.
+    """
+    points = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
+    centers = np.asarray(camera_centers, dtype=np.float64).reshape(-1, 3)
+    centers = centers[np.isfinite(centers).all(axis=1)]
+    if points.shape[0] == 0 or centers.shape[0] == 0:
+        return None
+    if centers.shape[0] > _DIFFUSED_VISIBILITY_CAMERA_CAP:
+        stride = np.linspace(0, centers.shape[0] - 1, _DIFFUSED_VISIBILITY_CAMERA_CAP).astype(np.int64)
+        centers = centers[stride]
+
+    inverse_density = np.asarray(point_nn_scales(points.astype(np.float32)), dtype=np.float64) ** 3
+    visible_area = np.zeros((points.shape[0],), dtype=np.float64)
+    centers_sq = np.einsum("ij,ij->i", centers, centers)
+    for start in range(0, points.shape[0], _DIFFUSED_VISIBILITY_POINT_CHUNK):
+        chunk = points[start : start + _DIFFUSED_VISIBILITY_POINT_CHUNK]
+        # Squared distances via |p|^2 + |c|^2 - 2 p.c to avoid a (chunk, cams, 3) temp.
+        d_sq = np.einsum("ij,ij->i", chunk, chunk)[:, None] + centers_sq[None, :] - 2.0 * (chunk @ centers.T)
+        visible_area[start : start + chunk.shape[0]] = np.sum(1.0 / np.maximum(d_sq, 1e-12), axis=1)
+
+    weights = inverse_density * visible_area
+    weights[~np.isfinite(weights)] = 0.0
+    positive = weights[weights > 0.0]
+    if positive.size == 0:
+        return None
+    weights = np.minimum(weights, np.percentile(positive, _DIFFUSED_WEIGHT_CLIP_PERCENTILE))
+    total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return None
+    return weights / total
+
+
 def sample_colmap_diffused_points(
     recon: ColmapReconstruction,
     point_count: int,
@@ -1185,10 +1282,20 @@ def sample_colmap_diffused_points(
     xyz, rgb = point_tables(recon, min_track_length=min_track_length)
     if xyz.shape[0] == 0:
         raise RuntimeError(_min_track_length_error(min_track_length))
+    # Drop floaters before density weighting: an isolated point has a huge NN radius, so
+    # the inverse-density term would otherwise hand it a disproportionate share of the
+    # sampling budget and diffuse children into empty space around it.
+    keep = point_outlier_keep_mask(xyz)
+    if not keep.all():
+        xyz, rgb = xyz[keep], rgb[keep]
     count = max(int(point_count), 1)
     radius = max(float(diffusion_radius), 0.0)
     rng = np.random.default_rng(int(seed))
-    base_indices = rng.integers(0, xyz.shape[0], size=count, dtype=np.int64)
+    weights = diffused_visible_area_weights(xyz, colmap_camera_centers(recon))
+    if weights is None:
+        base_indices = rng.integers(0, xyz.shape[0], size=count, dtype=np.int64)
+    else:
+        base_indices = rng.choice(xyz.shape[0], size=count, replace=True, p=weights)
     positions = np.ascontiguousarray(xyz[base_indices], dtype=np.float32)
     colors = np.ascontiguousarray(rgb[base_indices], dtype=np.float32)
     if radius <= 0.0:

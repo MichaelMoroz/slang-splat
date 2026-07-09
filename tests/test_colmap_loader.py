@@ -677,6 +677,117 @@ def test_colmap_diffused_sampling_filters_points_below_selected_camera_observati
     assert not np.any(np.all(np.isclose(positions, np.array([0.0, 0.0, 0.0], dtype=np.float32)), axis=1))
 
 
+def _diffused_two_cluster_recon(near_z: float, far_z: float, grid: int = 5, spacing: float = 0.1) -> tuple[object, np.ndarray]:
+    """Two equal-density point grids at ``near_z``/``far_z`` seen by one camera at the origin."""
+    points3d = {}
+    positions = []
+    point_id = 1
+    for depth in (near_z, far_z):
+        for ix in range(grid):
+            for iy in range(grid):
+                xyz = np.array([(ix - grid // 2) * spacing, (iy - grid // 2) * spacing, depth], dtype=np.float32)
+                points3d[point_id] = ColmapPoint3D(point_id, xyz, np.array([0.5, 0.5, 0.5], dtype=np.float32), 0.0, track_length=3)
+                positions.append(xyz)
+                point_id += 1
+    identity = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    recon = ColmapReconstruction(
+        root=Path("synthetic"),
+        sparse_dir=Path("synthetic") / "sparse" / "0",
+        cameras={},
+        images={
+            # Identity rotation with zero translation puts the camera center at the origin.
+            1: ColmapImage(1, identity, np.zeros((3,), dtype=np.float32), 1, "a.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+        },
+        points3d=points3d,
+    )
+    return recon, np.stack(positions, axis=0)
+
+
+def test_diffused_visible_area_weights_follow_inverse_square_camera_distance() -> None:
+    # Equal-density clusters at z=1 and z=3 from a single camera at the origin: the
+    # near cluster covers ~9x the image area per point, so its sampling weight must be
+    # ~9x higher (uniform final density per visible area).
+    recon, positions = _diffused_two_cluster_recon(near_z=1.0, far_z=3.0)
+    weights = colmap_ops.diffused_visible_area_weights(positions, colmap_ops.colmap_camera_centers(recon))
+
+    assert weights is not None
+    near = weights[positions[:, 2] < 2.0]
+    far = weights[positions[:, 2] > 2.0]
+    ratio = float(near.mean() / far.mean())
+    assert 7.0 < ratio < 11.0
+    np.testing.assert_allclose(float(weights.sum()), 1.0, atol=1e-9)
+
+
+def test_diffused_sampling_densifies_near_cameras() -> None:
+    recon, _ = _diffused_two_cluster_recon(near_z=1.0, far_z=3.0)
+    positions, colors = sample_colmap_diffused_points(recon, point_count=4000, diffusion_radius=0.0, seed=11, min_track_length=0)
+
+    assert positions.shape == (4000, 3)
+    near_count = int(np.count_nonzero(positions[:, 2] < 2.0))
+    far_count = int(np.count_nonzero(positions[:, 2] > 2.0))
+    assert far_count > 0
+    assert 6.0 < near_count / far_count < 13.0
+
+
+def test_diffused_sampling_falls_back_to_uniform_without_camera_poses() -> None:
+    recon, positions = _diffused_two_cluster_recon(near_z=1.0, far_z=3.0)
+    recon.images.clear()
+    assert colmap_ops.diffused_visible_area_weights(positions, colmap_ops.colmap_camera_centers(recon)) is None
+
+    sampled, _ = sample_colmap_diffused_points(recon, point_count=2000, diffusion_radius=0.0, seed=12, min_track_length=0)
+    near_count = int(np.count_nonzero(sampled[:, 2] < 2.0))
+    assert 0.4 < near_count / 2000.0 < 0.6  # roughly uniform over the two equal clusters
+
+
+def _surface_grid(grid: int = 10, spacing: float = 0.1) -> np.ndarray:
+    coords = (np.arange(grid) - grid // 2) * spacing
+    gx, gy = np.meshgrid(coords, coords, indexing="ij")
+    return np.stack([gx.reshape(-1), gy.reshape(-1), np.zeros(grid * grid)], axis=1).astype(np.float32)
+
+
+def test_point_outlier_keep_mask_drops_mutually_close_floater_pair() -> None:
+    # Two floaters hanging together far from the surface validate each other's nearest
+    # neighbor, but the 2-hop superset reaches the dense grid, whose spacing convicts
+    # them: their mean-NN spacing is >>5x the smallest quartile of the pooled spacings.
+    surface = _surface_grid()
+    floaters = np.array([[5.0, 5.0, 5.0], [5.05, 5.0, 5.0]], dtype=np.float32)
+    points = np.concatenate([surface, floaters], axis=0)
+
+    keep = colmap_ops.point_outlier_keep_mask(points)
+
+    assert keep.shape == (points.shape[0],)
+    np.testing.assert_array_equal(keep[: surface.shape[0]], True)  # surface untouched
+    np.testing.assert_array_equal(keep[surface.shape[0] :], False)  # both floaters dropped
+
+
+def test_point_outlier_keep_mask_keeps_uniform_cloud_and_tiny_clouds() -> None:
+    assert colmap_ops.point_outlier_keep_mask(_surface_grid()).all()
+    # Too few points to judge -> keep everything.
+    assert colmap_ops.point_outlier_keep_mask(np.array([[0.0, 0.0, 0.0], [9.0, 9.0, 9.0]], dtype=np.float32)).all()
+
+
+def test_diffused_sampling_excludes_neighbor_stat_outliers() -> None:
+    surface = _surface_grid()
+    floaters = np.array([[5.0, 5.0, 5.0], [5.05, 5.0, 5.0]], dtype=np.float32)
+    points3d = {}
+    for index, xyz in enumerate(np.concatenate([surface, floaters], axis=0), start=1):
+        points3d[index] = ColmapPoint3D(index, np.asarray(xyz, dtype=np.float32), np.array([0.5, 0.5, 0.5], dtype=np.float32), 0.0, track_length=3)
+    identity = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    recon = ColmapReconstruction(
+        root=Path("synthetic"),
+        sparse_dir=Path("synthetic") / "sparse" / "0",
+        cameras={},
+        images={1: ColmapImage(1, identity, np.array([0.0, 0.0, 1.0], dtype=np.float32), 1, "a.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64))},
+        points3d=points3d,
+    )
+
+    positions, _ = sample_colmap_diffused_points(recon, point_count=2000, diffusion_radius=0.0, seed=13, min_track_length=0)
+
+    # No sample may originate from the floater pair (diffusion radius 0 -> base points only).
+    assert not np.any(positions[:, 2] > 1.0)
+    assert not np.any(np.linalg.norm(positions - floaters[0], axis=1) < 0.5)
+
+
 def test_colmap_pointcloud_init_allows_disabling_track_length_filter() -> None:
     recon = ColmapReconstruction(
         root=Path("synthetic"),
