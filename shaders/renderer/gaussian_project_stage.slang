@@ -109,9 +109,17 @@ uint load_prepared_projected_ellipse_variants(
 
     float viewportWidth = max(g_Camera.viewport.x, 1.0);
     bool equirectangular = g_Camera.projectionModel == CAMERA_PROJECTION_EQUIRECTANGULAR;
+    // Seam duplicates repeat at the longitude period (the native full-sphere width, which
+    // equals the viewport width for legacy full-sphere views but is much wider for crop
+    // cameras). A duplicate is emitted when its shifted extent still intersects the
+    // viewport and the splat does not already span a full period (which would make the
+    // primary and the duplicate double-bin the same tiles).
+    PinholeCamera wrapCamera = PinholeCamera.from_params(g_Camera);
+    float wrapPeriod = equirectangular ? max(wrapCamera.equirect_period(), 1.0) : viewportWidth;
     float xExtent = ellipse0.isBBoxRect() ? ellipse0.rectExtent().x : ellipse0.radiusPx;
-    bool wrapsLeft = equirectangular && ellipse0.centerPx.x - xExtent <= 0.0 && ellipse0.centerPx.x + xExtent < viewportWidth;
-    bool wrapsRight = equirectangular && ellipse0.centerPx.x + xExtent >= viewportWidth && ellipse0.centerPx.x - xExtent > 0.0;
+    bool spansFullPeriod = 2.0 * xExtent >= wrapPeriod;
+    bool wrapsLeft = equirectangular && !spansFullPeriod && ellipse0.centerPx.x + wrapPeriod - xExtent <= viewportWidth;
+    bool wrapsRight = equirectangular && !spansFullPeriod && ellipse0.centerPx.x - wrapPeriod + xExtent >= 0.0;
     bool hasWrappedVariant = wrapsLeft || wrapsRight;
     if (hasWrappedVariant && !ellipse0.isBBoxRect()) make_conservative_circle_binning_ellipse(ellipse0);
 
@@ -119,7 +127,7 @@ uint load_prepared_projected_ellipse_variants(
     if (hasWrappedVariant)
     {
         ellipse1 = ellipse0;
-        ellipse1.centerPx.x += wrapsLeft ? viewportWidth : -viewportWidth;
+        ellipse1.centerPx.x += wrapsLeft ? wrapPeriod : -wrapPeriod;
         if (prepare_projected_ellipse_loop(ellipse1, loopCfg1)) variantCount++;
     }
     return variantCount;

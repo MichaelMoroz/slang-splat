@@ -52,9 +52,26 @@ class Camera:
     def principal_point(self, width: int, height: int) -> tuple[float, float]:
         return float(self.cx) if self.cx is not None else 0.5 * float(width), float(self.cy) if self.cy is not None else 0.5 * float(height)
 
+    def cropped(self, crop_x: float, crop_y: float, native_width: int, native_height: int) -> "Camera":
+        """Camera for a native-resolution crop window: same pose and focal, shifted
+        principal point. Exact for every projection model — pinhole and distorted
+        cameras keep distortion valid because it is defined around the principal point,
+        and equirect keeps its longitude period at fx*2pi (the native width) so seam
+        wrapping still resolves correctly inside the crop viewport.
+        """
+        from dataclasses import replace
+
+        if self.is_equirectangular:
+            fx, fy, cx, cy = self._equirect_intrinsics(native_width, native_height)
+        else:
+            fx, fy = self.focal_pixels_xy(native_width, native_height)
+            cx, cy = self.principal_point(native_width, native_height)
+        return replace(self, fx=float(fx), fy=float(fy), cx=float(cx) - float(crop_x), cy=float(cy) - float(crop_y))
+
     def pixel_world_size_max(self, depth: float, width: int, height: int) -> float:
         if self.is_equirectangular:
-            angular_pixel_size = max(2.0 * np.pi / max(float(width), 1.0), np.pi / max(float(height), 1.0))
+            fx, fy, _, _ = self._equirect_intrinsics(width, height)
+            angular_pixel_size = max(1.0 / max(fx, 1e-8), 1.0 / max(fy, 1e-8))
             return float(SPLAT_PIXEL_CLAMP_PX * max(float(depth), 1e-8) * angular_pixel_size)
         return float(SPLAT_PIXEL_CLAMP_PX * max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
 
@@ -255,22 +272,36 @@ class Camera:
         screen = uv * np.asarray((fx, fy), dtype=np.float32) + np.asarray((cx, cy), dtype=np.float32)
         return screen.astype(np.float32, copy=False), bool(np.isfinite(screen).all())
 
-    @staticmethod
-    def _project_equirectangular_camera_to_screen(camera_pos: np.ndarray, width: int, height: int) -> tuple[np.ndarray, bool]:
+    def _equirect_intrinsics(self, width: int, height: int) -> tuple[float, float, float, float]:
+        """COLMAP model-17 intrinsics with full-sphere fallbacks (mirrors camera.slang).
+
+        Legacy equirect cameras carry zeroed intrinsics and map the viewport to the full
+        sphere; crop cameras set explicit native-scale intrinsics with a shifted
+        principal point, making the longitude period fx*2pi instead of the viewport.
+        """
+        width_safe = max(float(width), 1.0)
+        height_safe = max(float(height), 1.0)
+        fx_set = self.fx is not None and float(self.fx) > 1e-8
+        fy_set = self.fy is not None and float(self.fy) > 1e-8
+        fx = float(self.fx) if fx_set else width_safe / (2.0 * np.pi)
+        fy = float(self.fy) if fy_set else height_safe / np.pi
+        has_intrinsics = fx_set or fy_set
+        cx = float(self.cx) if has_intrinsics and self.cx is not None else 0.5 * width_safe
+        cy = float(self.cy) if has_intrinsics and self.cy is not None else 0.5 * height_safe
+        return fx, fy, cx, cy
+
+    def _project_equirectangular_camera_to_screen(self, camera_pos: np.ndarray, width: int, height: int) -> tuple[np.ndarray, bool]:
         cam = np.asarray(camera_pos, dtype=np.float64).reshape(3)
         horizontal = float(np.linalg.norm(cam[[0, 2]]))
         if (not np.isfinite(cam).all()) or horizontal + abs(float(cam[1])) <= _EQUIRECTANGULAR_EPS:
             return np.zeros((2,), dtype=np.float32), False
         theta = float(np.arctan2(float(cam[0]), float(cam[2])))
         phi = float(np.arctan2(-float(cam[1]), horizontal))
-        screen = np.array(
-            (
-                (theta / (2.0 * np.pi) + 0.5) * max(float(width), 1.0),
-                (0.5 - phi / np.pi) * max(float(height), 1.0),
-            ),
-            dtype=np.float64,
-        )
-        screen[0] = np.mod(screen[0], max(float(width), 1.0))
+        fx, fy, cx, cy = self._equirect_intrinsics(width, height)
+        screen = np.array((theta * fx + cx, -phi * fy + cy), dtype=np.float64)
+        period = max(fx * 2.0 * np.pi, 1e-8)
+        viewport_center = 0.5 * max(float(width), 1.0)
+        screen[0] -= np.floor((screen[0] - viewport_center) / period + 0.5) * period
         return screen.astype(np.float32, copy=False), bool(np.isfinite(screen).all())
 
     def project_world_to_screen(self, world_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[np.ndarray, bool]:
@@ -297,10 +328,9 @@ class Camera:
 
     def _equirectangular_screen_to_world_ray(self, screen_pos: np.ndarray, width: int, height: int) -> np.ndarray:
         screen = np.asarray(screen_pos, dtype=np.float64).reshape(2)
-        width_safe = max(float(width), 1.0)
-        height_safe = max(float(height), 1.0)
-        theta = 2.0 * np.pi * (float(screen[0]) / width_safe - 0.5)
-        phi = np.pi * (0.5 - float(screen[1]) / height_safe)
+        fx, fy, cx, cy = self._equirect_intrinsics(width, height)
+        theta = (float(screen[0]) - cx) / max(fx, 1e-12)
+        phi = -(float(screen[1]) - cy) / max(fy, 1e-12)
         cos_phi = float(np.cos(phi))
         ray_camera = np.array((cos_phi * np.sin(theta), -np.sin(phi), cos_phi * np.cos(theta)), dtype=np.float32)
         return np.asarray(normalize3(self.camera_to_world(ray_camera), eps=VEC_EPS), dtype=np.float32)
@@ -308,8 +338,15 @@ class Camera:
     def gpu_params(self, width: int, height: int, default_distortion: tuple[float, ...] | None = None) -> dict[str, object]:
         right, up, forward = self.basis()
         basis = np.stack((right, up, forward), axis=0).astype(np.float32)
-        fx, fy = self.focal_pixels_xy(width, height)
-        cx, cy = self.principal_point(width, height)
+        if self.is_equirectangular:
+            # Equirect cameras must ship model-17 intrinsics (x = fx*theta + cx): legacy
+            # cameras without explicit intrinsics get the full-sphere mapping, crop
+            # cameras keep their native-scale focal and shifted principal point. The
+            # pinhole fov-derived focal fallback would be meaningless here.
+            fx, fy, cx, cy = self._equirect_intrinsics(width, height)
+        else:
+            fx, fy = self.focal_pixels_xy(width, height)
+            cx, cy = self.principal_point(width, height)
         distortion = self.distortion_params(default_distortion)
         return {
             "viewport": spy.float2(float(width), float(height)),

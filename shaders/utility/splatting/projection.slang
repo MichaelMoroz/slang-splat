@@ -44,8 +44,12 @@ bool support_sphere_intersects_view_frustum(PinholeCamera camera, float3 cameraC
 bool equirectangular_outline_needs_fallback(PinholeCamera camera, float2 outlineMin, float2 outlineMax)
 {
     if (!camera.is_equirectangular()) return false;
-    float2 viewport = camera.params.viewport;
-    return (outlineMax.x - outlineMin.x) > 0.5 * viewport.x || outlineMin.y <= 0.0 || outlineMax.y >= viewport.y;
+    // The seam-wrap detection compares against the longitude period (native full-sphere
+    // width), not the viewport: a crop camera's viewport is much smaller than the period.
+    float period = camera.equirect_period();
+    float yTop = camera.equirect_principal_point().y - 0.5 * PI * camera.equirect_focal().y;
+    float yBottom = camera.equirect_principal_point().y + 0.5 * PI * camera.equirect_focal().y;
+    return (outlineMax.x - outlineMin.x) > 0.5 * period || outlineMin.y <= yTop || outlineMax.y >= yBottom;
 }
 
 bool equirectangular_support_needs_fallback(PinholeCamera camera, float3 cameraCenter, float supportRadius)
@@ -80,8 +84,11 @@ void init_equirectangular_cap_rect_ellipse(PinholeCamera camera, float3 cameraCe
 
     float horizontal = length(cameraCenter.xz);
     float angularRadius = asin(saturate(supportRadius / distance));
-    float yExtent = min(angularRadius / PI, 0.5) * viewport.y;
-    float xExtent = horizontal <= supportRadius ? viewport.x : asin(saturate(supportRadius / horizontal)) / TAU_RADIANS * viewport.x;
+    // Angular extents convert to pixels through the equirect intrinsics so crop cameras
+    // (native focal, small viewport) get native-scale extents rather than viewport-scaled.
+    float2 focal = camera.equirect_focal();
+    float yExtent = min(angularRadius, 0.5 * PI) * focal.y;
+    float xExtent = horizontal <= supportRadius ? camera.equirect_period() : asin(saturate(supportRadius / horizontal)) * focal.x;
     ellipse.centerPx = screenCenter;
     ellipse.radiusPx = max(max(xExtent, yExtent), MIN_SCREEN_RADIUS_PX);
     ellipse.conic = float3(-xExtent, 0.0, -yExtent);

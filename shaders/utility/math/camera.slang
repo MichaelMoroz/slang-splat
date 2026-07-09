@@ -79,14 +79,51 @@ struct PinholeCamera : ICamera
         return cameraPos.xy * (params.focalPixels * invDepth) + params.principalPoint;
     }
 
+    // Equirectangular intrinsics. COLMAP model 17 semantics: x = fx * theta + cx,
+    // y = fy * phi' + cy. When intrinsics are unset (zero) they fall back to the
+    // full-sphere mapping over the viewport (fx = W / 2pi, cx = W / 2, ...), which keeps
+    // legacy cameras bit-equivalent. Explicit intrinsics enable *crop* cameras: a crop is
+    // a principal-point shift with the native focal retained, so the longitude period is
+    // fx * 2pi (the native width), not the viewport.
+    float2 equirect_focal()
+    {
+        float2 viewportSafe = max(params.viewport, float2(1.0));
+        float fx = params.focalPixels.x > SMALL_VALUE ? params.focalPixels.x : viewportSafe.x / TAU_RADIANS;
+        float fy = params.focalPixels.y > SMALL_VALUE ? params.focalPixels.y : viewportSafe.y / PI;
+        return float2(fx, fy);
+    }
+
+    float2 equirect_principal_point()
+    {
+        float2 viewportSafe = max(params.viewport, float2(1.0));
+        bool hasIntrinsics = params.focalPixels.x > SMALL_VALUE || params.focalPixels.y > SMALL_VALUE;
+        return hasIntrinsics ? params.principalPoint : 0.5 * viewportSafe;
+    }
+
+    float equirect_period()
+    {
+        return equirect_focal().x * TAU_RADIANS;
+    }
+
+    // Wraps an equirect x coordinate to the period representative closest to the
+    // viewport center, so full-sphere views reproduce the legacy [0, W) wrap and crop
+    // windows (viewport << period) see the nearest seam-crossing representative.
+    float equirect_wrap_x(float x)
+    {
+        float period = max(equirect_period(), SMALL_VALUE);
+        float viewportCenter = 0.5 * max(params.viewport.x, 1.0);
+        return x - floor((x - viewportCenter) / period + 0.5) * period;
+    }
+
     float2 project_camera_to_screen_equirectangular(float3 cameraPos)
     {
         float horizontal = length(cameraPos.xz);
         float theta = atan2(cameraPos.x, cameraPos.z);
         float phi = atan2(-cameraPos.y, horizontal);
-        float2 viewportSafe = max(params.viewport, float2(1.0));
-        float2 screenPos = float2((theta / TAU_RADIANS + 0.5) * viewportSafe.x, (0.5 - phi / PI) * viewportSafe.y);
-        screenPos.x -= floor(screenPos.x / viewportSafe.x) * viewportSafe.x;
+        float2 focal = equirect_focal();
+        float2 principal = equirect_principal_point();
+        float2 screenPos = float2(theta * focal.x, -phi * focal.y) + principal;
+        screenPos.x = equirect_wrap_x(screenPos.x);
         return screenPos;
     }
 
@@ -203,9 +240,10 @@ struct PinholeCamera : ICamera
     {
         if (is_equirectangular())
         {
-            float2 viewportSafe = max(params.viewport, float2(1.0));
-            float theta = TAU_RADIANS * (screenPos.x / viewportSafe.x - 0.5);
-            float phi = PI * (0.5 - screenPos.y / viewportSafe.y);
+            float2 focal = max(equirect_focal(), float2(SMALL_VALUE));
+            float2 principal = equirect_principal_point();
+            float theta = (screenPos.x - principal.x) / focal.x;
+            float phi = -(screenPos.y - principal.y) / focal.y;
             float sinTheta, cosTheta;
             sincos(theta, sinTheta, cosTheta);
             float sinPhi, cosPhi;
@@ -222,8 +260,8 @@ struct PinholeCamera : ICamera
         float depthSafe = max(depth, SMALL_VALUE);
         if (is_equirectangular())
         {
-            float2 viewportSafe = max(params.viewport, float2(1.0));
-            float angularPixelSize = max(TAU_RADIANS / viewportSafe.x, PI / viewportSafe.y);
+            float2 focal = max(equirect_focal(), float2(SMALL_VALUE));
+            float angularPixelSize = max(1.0 / focal.x, 1.0 / focal.y);
             return SPLAT_PIXEL_CLAMP_PX * depthSafe * angularPixelSize;
         }
         float minFocal = max(min(params.focalPixels.x, params.focalPixels.y), SMALL_VALUE);
