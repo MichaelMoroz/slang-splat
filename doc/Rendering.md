@@ -9,7 +9,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
   - `ICamera`
   - `PinholeCamera`
 - Shared splat data structures and reusable projection/raster math live under `shaders/utility/splatting`, while renderer bindings remain grouped in `shaders/renderer/gaussian_types.slang`:
-  - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, and lens distortion.
+  - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, lens distortion, and projection model.
   - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and projection/binning limits.
   - `g_Raster` (`RasterParams`) for raster resolution, alpha/transmittance thresholds, background, and debug overlays.
 - Shared constants stay in `shaders/utility/math/constants.slang`, organized with commented sections for generic numeric floors, rendering constants, and debug-visualization tuning instead of being split into tiny constants-only files.
@@ -18,7 +18,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Stored gaussian scale follows 3DGS semantics (`log(sigma)` per axis). Rendering decodes `exp(log_scale)` and converts sigma to finite-support ellipsoid radius with `radius_scale * 3.0`.
 
 ## Renderer Settings API
-- `src/renderer/renderer_context.py` exposes `GaussianRenderSettings` as the immutable render-configuration object used by the viewer, CLI, and torch wrapper.
+- `src/renderer/renderer_context.py` exposes `GaussianRenderSettings` as the immutable render-configuration object used by the viewer, headless runner, and torch wrapper.
 - `GaussianRenderSettings.renderer_kwargs()` mirrors the public `GaussianRenderer` constructor arguments so cached renderer reuse stays keyed by the full behaviorally relevant configuration.
 - Debug overlay toggles are part of that settings surface:
   - `debug_show_ellipses`
@@ -30,10 +30,15 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `csProjectVisibleSplats`
 - For each splat:
   - decode the stored 3DGS log-scale to sigma, convert it to finite-support ellipsoid radius with `radius_scale * 3.0`, and use that same support consistently for projection, binning, and raster evaluation,
-  - solve the projected cutoff outline analytically from the ellipsoid tangent circle and fit a renormalized conic in screen space,
+  - solve the projected cutoff outline analytically from the ellipsoid tangent circle and fit a screen-space conic, using a centered eight-sample fit for equirectangular cameras,
   - inflate the fitted radius conservatively for visibility and scan conversion while keeping the conic on the actual alpha-cutoff boundary,
   - estimate projected radius,
   - write projected splat state, raster cache data, visibility flags, and a visible-splat sort key.
+- Camera projection supports pinhole/OPENCV-style distorted views and COLMAP `EQUIRECTANGULAR` views through the shared camera math layer. Equirectangular projection stores a distance depth for sorting and visibility instead of rejecting negative camera-space `z`.
+- The equirectangular centered outline fit normalizes centered outline deltas by their bbox half-extent before solving the conic, then de-normalizes back to pixel units. This keeps epsilon checks scale-invariant for large but bounded sky/360 splats.
+- Equirectangular outlines that cross the left-right seam, touch the polar rows, or fail the centered fit fall back to a bounded angular-cap rect instead of a fullscreen ellipse. The support sphere subtends a direction cap of half-angle `asin(r/d)`, which bounds a latitude band `center.y +- alpha/PI * H` and a longitude interval `center.x +- asin(r/horizontal)/TAU * W` (full width when the cap contains a pole, i.e. `horizontal <= r`). The rect rides in the per-splat conic slots as `(-xExtent, 0, -yExtent)`; only camera-inside-support splats still bin fullscreen.
+- Binning treats any splat without an analytic conic (cap rects, degenerate determinants) as a bbox: the scanline stage emits the full clamped minor span per row and the 3D ray evaluator rejects non-contributing pixels.
+- Equirectangular splats whose binning extent overlaps the left-right seam emit an additional wrapped scanline span with the screen center shifted by one viewport width. Normal raster evaluation still ray-traces the original splat; the duplicate span only prevents seam-edge tile culling.
 - Output buffers:
   - projected splat data for raster stage,
   - raster cache data,
@@ -66,12 +71,13 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `csRasterize` in `shaders/renderer/gaussian_raster_stage.slang`.
 - Raster execution uses fixed `8x8` tiles: one `8x8` thread group covers one raster tile, and each thread owns exactly one pixel.
 - Each thread resolves the tile range for its pixel, reuses each staged gaussian loaded from the prepass raster cache for that single forward replay, and writes one output pixel.
+- Pixel geometry is sampled at pixel centers (`x + 0.5`, `y + 0.5`) for ray generation and screen-space debug ellipse evaluation. This avoids sampling exactly on the equirectangular left-right seam.
 - The inner loop performs front-to-back blending with exponential radial falloff while reusing gaussian data already staged in shared memory.
 - Shared gaussian staging uses `256`-splat batches.
 - Raster evaluation uses the true decoded support cached in prepass with no separate pixel-floor clamp or fallback alpha branch.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
 - Writes RGBA output texture. `csRasterize` writes the normal display/gamma output; `csRasterizeLinear` reuses the same forward replay and writes linear radiance for viewer post-processing.
-- Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
+- Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`, which dispatches internally based on the camera projection model.
 
 ### PPISP Viewer Preview
 - `shaders/utility/ppisp_tonemap.slang` owns the differentiable PPISP exposure, vignetting, chroma-correction, CRF math, and the stable analytic inverse reused by photometric compensation.

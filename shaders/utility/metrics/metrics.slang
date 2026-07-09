@@ -34,6 +34,7 @@ uniform StructuredBuffer<int> g_FixedIntBuffer;
 uniform StructuredBuffer<uint4> g_SplatContributionInfo;
 uniform StructuredBuffer<float> g_SplatViewedFractionHistory;
 uniform StructuredBuffer<float> g_GradientStats;
+uniform StructuredBuffer<float4> g_SplatInit;
 uniform uint g_ParamCount;
 uniform uint g_ItemCount;
 uniform uint g_BinCount;
@@ -139,6 +140,11 @@ float refinement_metric_value(uint paramId, uint splatId)
     variance = isfinite(variance) ? max(variance, 0.0) : 0.0;
     float distribution = pow(variance, g_RefinementGradientVarianceWeightExponent) * pow(viewedFraction, g_RefinementContributionWeightExponent);
     return isfinite(distribution) ? max(distribution, 0.0) : 0.0;
+}
+
+bool refinement_metric_is_refinable(uint splatId)
+{
+    return g_SplatInit[splatId].w >= 0.0;
 }
 
 uint float_to_ordered_uint(float value)
@@ -248,6 +254,7 @@ void csHistogramRefinementDistributionsLog10(uint3 dispatchThreadID : SV_Dispatc
     uint splatId = dispatchThreadID.x;
     uint paramId = dispatchThreadID.y;
     if (paramId >= g_ParamCount || splatId >= g_ItemCount || g_BinCount == 0u) return;
+    if (!refinement_metric_is_refinable(splatId)) return;
 
     float value = refinement_metric_value(paramId, splatId);
     if (!isfinite(value) || value <= 0.0) return;
@@ -300,6 +307,7 @@ void csRangeRefinementDistributions(uint3 dispatchThreadID : SV_DispatchThreadID
     uint splatId = dispatchThreadID.x;
     uint paramId = dispatchThreadID.y;
     if (paramId >= g_ParamCount || splatId >= g_ItemCount) return;
+    if (!refinement_metric_is_refinable(splatId)) return;
 
     float value = refinement_metric_value(paramId, splatId);
     if (!isfinite(value) || value <= 0.0) return;

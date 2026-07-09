@@ -5,31 +5,22 @@ import struct
 
 import numpy as np
 
-from .colmap_types import ColmapCamera, ColmapImage, ColmapPoint3D, ColmapReconstruction
-
-COLMAP_SIMPLE_PINHOLE_MODEL_ID = 0
-COLMAP_PINHOLE_MODEL_ID = 1
-COLMAP_SIMPLE_RADIAL_MODEL_ID = 2
-COLMAP_RADIAL_MODEL_ID = 3
-COLMAP_OPENCV_MODEL_ID = 4
-COLMAP_FULL_OPENCV_MODEL_ID = 6
-COLMAP_CAMERA_MODEL_IDS = {
-    "SIMPLE_PINHOLE": COLMAP_SIMPLE_PINHOLE_MODEL_ID,
-    "PINHOLE": COLMAP_PINHOLE_MODEL_ID,
-    "SIMPLE_RADIAL": COLMAP_SIMPLE_RADIAL_MODEL_ID,
-    "RADIAL": COLMAP_RADIAL_MODEL_ID,
-    "OPENCV": COLMAP_OPENCV_MODEL_ID,
-    "FULL_OPENCV": COLMAP_FULL_OPENCV_MODEL_ID,
-}
-COLMAP_CAMERA_MODEL_PARAM_COUNTS = {
-    COLMAP_SIMPLE_PINHOLE_MODEL_ID: 3,
-    COLMAP_PINHOLE_MODEL_ID: 4,
-    COLMAP_SIMPLE_RADIAL_MODEL_ID: 4,
-    COLMAP_RADIAL_MODEL_ID: 5,
-    COLMAP_OPENCV_MODEL_ID: 8,
-    COLMAP_FULL_OPENCV_MODEL_ID: 12,
-}
-COLMAP_SUPPORTED_CAMERA_MODEL_NAMES = tuple(COLMAP_CAMERA_MODEL_IDS)
+from .colmap_types import (
+    COLMAP_CAMERA_MODEL_IDS,
+    COLMAP_CAMERA_MODEL_PARAM_COUNTS,
+    COLMAP_EQUIRECTANGULAR_MODEL_ID,
+    COLMAP_FULL_OPENCV_MODEL_ID,
+    COLMAP_OPENCV_MODEL_ID,
+    COLMAP_PINHOLE_MODEL_ID,
+    COLMAP_RADIAL_MODEL_ID,
+    COLMAP_SIMPLE_PINHOLE_MODEL_ID,
+    COLMAP_SIMPLE_RADIAL_MODEL_ID,
+    COLMAP_SUPPORTED_CAMERA_MODEL_NAMES,
+    ColmapCamera,
+    ColmapImage,
+    ColmapPoint3D,
+    ColmapReconstruction,
+)
 U64 = struct.Struct("<Q")
 I32 = struct.Struct("<i")
 COLMAP_DEFAULT_SPARSE_SUBDIR = "sparse/0"
@@ -68,6 +59,7 @@ def _camera_intrinsics(model_id: int, params: tuple[float, ...]) -> tuple[float,
     if model_id == COLMAP_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], params[4], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     if model_id == COLMAP_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], 0.0, 0.0, 0.0, 0.0
     if model_id == COLMAP_FULL_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11]
+    if model_id == COLMAP_EQUIRECTANGULAR_MODEL_ID: return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     raise ValueError(f"Unsupported COLMAP camera model id {model_id}.")
 
 

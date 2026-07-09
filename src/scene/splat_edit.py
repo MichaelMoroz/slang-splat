@@ -26,9 +26,6 @@ SELECTION_SCALARS = (SELECT_SCALE, SELECT_OPACITY, SELECT_COLOR)
 # Rec. 709 luminance weights for the single-scalar "color" selection axis.
 _LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
-# Child scale shrink factor used when densifying (matches the 3DGS split heuristic).
-_DENSIFY_SCALE_SHRINK = 1.6
-
 
 def _empty_mask(count: int) -> np.ndarray:
     return np.zeros((max(int(count), 0),), dtype=bool)
@@ -97,26 +94,6 @@ def select_in_range(values: np.ndarray, low: float, high: float) -> np.ndarray:
     return (samples >= lo) & (samples <= hi)
 
 
-def quaternion_to_matrix(quaternions: np.ndarray) -> np.ndarray:
-    """Convert ``(w, x, y, z)`` quaternions to ``[..., 3, 3]`` rotation matrices."""
-    quats = np.asarray(quaternions, dtype=np.float64).reshape(-1, 4)
-    norms = np.linalg.norm(quats, axis=1, keepdims=True)
-    quats = np.divide(quats, np.maximum(norms, 1e-12), out=np.zeros_like(quats), where=norms > 0.0)
-    quats[norms.reshape(-1) <= 0.0, 0] = 1.0
-    w, x, y, z = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
-    matrices = np.empty((quats.shape[0], 3, 3), dtype=np.float64)
-    matrices[:, 0, 0] = 1.0 - 2.0 * (y * y + z * z)
-    matrices[:, 0, 1] = 2.0 * (x * y - w * z)
-    matrices[:, 0, 2] = 2.0 * (x * z + w * y)
-    matrices[:, 1, 0] = 2.0 * (x * y + w * z)
-    matrices[:, 1, 1] = 1.0 - 2.0 * (x * x + z * z)
-    matrices[:, 1, 2] = 2.0 * (y * z - w * x)
-    matrices[:, 2, 0] = 2.0 * (x * z - w * y)
-    matrices[:, 2, 1] = 2.0 * (y * z + w * x)
-    matrices[:, 2, 2] = 1.0 - 2.0 * (x * x + y * y)
-    return matrices
-
-
 def select_in_box(
     scene: GaussianScene,
     center: np.ndarray,
@@ -157,71 +134,8 @@ def _index_scene(scene: GaussianScene, index: np.ndarray) -> GaussianScene:
         opacities=scene.opacities[index],
         colors=scene.colors[index],
         sh_coeffs=scene.sh_coeffs[index],
+        refinable=None if scene.refinable is None else scene.refinable[index],
     )
-
-
-def _concat_scenes(a: GaussianScene, b: GaussianScene) -> GaussianScene:
-    return GaussianScene(
-        positions=np.concatenate([a.positions, b.positions], axis=0),
-        scales=np.concatenate([a.scales, b.scales], axis=0),
-        rotations=np.concatenate([a.rotations, b.rotations], axis=0),
-        opacities=np.concatenate([a.opacities, b.opacities], axis=0),
-        colors=np.concatenate([a.colors, b.colors], axis=0),
-        sh_coeffs=np.concatenate([a.sh_coeffs, b.sh_coeffs], axis=0),
-    )
-
-
-def _make_children(scene: GaussianScene, parents: np.ndarray, rng: np.random.Generator) -> GaussianScene:
-    """Build child splats by offsetting parents within their covariance and shrinking."""
-    parent_idx = np.asarray(parents, dtype=np.intp).reshape(-1)
-    child = _index_scene(scene, parent_idx)
-    linear_scales = np.exp(np.asarray(child.scales[:, :3], dtype=np.float64))
-    rotation = quaternion_to_matrix(child.rotations)
-    local = rng.normal(size=(parent_idx.shape[0], 3)) * linear_scales
-    offsets = np.einsum("nij,nj->ni", rotation, local)
-    child.positions[:, :3] = (np.asarray(child.positions[:, :3], dtype=np.float64) + offsets).astype(np.float32)
-    child.scales[:, :3] = (np.asarray(child.scales[:, :3], dtype=np.float32) - np.log(_DENSIFY_SCALE_SHRINK)).astype(np.float32)
-    return child
-
-
-def resample_selection(
-    scene: GaussianScene,
-    mask: np.ndarray,
-    ratio: float,
-    *,
-    rng: np.random.Generator | None = None,
-) -> tuple[GaussianScene, np.ndarray]:
-    """Sparsify (``ratio < 1``) or densify (``ratio > 1``) the selected splats.
-
-    Returns the new scene and a selection mask aligned to it (kept and newly added
-    splats stay selected). Unselected splats are never touched.
-    """
-    selection = np.asarray(mask, dtype=bool).reshape(-1)
-    count = scene.count
-    if selection.shape[0] != count:
-        raise ValueError("Selection mask length must match the scene splat count.")
-    selected_idx = np.where(selection)[0]
-    n_selected = int(selected_idx.shape[0])
-    resample_ratio = max(float(ratio), 0.0)
-    if n_selected == 0 or abs(resample_ratio - 1.0) < 1e-9:
-        return scene, selection.copy()
-    generator = np.random.default_rng() if rng is None else rng
-    target = int(round(resample_ratio * n_selected))
-
-    if target < n_selected:
-        drop_count = n_selected - target
-        drop_idx = generator.permutation(selected_idx)[:drop_count]
-        keep = np.ones((count,), dtype=bool)
-        keep[drop_idx] = False
-        new_scene = _index_scene(scene, np.where(keep)[0])
-        return new_scene, selection[keep].copy()
-
-    add_count = target - n_selected
-    parent_choice = selected_idx[generator.integers(0, n_selected, size=add_count)]
-    children = _make_children(scene, parent_choice, generator)
-    new_scene = _concat_scenes(scene, children)
-    new_mask = np.concatenate([selection, np.ones((add_count,), dtype=bool)], axis=0)
-    return new_scene, new_mask
 
 
 def edit_properties(

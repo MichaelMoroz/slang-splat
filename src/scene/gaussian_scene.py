@@ -13,6 +13,7 @@ class GaussianScene:
     opacities: np.ndarray
     colors: np.ndarray
     sh_coeffs: np.ndarray
+    refinable: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.positions = np.ascontiguousarray(self.positions, dtype=np.float32)
@@ -30,6 +31,10 @@ class GaussianScene:
             or self.sh_coeffs.shape[0] != n
         ):
             raise ValueError("All GaussianScene arrays must have the same first dimension.")
+        if self.refinable is not None:
+            self.refinable = np.ascontiguousarray(self.refinable, dtype=bool).reshape(-1)
+            if self.refinable.shape[0] != n:
+                raise ValueError("GaussianScene.refinable must match the splat count.")
 
     @property
     def count(self) -> int:
@@ -45,4 +50,5 @@ class GaussianScene:
             opacities=self.opacities[:max_splats],
             colors=self.colors[:max_splats],
             sh_coeffs=self.sh_coeffs[:max_splats],
+            refinable=None if self.refinable is None else self.refinable[:max_splats],
         )

@@ -12,8 +12,13 @@ from src.renderer.camera import Camera
 ALPHA_CUTOFF_DEFAULT = np.float32(1.0 / 255.0)
 ELLIPSE_EPS = 1e-6
 MIN_CONIC_DET = 1e-12
+CONIC_AXIS_FLOOR = 1e-20
+CONIC_INTERSECTION_SLACK = 1e-5
 GAUSSIAN_SUPPORT_SIGMA_RADIUS = np.float32(3.0)
 ELLIPSE_RADIUS_PAD_PX = np.float32(1.0)
+BBOX_PAD_PX = np.float32(1.0)
+MIN_BBOX_EXTENT_PX = np.float32(1e-4)
+EQUIRECTANGULAR_ELLIPSE_POINT_COUNT = 8
 
 
 @dataclass(slots=True)
@@ -128,11 +133,102 @@ def _init_fullscreen_fallback_ellipse(width: int, height: int) -> tuple[np.ndarr
     return center_px, radius, conic
 
 
+def _init_equirectangular_cap_rect(camera_center: np.ndarray, support_radius: float, screen_center: np.ndarray, width: int, height: int) -> tuple[np.ndarray, float, np.ndarray]:
+    center = np.asarray(camera_center, dtype=np.float64).reshape(3)
+    distance = float(np.linalg.norm(center))
+    radius = float(support_radius)
+    if not (distance > 1e-4 and radius > 0.0) or radius >= distance:
+        return _init_fullscreen_fallback_ellipse(width, height)
+    horizontal = float(np.linalg.norm(center[[0, 2]]))
+    angular_radius = math.asin(np.clip(radius / distance, 0.0, 1.0))
+    y_extent = min(angular_radius / math.pi, 0.5) * float(height)
+    x_extent = float(width) if horizontal <= radius else math.asin(np.clip(radius / horizontal, 0.0, 1.0)) / (2.0 * math.pi) * float(width)
+    conic = np.array((-x_extent, 0.0, -y_extent), dtype=np.float32)
+    return np.asarray(screen_center, dtype=np.float32).reshape(2).copy(), float(max(max(x_extent, y_extent), 1.0)), conic
+
+
+def _is_bbox_rect_conic(conic: np.ndarray) -> bool:
+    return float(conic[0]) < 0.0 and float(conic[2]) < 0.0
+
+
+def _fit_centered_outline_ellipse(outline_points: np.ndarray, screen_center: np.ndarray) -> tuple[np.ndarray, float, np.ndarray] | None:
+    center = np.asarray(screen_center, dtype=np.float32).reshape(2)
+    d = (np.asarray(outline_points, dtype=np.float64).reshape(-1, 2) - center.astype(np.float64, copy=False))
+    bbox_half_extent = np.maximum(np.max(np.abs(d), axis=0), np.full((2,), ELLIPSE_EPS, dtype=np.float64))
+    d = d / bbox_half_extent[None, :]
+    design = np.stack((d[:, 0] * d[:, 0], 2.0 * d[:, 0] * d[:, 1], d[:, 1] * d[:, 1]), axis=1)
+    normal = design.T @ design
+    rhs = np.sum(design, axis=0)
+    try:
+        conic_norm = np.linalg.solve(normal, rhs).astype(np.float32)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.isfinite(conic_norm).all():
+        return None
+    det_norm = float(conic_norm[0] * conic_norm[2] - conic_norm[1] * conic_norm[1])
+    if float(conic_norm[0]) <= ELLIPSE_EPS or float(conic_norm[2]) <= ELLIPSE_EPS or det_norm <= ELLIPSE_EPS:
+        return None
+    conic_norm = conic_norm / max(float(np.max(design @ conic_norm.astype(np.float64))), 1.0)
+    conic = np.array(
+        (
+            float(conic_norm[0]) / max(float(bbox_half_extent[0] * bbox_half_extent[0]), ELLIPSE_EPS),
+            float(conic_norm[1]) / max(float(bbox_half_extent[0] * bbox_half_extent[1]), ELLIPSE_EPS),
+            float(conic_norm[2]) / max(float(bbox_half_extent[1] * bbox_half_extent[1]), ELLIPSE_EPS),
+        ),
+        dtype=np.float32,
+    )
+    det = float(conic[0] * conic[2] - conic[1] * conic[1])
+    if float(conic[0]) <= 0.0 or float(conic[2]) <= 0.0 or det <= 0.0 or (not np.isfinite(det)):
+        return None
+    trace = float(conic[0] + conic[2])
+    disc = math.sqrt(max(0.25 * trace * trace - det, 0.0))
+    axis0 = 1.0 / math.sqrt(max(0.5 * trace + disc, CONIC_AXIS_FLOOR))
+    axis1 = 1.0 / math.sqrt(max(0.5 * trace - disc, CONIC_AXIS_FLOOR))
+    radius_px = float(max(axis0, axis1))
+    return center, radius_px, conic.astype(np.float32, copy=False)
+
+
+def _equirectangular_centered_ellipse_needs_fallback(center: np.ndarray, conic: np.ndarray, width: int, height: int) -> bool:
+    det = float(conic[0] * conic[2] - conic[1] * conic[1])
+    if det <= 0.0 or not np.isfinite(det):
+        return True
+    extent = np.sqrt(np.maximum(np.array((conic[2], conic[0]), dtype=np.float64) / det, 0.0))
+    if not np.isfinite(extent).all():
+        return True
+    if det * float(extent[0] * extent[0] * extent[1] * extent[1]) <= ELLIPSE_EPS:
+        return True
+    center = np.asarray(center, dtype=np.float64).reshape(2)
+    return (
+        float(center[0] - extent[0]) <= 0.0
+        or float(center[0] + extent[0]) >= float(width)
+        or float(center[1] - extent[1]) <= 0.0
+        or float(center[1] + extent[1]) >= float(height)
+    )
+
+
+def _equirectangular_support_needs_fallback(camera_center: np.ndarray, support_radius: float, width: int, height: int) -> bool:
+    center = np.asarray(camera_center, dtype=np.float64).reshape(3)
+    radius = float(support_radius)
+    if not (np.isfinite(center).all() and math.isfinite(radius) and radius > 0.0):
+        return False
+    distance = float(np.linalg.norm(center))
+    if distance <= 1e-4 or radius >= distance:
+        return True
+    horizontal = float(np.linalg.norm(center[[0, 2]]))
+    theta = math.atan2(float(center[0]), float(center[2]))
+    phi = math.atan2(-float(center[1]), horizontal)
+    angular_radius = math.asin(np.clip(radius / distance, 0.0, 1.0))
+    angular_slack = 1e-8
+    return abs(theta) + angular_radius + angular_slack >= math.pi or abs(phi) + angular_radius + angular_slack >= 0.5 * math.pi
+
+
 def _support_sphere_intersects_view_frustum(camera_center: np.ndarray, camera: Camera, width: int, height: int, support_radius: float) -> bool:
     center = np.asarray(camera_center, dtype=np.float64).reshape(3)
     radius = float(support_radius)
     if not (np.isfinite(center).all() and math.isfinite(radius) and radius > 0.0):
         return False
+    if camera.is_equirectangular:
+        return float(np.linalg.norm(center)) + radius > 1e-4
     if center[2] + radius <= 1e-4:
         return False
     if center[2] - radius >= float(camera.far):
@@ -187,6 +283,34 @@ def _compute_outline_ellipse(
         return None
     tangent_basis_v /= tangent_basis_v_norm
 
+    if camera.is_equirectangular:
+        if not screen_ok:
+            return _init_fullscreen_fallback_ellipse(width, height) if support_intersects_frustum else None
+        support_radius = float(np.max(scale))
+        if _equirectangular_support_needs_fallback(camera_center, support_radius, width, height):
+            return _init_equirectangular_cap_rect(camera_center, support_radius, screen_center, width, height) if support_intersects_frustum else None
+        outline_points = np.zeros((EQUIRECTANGULAR_ELLIPSE_POINT_COUNT, 2), dtype=np.float32)
+        outline_min = np.full((2,), 1e30, dtype=np.float32)
+        outline_max = np.full((2,), -1e30, dtype=np.float32)
+        q_inv = _quat_conj(rotation)
+        for index in range(EQUIRECTANGULAR_ELLIPSE_POINT_COUNT):
+            theta = np.float32(2.0 * np.pi * index / float(EQUIRECTANGULAR_ELLIPSE_POINT_COUNT))
+            local_point = tangent_circle_center + tangent_circle_radius * (np.cos(theta) * tangent_basis_u + np.sin(theta) * tangent_basis_v)
+            world_point = world_pos + _quat_rotate(local_point * scale, q_inv)
+            screen_point, point_ok = camera.project_world_to_screen(world_point, width, height)
+            if not point_ok:
+                return _init_equirectangular_cap_rect(camera_center, support_radius, screen_center, width, height) if support_intersects_frustum else None
+            outline_points[index] = screen_point
+            outline_min = np.minimum(outline_min, screen_point)
+            outline_max = np.maximum(outline_max, screen_point)
+        needs_cap_rect = (float(outline_max[0] - outline_min[0]) > 0.5 * float(width)) or float(outline_min[1]) <= 0.0 or float(outline_max[1]) >= float(height)
+        fitted = None if needs_cap_rect else _fit_centered_outline_ellipse(outline_points, screen_center)
+        if fitted is not None:
+            center_px, _, conic = fitted
+            if not _equirectangular_centered_ellipse_needs_fallback(center_px, conic, width, height):
+                return fitted
+        return _init_equirectangular_cap_rect(camera_center, support_radius, screen_center, width, height)
+
     outline_points = np.zeros((5, 2), dtype=np.float32)
     outline_min = np.full((2,), 1e30, dtype=np.float32)
     outline_max = np.full((2,), -1e30, dtype=np.float32)
@@ -201,6 +325,9 @@ def _compute_outline_ellipse(
         outline_points[index] = screen_point
         outline_min = np.minimum(outline_min, screen_point)
         outline_max = np.maximum(outline_max, screen_point)
+
+    if camera.is_equirectangular and ((float(outline_max[0] - outline_min[0]) > 0.5 * float(width)) or float(outline_min[1]) <= 0.0 or float(outline_max[1]) >= float(height)):
+        return _init_fullscreen_fallback_ellipse(width, height)
 
     if screen_ok:
         outline_min = np.minimum(outline_min, screen_center.astype(np.float32, copy=False))
@@ -307,8 +434,9 @@ def project_splats(
         radius_px = float(max(radius_px + float(ELLIPSE_RADIUS_PAD_PX), 1.0))
         center_radius_depth[index] = np.array((center_px[0], center_px[1], radius_px, cam_distance), dtype=np.float32)
         ellipse_conic[index] = conic
+        visible_depth = cam_distance > 1e-4 if camera.is_equirectangular else depth_value > 1e-4
         visible = (
-            depth_value > 1e-4
+            visible_depth
             and center_px[0] + radius_px >= 0.0
             and center_px[0] - radius_px < float(width)
             and center_px[1] + radius_px >= 0.0
@@ -328,21 +456,18 @@ def project_splats(
     )
 
 
-def _try_prepare_conic_for_binning(conic: np.ndarray, radius: float, half_tile: float) -> tuple[bool, np.ndarray]:
+def _try_prepare_conic_for_binning(conic: np.ndarray, radius: float, half_tile: float) -> tuple[bool, np.ndarray | None]:
+    if not (math.isfinite(radius) and radius > 0.0):
+        return False, None
     det = float(conic[0] * conic[2] - conic[1] * conic[1])
-    bbox = np.array([radius, radius], dtype=np.float32)
-    if not (np.isfinite(conic).all() and float(conic[0]) > 1e-10 and float(conic[2]) > 1e-10 and det > MIN_CONIC_DET):
-        return False, bbox
-    trace = float(conic[0] + conic[2])
-    disc = float(np.sqrt(max(0.25 * trace * trace - det, 0.0)))
-    eig_min, eig_max = 0.5 * trace - disc, 0.5 * trace + disc
-    max_axis = float(1.0 / np.sqrt(max(eig_min, 1e-20)))
-    min_axis = float(1.0 / np.sqrt(max(eig_max, 1e-20)))
-    axis_limit = max(radius, 1.0) * 2.0 + half_tile
-    if not (np.isfinite(max_axis) and np.isfinite(min_axis) and eig_min > 0.0 and eig_max > 0.0 and max_axis <= axis_limit and min_axis >= 0.125):
-        return False, bbox
-    extent = np.array([np.sqrt(max(float(conic[2]) / det, 0.0)), np.sqrt(max(float(conic[0]) / det, 0.0))], dtype=np.float32)
-    return (False, bbox) if not np.isfinite(extent).all() else (True, np.clip(extent, 1e-4, radius).astype(np.float32))
+    has_analytic_conic = np.isfinite(conic).all() and float(conic[0]) > 1e-10 and float(conic[2]) > 1e-10 and det > MIN_CONIC_DET
+    if has_analytic_conic:
+        level = 1.0 + CONIC_INTERSECTION_SLACK
+        extent = np.array((math.sqrt(max(level * float(conic[2]) / det, 0.0)), math.sqrt(max(level * float(conic[0]) / det, 0.0))), dtype=np.float32)
+        if np.isfinite(extent).all():
+            return True, np.maximum(extent + BBOX_PAD_PX, MIN_BBOX_EXTENT_PX)
+    raw_extent = np.array((-conic[0], -conic[2]), dtype=np.float32) if _is_bbox_rect_conic(conic) else np.array((radius, radius), dtype=np.float32)
+    return False, np.maximum(raw_extent + BBOX_PAD_PX, MIN_BBOX_EXTENT_PX)
 
 
 def _eval_conic(conic: np.ndarray, x: float, y: float) -> float:
@@ -406,7 +531,7 @@ def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile
         if projected.valid[splat_id] == 0:
             continue
         use_conic, bbox_extent = _try_prepare_conic_for_binning(projected.ellipse_conic[splat_id], float(radius), 0.5 * float(tile_size))
-        if not use_conic:
+        if bbox_extent is None:
             continue
         extent = bbox_extent + 0.5 * float(tile_size)
         min_x = max(int(np.floor((cx - float(extent[0])) / float(tile_size))), 0)
@@ -418,7 +543,10 @@ def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile
         scan_along_x = bool(float(bbox_extent[0]) > float(bbox_extent[1]) or (abs(float(bbox_extent[0]) - float(bbox_extent[1])) < 1e-6 and (max_x - min_x) >= (max_y - min_y)))
         primary_lo, primary_hi = (min_y, max_y) if scan_along_x else (min_x, max_x)
         minor_lo, minor_hi = (min_x, max_x) if scan_along_x else (min_y, max_y)
-        spans = tuple(_iter_spans((float(cx), float(cy)), projected.ellipse_conic[splat_id], scan_along_x, tile_size, primary_lo, primary_hi, minor_lo, minor_hi))
+        if use_conic:
+            spans = tuple(_iter_spans((float(cx), float(cy)), projected.ellipse_conic[splat_id], scan_along_x, tile_size, primary_lo, primary_hi, minor_lo, minor_hi))
+        else:
+            spans = tuple((primary, minor_lo, minor_hi - minor_lo + 1) for primary in range(primary_lo, primary_hi + 1))
         total_count = sum(count for _, _, count in spans)
         if total_count <= 0:
             continue

@@ -138,6 +138,7 @@ class GaussianRenderer:
     DEBUG_MODE_SH_COEFFICIENT = "sh_coefficient"
     DEBUG_MODE_BLACK_NEGATIVE = "black_negative"
     DEBUG_MODE_REFINEMENT_DISTRIBUTION = "refinement_distribution"
+    DEBUG_MODE_UNREFINABLE = "unrefinable"
     DEBUG_MODES = (
         DEBUG_MODE_NORMAL,
         DEBUG_MODE_PROCESSED_COUNT,
@@ -160,6 +161,7 @@ class GaussianRenderer:
         DEBUG_MODE_GRAD_VARIANCE,
         DEBUG_MODE_REFINEMENT_DISTRIBUTION,
         DEBUG_MODE_VIEWED_FRACTION_EMA,
+        DEBUG_MODE_UNREFINABLE,
     )
     CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
@@ -308,12 +310,23 @@ class GaussianRenderer:
     def _projection_distortion_defaults(self) -> tuple[float, float, float, float, float, float, float, float]:
         return (float(self.proj_distortion_k1), float(self.proj_distortion_k2), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-    def _camera_uniforms(self, camera: Camera, uniform_name: str = "g_Camera") -> dict[str, object]:
+    def _camera_uniforms(self, camera: Camera, uniform_name: str = "g_Camera", width: int | None = None, height: int | None = None) -> dict[str, object]:
+        viewport_width = self.width if width is None else int(width)
+        viewport_height = self.height if height is None else int(height)
         return {
             str(uniform_name): {
-                **camera.gpu_params(self.width, self.height, default_distortion=self._projection_distortion_defaults()),
+                **camera.gpu_params(viewport_width, viewport_height, default_distortion=self._projection_distortion_defaults()),
             }
         }
+
+    def _training_native_camera_uniforms(self, camera: Camera, training_sample_vars: dict[str, object]) -> dict[str, object]:
+        params = dict(training_sample_vars.get("g_TrainingSubsample", {}))
+        return self._camera_uniforms(
+            camera,
+            "g_TrainingNativeCamera",
+            int(params.get("nativeWidth", self.width)),
+            int(params.get("nativeHeight", self.height)),
+        )
 
     def _sort_camera_position_var(self, camera: Camera, sort_camera_position: np.ndarray | None = None, sort_camera_dither_sigma: float = 0.0, sort_camera_dither_seed: int = 0) -> dict[str, object]:
         position = camera.position if sort_camera_position is None else np.asarray(sort_camera_position, dtype=np.float32).reshape(3)
@@ -394,6 +407,9 @@ class GaussianRenderer:
                 "nativeHeight": np.uint32(max(int(self.height), 1)),
                 "frameIndex": np.uint32(0),
                 "stepIndex": np.uint32(0),
+                "mode": np.uint32(0),
+                "cropX": np.uint32(0),
+                "cropY": np.uint32(0),
             }
         }
 
@@ -459,6 +475,9 @@ class GaussianRenderer:
     def _debug_grad_stats_var(self) -> dict[str, object]:
         return {"g_DebugGradStats": self._debug_grad_stats_buffer if self._debug_grad_stats_buffer is not None else self._work_buffers["debug_grad_stats"]}
 
+    def _debug_splat_init_var(self) -> dict[str, object]:
+        return {"g_DebugSplatInit": self._debug_splat_init_buffer if self._debug_splat_init_buffer is not None else self._work_buffers["debug_splat_init"]}
+
     def _debug_splat_age_var(self) -> dict[str, object]:
         return {"g_SplatAges": self._debug_splat_age_buffer if self._debug_splat_age_buffer is not None else self._work_buffers["debug_splat_age"]}
 
@@ -516,6 +535,22 @@ class GaussianRenderer:
             setattr(self, attr, shader)
         self._fixed_raster_grad_shaders = self._load_raster_grad_shaders("Fixed")
         self._k_clear_float_buffer = load_compute_kernel(self.device, SHADER_ROOT / "utility" / "metrics" / "metrics.slang", "csClearFloatBuffer")
+        self._edit_kernels = load_compute_kernels(
+            self.device,
+            SHADER_ROOT / "renderer" / "splat_edit_stage.slang",
+            {
+                "select_box": "csSelectBox",
+                "select_range": "csSelectRange",
+                "select_set_all": "csSelectSetAll",
+                "count_selected": "csCountSelected",
+                "edit_properties": "csEditProperties",
+                "resample_mark_keep": "csResampleMarkKeep",
+                "resample_compact_survivors": "csResampleCompactSurvivors",
+                "edit_scalar_min_max": "csEditScalarMinMax",
+                "edit_scalar_histogram": "csEditScalarHistogram",
+                "edit_position_bounds": "csEditPositionBounds",
+            },
+        )
 
     def _load_raster_grad_shaders(self, entry_suffix: str) -> _RasterGradShaderSet:
         kernels = load_compute_kernels(
@@ -644,6 +679,311 @@ class GaussianRenderer:
             "g_HighlightColor": spy.float3(*self._highlight_color),
             "g_HighlightMix": float(self._highlight_mix),
         }
+
+    def set_selection_preview(
+        self,
+        *,
+        box_enabled: bool = False,
+        box_center: np.ndarray | None = None,
+        box_axes: np.ndarray | None = None,
+        box_half_extents: np.ndarray | None = None,
+        scale_range: tuple[float, float] | None = None,
+        opacity_range: tuple[float, float] | None = None,
+        color_range: tuple[float, float] | None = None,
+        color: tuple[float, float, float] | None = None,
+        mix: float | None = None,
+    ) -> None:
+        """Enable the selection-candidate preview (display-only color tint in the prepass).
+
+        Highlights splats that would be selected by the given box (optional) intersected
+        with the per-scalar histogram ranges (scale, opacity, color luminance). Ranges left
+        as ``None`` default to the full extent (no filtering).
+        """
+        self._preview_enabled = True
+        if color is not None:
+            self._preview_color = (float(color[0]), float(color[1]), float(color[2]))
+        if mix is not None:
+            self._preview_mix = float(np.clip(mix, 0.0, 1.0))
+        self._preview_box_enabled = bool(box_enabled)
+        if box_center is not None:
+            self._preview_box_center = np.asarray(box_center, dtype=np.float32).reshape(3)
+        if box_axes is not None:
+            self._preview_box_axes = np.asarray(box_axes, dtype=np.float32).reshape(3, 3)
+        if box_half_extents is not None:
+            self._preview_box_half_extent = np.abs(np.asarray(box_half_extents, dtype=np.float32).reshape(3))
+        full = (-1e30, 1e30)
+        self._preview_ranges = np.array(
+            [scale_range or full, opacity_range or full, color_range or full], dtype=np.float32
+        )
+
+    def clear_selection_preview(self) -> None:
+        self._preview_enabled = False
+
+    def _preview_vars(self) -> dict[str, object]:
+        return {
+            "g_SelectPreviewEnabled": np.uint32(1 if self._preview_enabled else 0),
+            "g_SelectPreviewColor": spy.float3(*self._preview_color),
+            "g_SelectPreviewMix": float(self._preview_mix),
+            "g_SelectPreviewBoxEnabled": np.uint32(1 if self._preview_box_enabled else 0),
+            "g_SelectPreviewBoxCenter": spy.float3(*self._preview_box_center),
+            "g_SelectPreviewBoxAxisX": spy.float3(*self._preview_box_axes[0]),
+            "g_SelectPreviewBoxAxisY": spy.float3(*self._preview_box_axes[1]),
+            "g_SelectPreviewBoxAxisZ": spy.float3(*self._preview_box_axes[2]),
+            "g_SelectPreviewBoxHalfExtent": spy.float3(*self._preview_box_half_extent),
+            "g_SelectPreviewScaleRange": spy.float2(*self._preview_ranges[0]),
+            "g_SelectPreviewOpacityRange": spy.float2(*self._preview_ranges[1]),
+            "g_SelectPreviewColorRange": spy.float2(*self._preview_ranges[2]),
+        }
+
+    def set_highlight_appearance(self, color: tuple[float, float, float], mix: float) -> None:
+        self._highlight_color = (float(color[0]), float(color[1]), float(color[2]))
+        self._highlight_mix = float(np.clip(mix, 0.0, 1.0))
+
+    def set_highlight_visible(self, visible: bool) -> None:
+        """Toggle the selection highlight without discarding the GPU selection mask."""
+        self._highlight_enabled = bool(visible)
+
+    def read_live_scene(self) -> GaussianScene:
+        """Build a CPU scene from the current GPU param buffer (for export/histograms)."""
+        groups = self.read_scene_groups(self._scene_count)
+        opacities = np.reciprocal(1.0 + np.exp(-groups["color_alpha"][:, 3])).astype(np.float32, copy=False)
+        return GaussianScene(
+            positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
+            scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
+            rotations=np.asarray(groups["rotations"], dtype=np.float32),
+            opacities=opacities,
+            colors=np.asarray(groups["color_alpha"][:, :3], dtype=np.float32),
+            sh_coeffs=np.asarray(groups["sh_coeffs"], dtype=np.float32),
+        )
+
+    def read_selection_mask(self) -> np.ndarray:
+        count = int(self._scene_count)
+        if count <= 0 or self._highlight_buffer is None:
+            return np.zeros((max(count, 0),), dtype=bool)
+        return buffer_to_numpy(self._highlight_buffer, np.uint32)[:count].copy() != 0
+
+    # --- GPU splat editing --------------------------------------------------
+    # The selection mask is the highlight buffer, so selecting a splat highlights it with
+    # no extra upload. Selection and property edits run in place on the param buffer; only
+    # resample (which changes the splat count) rebuilds and swaps the scene/mask buffers.
+    SELECT_MODE_REPLACE, SELECT_MODE_ADD, SELECT_MODE_SUBTRACT, SELECT_MODE_INTERSECT = 0, 1, 2, 3
+    SELECT_SCALAR_SCALE, SELECT_SCALAR_OPACITY, SELECT_SCALAR_COLOR = 0, 1, 2
+    SELECT_SET_CLEAR, SELECT_SET_ALL, SELECT_SET_INVERT = 0, 1, 2
+    EDIT_FLAG_COLOR, EDIT_FLAG_OPACITY, EDIT_FLAG_SCALE = 1, 2, 4
+
+    def _edit_common_vars(self) -> dict[str, object]:
+        return {
+            "g_SplatParams": self._scene_buffers["splat_params"],
+            "g_SelectionMask": self._ensure_highlight_buffer(self._scene_count),
+            "g_EditSplatCount": np.uint32(self._scene_count),
+            "g_PackedParamCount": np.uint32(self.packed_trainable_param_count),
+        }
+
+    def _alloc_edit_scratch(self, name: str, element_count: int, dtype_bytes: int = 4) -> spy.Buffer:
+        return alloc_buffer(self.device, name=f"renderer.edit.{name}", size=max(int(element_count), 1) * dtype_bytes, usage=self._RW_BUFFER_USAGE)
+
+    @staticmethod
+    def _decode_ordered_float_bits(encoded: np.ndarray) -> np.ndarray:
+        """Inverse of the shader's edit_ordered_float_bits encoding."""
+        encoded = np.asarray(encoded, dtype=np.uint32)
+        bits = np.where((encoded & np.uint32(0x80000000)) != 0, encoded ^ np.uint32(0x80000000), ~encoded)
+        return bits.astype(np.uint32).view(np.float32)
+
+    def edit_scalar_histogram(self, scalar_kind: int, bins: int) -> tuple[np.ndarray, np.ndarray]:
+        """GPU log10-spaced histogram of a selection scalar (scale/opacity/luminance).
+
+        Mirrors ``splat_edit.log10_histogram(selection_scalar(...))`` but never reads the
+        scene back to the CPU — only ``bins`` counters and a min/max pair cross the bus,
+        so the editor histograms stay cheap for multi-million-splat scenes.
+        """
+        bin_count = max(int(bins), 1)
+        empty = (np.zeros((bin_count,), dtype=np.int64), np.logspace(-1.0, 0.0, bin_count + 1))
+        if self._scene_count <= 0:
+            return empty
+        stats = self._alloc_edit_scratch("edit_stats", 8)
+        stats.copy_from_numpy(np.array([0x7F800000, 0, 0, 0, 0, 0, 0, 0], dtype=np.uint32))  # +inf bits / 0
+        self._dispatch_edit_kernel("edit_scalar_min_max", {"g_SelectScalarKind": np.uint32(scalar_kind), "g_EditStats": stats})
+        raw = self._read_array(stats, np.uint32, 3)
+        if int(raw[2]) == 0:
+            return empty
+        v_min = float(raw[:1].view(np.float32)[0])
+        v_max = float(raw[1:2].view(np.float32)[0])
+        log_min = float(np.log10(max(v_min, 1e-30)))
+        log_max = float(np.log10(max(v_max, 1e-30)))
+        if not np.isfinite(log_max) or log_max <= log_min:
+            log_max = log_min + 1.0
+        histogram = self._alloc_edit_scratch("edit_histogram", bin_count)
+        histogram.copy_from_numpy(np.zeros((bin_count,), dtype=np.uint32))
+        self._dispatch_edit_kernel(
+            "edit_scalar_histogram",
+            {
+                "g_SelectScalarKind": np.uint32(scalar_kind),
+                "g_EditHistogram": histogram,
+                "g_EditHistogramBins": np.uint32(bin_count),
+                "g_EditScalarClamp": spy.float2(v_min, float(10.0**log_max)),
+                "g_EditHistogramLogRange": spy.float2(log_min, log_max),
+            },
+        )
+        counts = self._read_array(histogram, np.uint32, bin_count).astype(np.int64)
+        edges = np.power(10.0, np.linspace(log_min, log_max, bin_count + 1))
+        return counts, edges
+
+    def edit_scene_bounds(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """GPU min/max of splat positions; ``None`` when the scene has no finite splats."""
+        if self._scene_count <= 0:
+            return None
+        stats = self._alloc_edit_scratch("edit_stats", 8)
+        init = np.zeros((8,), dtype=np.uint32)
+        init[0:3] = 0xFFFFFFFF
+        stats.copy_from_numpy(init)
+        self._dispatch_edit_kernel("edit_position_bounds", {"g_EditStats": stats})
+        raw = self._read_array(stats, np.uint32, 6)
+        if np.any(raw[0:3] > raw[3:6]):
+            return None
+        lo = self._decode_ordered_float_bits(raw[0:3]).astype(np.float32)
+        hi = self._decode_ordered_float_bits(raw[3:6]).astype(np.float32)
+        return lo, hi
+
+    def _dispatch_edit_kernel(self, kernel_name: str, extra_vars: dict[str, object]) -> None:
+        """Dispatch a per-splat edit kernel and wait, without touching selection state."""
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels[kernel_name].dispatch(thread_count=thread_count_1d(self._scene_count), vars={**self._edit_common_vars(), **extra_vars}, command_encoder=encoder)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+
+    def _run_selection_kernel(self, kernel_name: str, extra_vars: dict[str, object]) -> int:
+        if self._scene_count <= 0:
+            return 0
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels[kernel_name].dispatch(thread_count=thread_count_1d(self._scene_count), vars={**self._edit_common_vars(), **extra_vars}, command_encoder=encoder)
+        self.device.submit_command_buffer(encoder.finish())
+        return self._finish_selection_change()
+
+    def _finish_selection_change(self) -> int:
+        self._highlight_mask_cpu = None
+        count = self.edit_selection_count()
+        self._highlight_enabled = count > 0
+        return count
+
+    def edit_selection_count(self) -> int:
+        if self._scene_count <= 0:
+            return 0
+        counter = self._alloc_edit_scratch("selection_counter", 1)
+        counter.copy_from_numpy(np.zeros((1,), dtype=np.uint32))
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels["count_selected"].dispatch(thread_count=thread_count_1d(self._scene_count), vars={**self._edit_common_vars(), "g_ResampleCounter": counter}, command_encoder=encoder)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        return int(self._read_array(counter, np.uint32, 1)[0])
+
+    def edit_select_box(self, center: np.ndarray, axes: np.ndarray, half_extents: np.ndarray, mode: int) -> int:
+        axes = np.asarray(axes, dtype=np.float32).reshape(3, 3)
+        return self._run_selection_kernel("select_box", {
+            "g_SelectMode": np.uint32(mode),
+            "g_SelectBoxCenter": spy.float3(*np.asarray(center, dtype=np.float32).reshape(3)),
+            "g_SelectBoxAxisX": spy.float3(*axes[0]),
+            "g_SelectBoxAxisY": spy.float3(*axes[1]),
+            "g_SelectBoxAxisZ": spy.float3(*axes[2]),
+            "g_SelectBoxHalfExtent": spy.float3(*np.abs(np.asarray(half_extents, dtype=np.float32).reshape(3))),
+        })
+
+    def edit_select_range(self, scalar_kind: int, low: float, high: float, mode: int) -> int:
+        lo, hi = (float(low), float(high)) if low <= high else (float(high), float(low))
+        return self._run_selection_kernel("select_range", {
+            "g_SelectMode": np.uint32(mode),
+            "g_SelectScalarKind": np.uint32(scalar_kind),
+            "g_SelectRange": spy.float2(lo, hi),
+        })
+
+    def edit_select_set_all(self, set_value: int) -> int:
+        return self._run_selection_kernel("select_set_all", {"g_SelectSetValue": np.uint32(set_value)})
+
+    def edit_properties(self, *, color: tuple[float, float, float] | None = None, opacity: float | None = None, scale: float | None = None) -> None:
+        if self._scene_count <= 0:
+            return
+        flags = (self.EDIT_FLAG_COLOR if color is not None else 0) | (self.EDIT_FLAG_OPACITY if opacity is not None else 0) | (self.EDIT_FLAG_SCALE if scale is not None else 0)
+        if flags == 0:
+            return
+        rgb = np.clip(np.asarray(color if color is not None else (0.0, 0.0, 0.0), dtype=np.float32).reshape(3), 0.0, 1.0)
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels["edit_properties"].dispatch(
+            thread_count=thread_count_1d(self._scene_count),
+            vars={
+                **self._edit_common_vars(),
+                "g_EditFlags": np.uint32(flags),
+                "g_EditColor": spy.float3(*rgb),
+                "g_EditOpacity": float(np.clip(opacity if opacity is not None else 0.0, 0.0, 1.0)),
+                "g_EditTargetScale": float(max(scale if scale is not None else 1e-6, 1e-12)),
+            },
+            command_encoder=encoder,
+        )
+        self.device.submit_command_buffer(encoder.finish())
+        self._current_scene = SceneBinding(count=self._scene_count)
+
+    def edit_resample(self, ratio: float, seed: int) -> int:
+        """Sparsify/delete the selection on GPU, rebuilding the scene buffer.
+
+        ``ratio == 0`` deletes the whole selection; ``ratio < 1`` drops that fraction.
+        Returns the new count. Densification (``ratio > 1``) is not handled here — growing
+        splats reuses the training refinement split via ``GaussianTrainer``.
+        """
+        src_count = int(self._scene_count)
+        ratio = max(float(ratio), 0.0)
+        selected = self.edit_selection_count()
+        if src_count <= 0 or selected == 0 or ratio >= 1.0:
+            return src_count
+        packed = int(self.packed_trainable_param_count)
+        child_count = 0
+        src_params = self._scene_buffers["splat_params"]
+        src_mask = self._ensure_highlight_buffer(src_count)
+        keep_flags = self._alloc_edit_scratch("keep_flags", src_count)
+        keep_prefix = self._alloc_edit_scratch("keep_prefix", src_count)
+        total_buffer = self._alloc_edit_scratch("keep_total", 1)
+
+        encoder = self.device.create_command_encoder()
+        self._edit_kernels["resample_mark_keep"].dispatch(
+            thread_count=thread_count_1d(src_count),
+            vars={"g_SrcMask": src_mask, "g_KeepFlags": keep_flags, "g_ResampleSrcCount": np.uint32(src_count), "g_ResampleRatio": float(ratio), "g_ResampleSeed": np.uint32(seed & 0xFFFFFFFF)},
+            command_encoder=encoder,
+        )
+        self._prefix_sum.scan_uint(encoder, keep_flags, keep_prefix, src_count, total_buffer=total_buffer, exclusive=True)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        survivor_count = int(self._read_array(total_buffer, np.uint32, 1)[0])
+        total_count = survivor_count + child_count
+        if total_count <= 0:
+            total_count, survivor_count, child_count = 0, 0, 0
+
+        dst_params = self._alloc_edit_scratch("dst_params", max(total_count, 1) * packed)
+        dst_mask = self._alloc_edit_scratch("dst_mask", max(total_count, 1))
+        resample_vars = {
+            "g_SrcParams": src_params, "g_DstParams": dst_params, "g_SrcMask": src_mask, "g_DstMask": dst_mask,
+            "g_KeepFlags": keep_flags, "g_KeepPrefix": keep_prefix, "g_PackedParamCount": np.uint32(packed),
+            "g_ResampleSrcCount": np.uint32(src_count), "g_ResampleSurvivorCount": np.uint32(survivor_count),
+            "g_ResampleChildCount": np.uint32(child_count),
+        }
+        encoder = self.device.create_command_encoder()
+        if total_count > 0:
+            self._edit_kernels["resample_compact_survivors"].dispatch(thread_count=thread_count_1d(src_count), vars=resample_vars, command_encoder=encoder)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+
+        self._adopt_edited_scene_buffer(dst_params, dst_mask, total_count, packed)
+        return total_count
+
+    def _adopt_edited_scene_buffer(self, dst_params: spy.Buffer, dst_mask: spy.Buffer, count: int, packed: int) -> None:
+        defer_resource_releases((self._scene_buffers["splat_params"], self._highlight_buffer))
+        self._scene_buffers["splat_params"] = dst_params
+        self._resource_groups.scene = self._scene_buffers
+        self._scene_capacity = max(int(count), 1)
+        self._scene_count = int(count)
+        self._scene_packed_param_count = int(packed)
+        self._highlight_buffer = dst_mask
+        self._highlight_capacity = max(int(count), 1)
+        self._highlight_mask_cpu = None
+        self._current_scene = SceneBinding(count=int(count))
+        self._ensure_work_buffers(int(count))
+        self._highlight_enabled = self.edit_selection_count() > 0
 
     def clear_scene_resources(self) -> None:
         defer_resource_releases((
@@ -923,6 +1263,7 @@ class GaussianRenderer:
         self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, training={}, grad={}, debug={})
         self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._debug_grad_stats_buffer: spy.Buffer | None = None
+        self._debug_splat_init_buffer: spy.Buffer | None = None
         self._debug_splat_age_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._debug_splat_viewed_fraction_buffer: spy.Buffer | None = None
@@ -935,6 +1276,14 @@ class GaussianRenderer:
         self._highlight_color: tuple[float, float, float] = (1.0, 0.55, 0.1)
         self._highlight_mix = 0.65
         self._highlight_mask_cpu: np.ndarray | None = None
+        self._preview_enabled = False
+        self._preview_color: tuple[float, float, float] = (0.15, 0.5, 1.0)
+        self._preview_mix = 0.35
+        self._preview_box_enabled = False
+        self._preview_box_center = np.zeros(3, dtype=np.float32)
+        self._preview_box_axes = np.eye(3, dtype=np.float32)
+        self._preview_box_half_extent = np.zeros(3, dtype=np.float32)
+        self._preview_ranges = np.tile(np.array([-1e30, 1e30], dtype=np.float32), (3, 1))
         self._output_texture: spy.Texture | None = None
         self._training_depth_stats_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
@@ -1057,6 +1406,7 @@ class GaussianRenderer:
             "splat_visible_area_px": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "fallback_clone_counts": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_splat_age": max(self._work_splat_capacity, 1) * self._U32_BYTES,
+            "debug_splat_init": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "debug_grad_norm": max(self._work_splat_capacity, 1) * self._U32_BYTES,
             "debug_grad_stats": max(self._work_splat_capacity, 1) * self._GRAD_STATS_STRIDE * self._U32_BYTES,
             "debug_splat_viewed_fraction": max(self._work_splat_capacity, 1) * self._U32_BYTES,
@@ -1159,6 +1509,7 @@ class GaussianRenderer:
         self._resource_groups.debug = {
             "fallback_clone_counts": allocated["fallback_clone_counts"],
             "debug_splat_age": allocated["debug_splat_age"],
+            "debug_splat_init": allocated["debug_splat_init"],
             "debug_grad_norm": allocated["debug_grad_norm"],
             "debug_grad_stats": allocated["debug_grad_stats"],
             "debug_splat_viewed_fraction": allocated["debug_splat_viewed_fraction"],
@@ -1168,6 +1519,7 @@ class GaussianRenderer:
         self._sorted_values_buffer = self._work_buffers["values"]
         self._work_buffers["fallback_clone_counts"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.uint32))
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.ones((max(self._work_splat_capacity, 1),), dtype=np.float32))
+        self._work_buffers["debug_splat_init"].copy_from_numpy(np.tile(np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32), (max(self._work_splat_capacity, 1), 1)))
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_stats"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), self._GRAD_STATS_STRIDE), dtype=np.float32))
         self._work_buffers["debug_splat_viewed_fraction"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
@@ -1375,6 +1727,7 @@ class GaussianRenderer:
                 "g_VisibleValues": self._work_buffers["visible_values"],
                 "g_VisibleCounter": self._work_buffers["visible_counter"],
                 **self._highlight_vars(),
+                **self._preview_vars(),
                 **self._prepass_uniforms(scene.count),
                 **self._raster_uniforms(np.zeros((3,), dtype=np.float32)),
                 **self._anisotropy_uniforms(),
@@ -1420,7 +1773,7 @@ class GaussianRenderer:
             self._project_group_size,
         )
 
-    def _count_visible_scanlines(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
+    def _count_visible_scanlines(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer, camera: Camera) -> None:
         dispatch_indirect(
             pipeline=self._p_count_visible_scanlines,
             args_buffer=args_buffer,
@@ -1430,6 +1783,7 @@ class GaussianRenderer:
                 "g_VisibleCounter": self._work_buffers["visible_counter"],
                 "g_ScanlineCounts": self._work_buffers["scanline_counts"],
                 **self._prepass_uniforms(self._scene_count),
+                **self._camera_uniforms(camera),
             },
             command_encoder=encoder,
             debug_label="Count Visible Scanlines",
@@ -1448,7 +1802,7 @@ class GaussianRenderer:
             exclusive=True,
         )
 
-    def _emit_scanlines(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer) -> None:
+    def _emit_scanlines(self, encoder: spy.CommandEncoder, args_buffer: spy.Buffer, camera: Camera) -> None:
         dispatch_indirect(
             pipeline=self._p_emit_scanlines,
             args_buffer=args_buffer,
@@ -1460,6 +1814,7 @@ class GaussianRenderer:
                 "g_ScanlineOffsets": self._work_buffers["scanline_offsets"],
                 "g_ScanlineWorkItems": self._work_buffers["scanline_work_items"],
                 **self._prepass_uniforms(self._scene_count),
+                **self._camera_uniforms(camera),
             },
             command_encoder=encoder,
             debug_label="Emit Scanlines",
@@ -1579,6 +1934,8 @@ class GaussianRenderer:
             vars.update(self._debug_splat_contribution_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_VIEWED_FRACTION_EMA, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_viewed_fraction_var())
+        if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_REFINEMENT_DISTRIBUTION, self.DEBUG_MODE_UNREFINABLE):
+            vars.update(self._debug_splat_init_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())
         if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_GRAD_NORM:
@@ -1631,7 +1988,7 @@ class GaussianRenderer:
             **self._raster_uniforms(background, training_background_mode, training_background_seed),
             **self._anisotropy_uniforms(),
             **self._camera_uniforms(camera),
-            **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"),
+            **self._training_native_camera_uniforms(resolved_native_camera, resolved_sample_vars),
             **resolved_sample_vars,
         }
         self._dispatch(self._raster_grad_shader_set().training_forward, encoder, self._raster_thread_count(), vars, "Rasterize Training Forward", 26)
@@ -1663,7 +2020,7 @@ class GaussianRenderer:
         resolved_target_alpha_threshold = float(np.clip(target_alpha_threshold, 0.0, 1.0))
         if regularizer_grad is None:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
-        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_Target": self.output_texture if target_texture is None else target_texture, "g_UseTargetAlphaMask": int(bool(use_target_alpha_mask)), "g_TargetAlphaThreshold": resolved_target_alpha_threshold, "g_TrainingForwardState": self._resolve_training_workspace_buffer("training_forward_state", training_workspace), "g_TrainingDepthStats": self._resolve_training_workspace_texture("training_depth_stats_texture", training_workspace), "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._resolve_training_workspace_buffer("training_processed_end", training_workspace), "g_TrainingBatchEnd": self._resolve_training_workspace_buffer("training_batch_end", training_workspace), "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_SplatContributionInfo": resolved_splat_contribution, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(training_workspace), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._camera_uniforms(resolved_native_camera, "g_TrainingNativeCamera"), **resolved_sample_vars}
+        vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_Target": self.output_texture if target_texture is None else target_texture, "g_UseTargetAlphaMask": int(bool(use_target_alpha_mask)), "g_TargetAlphaThreshold": resolved_target_alpha_threshold, "g_TrainingForwardState": self._resolve_training_workspace_buffer("training_forward_state", training_workspace), "g_TrainingDepthStats": self._resolve_training_workspace_texture("training_depth_stats_texture", training_workspace), "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._resolve_training_workspace_buffer("training_processed_end", training_workspace), "g_TrainingBatchEnd": self._resolve_training_workspace_buffer("training_batch_end", training_workspace), "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_SplatContributionInfo": resolved_splat_contribution, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(training_workspace), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._training_native_camera_uniforms(resolved_native_camera, resolved_sample_vars), **resolved_sample_vars}
         self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
         self._dispatch(
             self._raster_grad_shader_set().resolve_stats,
@@ -1733,9 +2090,9 @@ class GaussianRenderer:
             self._sort_visible_splats(encoder)
         with debug_region(encoder, "Prepass Scanlines", 22):
             visible_args = self._visible_dispatch_args(encoder)
-            self._count_visible_scanlines(encoder, visible_args)
+            self._count_visible_scanlines(encoder, visible_args, camera)
             self._prefix_scanline_counts(encoder)
-            self._emit_scanlines(encoder, visible_args)
+            self._emit_scanlines(encoder, visible_args, camera)
         with debug_region(encoder, "Prepass Tiles", 23):
             scanline_args = self._scanline_dispatch_args(encoder)
             self._count_scanline_tiles(encoder, scanline_args)
@@ -1787,6 +2144,15 @@ class GaussianRenderer:
         dst._scene_count = self._scene_count
         if include_work_buffers:
             dst._current_scene = self._current_scene
+        self._copy_highlight_state_to(encoder, dst)
+
+    def _copy_highlight_state_to(self, encoder: spy.CommandEncoder, dst: "GaussianRenderer") -> None:
+        dst.set_highlight_appearance(self._highlight_color, self._highlight_mix)
+        dst._highlight_enabled = self._highlight_enabled
+        dst._highlight_mask_cpu = None
+        if self._highlight_buffer is None or self._scene_count <= 0:
+            return
+        encoder.copy_buffer(dst._ensure_highlight_buffer(self._scene_count), 0, self._highlight_buffer, 0, self._scene_count * self._U32_BYTES)
 
     def copy_prepass_capacity_state_to(self, dst: "GaussianRenderer") -> None:
         dst._pending_min_list_entries = max(int(dst._pending_min_list_entries), int(self._pending_min_list_entries))
@@ -2195,6 +2561,9 @@ class GaussianRenderer:
     def set_debug_grad_stats_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_grad_stats_buffer = buffer
 
+    def set_debug_splat_init_buffer(self, buffer: spy.Buffer | None) -> None:
+        self._debug_splat_init_buffer = buffer
+
     def set_debug_splat_age_buffer(self, buffer: spy.Buffer | None) -> None:
         self._debug_splat_age_buffer = buffer
 
@@ -2216,6 +2585,15 @@ class GaussianRenderer:
         self._ensure_work_buffers(max(int(splat_age.shape[0]), self._scene_count, 1))
         self._work_buffers["debug_splat_age"].copy_from_numpy(np.pad(splat_age, (0, max(self._work_splat_capacity - splat_age.shape[0], 0)), constant_values=1.0))
         self._debug_splat_age_buffer = None
+
+    def upload_debug_splat_init(self, values: np.ndarray) -> None:
+        splat_init = np.ascontiguousarray(values, dtype=np.float32).reshape(-1, 4)
+        self._ensure_work_buffers(max(int(splat_init.shape[0]), self._scene_count, 1))
+        padded = np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.float32)
+        padded[:, 3] = 1.0
+        padded[: splat_init.shape[0]] = splat_init
+        self._work_buffers["debug_splat_init"].copy_from_numpy(padded)
+        self._debug_splat_init_buffer = None
 
     def upload_debug_splat_contribution(self, values: np.ndarray) -> None:
         contribution = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)

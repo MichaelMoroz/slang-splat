@@ -8,7 +8,7 @@ import numpy as np
 from ..scene._internal.colmap_ops import DEPTH_INIT_VALUE_DISTANCE, DEPTH_INIT_VALUE_Z_DEPTH, build_colmap_image_path_index, resolve_colmap_image_path
 from ..scene._internal.colmap_binary import _resolve_colmap_sparse_paths
 from ..scene import load_colmap_reconstruction
-from ..scene._internal.colmap_types import ColmapFrame
+from ..scene._internal.colmap_types import COLMAP_CAMERA_MODEL_NAMES, COLMAP_EQUIRECTANGULAR_MODEL_ID, ColmapFrame
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from .state import ColmapImportSettings, COLMAP_ROTATION_MODE_AUTO, COLMAP_ROTATION_MODE_CUSTOM, COLMAP_ROTATION_MODE_NONE
@@ -23,14 +23,7 @@ _COLMAP_DEPTH_VALUE_Z_DEPTH = DEPTH_INIT_VALUE_Z_DEPTH
 _COLMAP_IMAGE_DOWNSCALE_ORIGINAL = "original"
 _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE = "max_size"
 _COLMAP_IMAGE_DOWNSCALE_SCALE = "scale"
-_COLMAP_CAMERA_MODEL_NAMES = {
-    0: "SIMPLE_PINHOLE",
-    1: "PINHOLE",
-    2: "SIMPLE_RADIAL",
-    3: "RADIAL",
-    4: "OPENCV",
-    6: "FULL_OPENCV",
-}
+_COLMAP_CAMERA_MODEL_NAMES = COLMAP_CAMERA_MODEL_NAMES
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
@@ -195,6 +188,7 @@ def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
         frame_counts[camera_id] = frame_counts.get(camera_id, 0) + 1
     rows: list[dict[str, object]] = []
     for camera_id, camera in sorted(getattr(recon, "cameras", {}).items()):
+        is_equirectangular = int(getattr(camera, "model_id", -1)) == COLMAP_EQUIRECTANGULAR_MODEL_ID
         distortion_values = tuple(float(getattr(camera, name, 0.0)) for name in ("k1", "k2", "p1", "p2", "k3", "k4", "k5", "k6"))
         while len(distortion_values) > 2 and abs(distortion_values[-1]) <= 1e-12:
             distortion_values = distortion_values[:-1]
@@ -204,9 +198,9 @@ def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
                 "model_name": _COLMAP_CAMERA_MODEL_NAMES.get(int(getattr(camera, "model_id", -1)), f"MODEL_{int(getattr(camera, 'model_id', -1))}"),
                 "frame_count": int(frame_counts.get(int(camera_id), 0)),
                 "resolution_text": f"{int(camera.width)}x{int(camera.height)}",
-                "focal_text": f"{float(camera.fx):.2f}, {float(camera.fy):.2f}",
-                "principal_text": f"{float(camera.cx):.2f}, {float(camera.cy):.2f}",
-                "distortion_text": ", ".join(f"{value:.4g}" for value in distortion_values),
+                "focal_text": "n/a" if is_equirectangular else f"{float(camera.fx):.2f}, {float(camera.fy):.2f}",
+                "principal_text": "n/a" if is_equirectangular else f"{float(camera.cx):.2f}, {float(camera.cy):.2f}",
+                "distortion_text": "n/a" if is_equirectangular else ", ".join(f"{value:.4g}" for value in distortion_values),
             }
         )
     return tuple(rows)
@@ -241,6 +235,17 @@ def _set_colmap_camera_preview(viewer: object, recon: object, selected_camera_id
     viewer.ui._values["_colmap_camera_rows"] = rows
     viewer.ui._values["_colmap_point_stats"] = _point_preview_stats(recon) if point_stats is None else point_stats
     viewer.ui._values["colmap_selected_camera_ids"] = selected_ids
+    # Cache the GPU VRAM capacity once so the importer's residency estimate can
+    # show how the chosen config fits this device (query is relatively expensive).
+    if viewer.ui._values.get("_gpu_vram_capacity_bytes") is None:
+        try:
+            from .buffer_debug import query_total_device_vram_capacity
+
+            capacity, _ = query_total_device_vram_capacity(getattr(viewer, "device", None))
+            if capacity:
+                viewer.ui._values["_gpu_vram_capacity_bytes"] = int(capacity)
+        except Exception:
+            pass
     return selected_ids
 
 
@@ -261,11 +266,14 @@ def _update_import_settings(
     compress_dataset_using_bc7: bool,
     training_image_color_init: bool,
     photometric_compensation_enabled: bool,
+    dataset_pool_size: int,
+    dataset_residency: str,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    max_pose_subset: int = 0,
     min_track_length: int,
     init_neighbor_count: int,
     init_anisotropy_strength: float,
@@ -279,31 +287,43 @@ def _update_import_settings(
     target_alpha_threshold: float = _DEFAULT_TARGET_ALPHA_THRESHOLD,
     use_target_alpha_mask: bool = False,
     pointcloud_enabled: bool | None = None,
+    pointcloud_refinable: bool = True,
     pointcloud_nn_radius_scale_coef: float | None = None,
     diffused_enabled: bool | None = None,
+    diffused_refinable: bool = True,
     diffused_diffusion_radius: float = 1.0,
+    diffused_visibility_strength: float = 0.5,
     diffused_nn_radius_scale_coef: float | None = None,
     custom_ply_enabled: bool | None = None,
+    custom_ply_refinable: bool = True,
     custom_ply_nn_radius_scale_coef: float | None = None,
     custom_mesh_enabled: bool | None = None,
+    custom_mesh_refinable: bool = True,
     custom_mesh_path: Path | None = None,
     custom_mesh_point_count: int | None = None,
     custom_mesh_nn_radius_scale_coef: float | None = None,
     fibonacci_sphere_enabled: bool | None = None,
+    fibonacci_sphere_refinable: bool = True,
     fibonacci_sphere_nn_radius_scale_coef: float | None = None,
 ) -> None:
     resolved_pointcloud_enabled = bool(pointcloud_enabled)
+    resolved_pointcloud_refinable = bool(pointcloud_refinable)
     resolved_pointcloud_nn_radius_scale_coef = float(max(pointcloud_nn_radius_scale_coef if pointcloud_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4))
     resolved_diffused_enabled = bool(diffused_enabled)
+    resolved_diffused_refinable = bool(diffused_refinable)
     resolved_diffused_diffusion_radius = max(float(diffused_diffusion_radius), 0.0)
+    resolved_diffused_visibility_strength = float(np.clip(float(diffused_visibility_strength), 0.0, 1.0))
     resolved_diffused_nn_radius_scale_coef = float(max(diffused_nn_radius_scale_coef if diffused_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4))
     resolved_custom_ply_enabled = bool(custom_ply_enabled)
+    resolved_custom_ply_refinable = bool(custom_ply_refinable)
     resolved_custom_ply_nn_radius_scale_coef = float(max(custom_ply_nn_radius_scale_coef if custom_ply_nn_radius_scale_coef is not None else 1.0, 1e-4))
     resolved_custom_mesh_enabled = bool(custom_mesh_enabled)
+    resolved_custom_mesh_refinable = bool(custom_mesh_refinable)
     resolved_custom_mesh_path = custom_mesh_path
     resolved_custom_mesh_point_count = max(int(custom_mesh_point_count if custom_mesh_point_count is not None else diffused_point_count), 1)
     resolved_custom_mesh_nn_radius_scale_coef = float(max(custom_mesh_nn_radius_scale_coef if custom_mesh_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4))
     resolved_fibonacci_sphere_enabled = bool(fibonacci_sphere_enabled)
+    resolved_fibonacci_sphere_refinable = bool(fibonacci_sphere_refinable)
     resolved_fibonacci_sphere_nn_radius_scale_coef = float(max(fibonacci_sphere_nn_radius_scale_coef if fibonacci_sphere_nn_radius_scale_coef is not None else 1.0, 1e-4))
     resolved_fibonacci_sphere_color = tuple(float(v) for v in np.clip(np.asarray(fibonacci_sphere_color, dtype=np.float32).reshape(3), 0.0, 1.0))
     resolved_rotation_mode = min(max(int(rotation_mode), COLMAP_ROTATION_MODE_NONE), COLMAP_ROTATION_MODE_AUTO)
@@ -324,11 +344,14 @@ def _update_import_settings(
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         training_image_color_init=bool(training_image_color_init),
         photometric_compensation_enabled=bool(photometric_compensation_enabled),
+        dataset_pool_size=max(int(dataset_pool_size), 0),
+        dataset_residency=str(dataset_residency).lower(),
         custom_ply_path=None if custom_ply_path is None else Path(custom_ply_path).resolve(),
         image_downscale_mode=str(image_downscale_mode),
         image_downscale_max_size=max(int(image_downscale_max_size), 1),
         image_downscale_scale=float(np.clip(image_downscale_scale, 1e-6, 1.0)),
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
+        max_pose_subset=max(int(max_pose_subset), 0),
         min_track_length=max(int(min_track_length), 0),
         init_neighbor_count=max(int(init_neighbor_count), 2),
         init_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
@@ -342,17 +365,23 @@ def _update_import_settings(
         target_alpha_threshold=resolved_target_alpha_threshold,
         use_target_alpha_mask=target_alpha_skip_mask_enabled(resolved_target_alpha_mode),
         pointcloud_enabled=resolved_pointcloud_enabled,
+        pointcloud_refinable=resolved_pointcloud_refinable,
         pointcloud_nn_radius_scale_coef=resolved_pointcloud_nn_radius_scale_coef,
         diffused_enabled=resolved_diffused_enabled,
+        diffused_refinable=resolved_diffused_refinable,
         diffused_diffusion_radius=resolved_diffused_diffusion_radius,
+        diffused_visibility_strength=resolved_diffused_visibility_strength,
         diffused_nn_radius_scale_coef=resolved_diffused_nn_radius_scale_coef,
         custom_ply_enabled=resolved_custom_ply_enabled,
+        custom_ply_refinable=resolved_custom_ply_refinable,
         custom_ply_nn_radius_scale_coef=resolved_custom_ply_nn_radius_scale_coef,
         custom_mesh_enabled=resolved_custom_mesh_enabled,
+        custom_mesh_refinable=resolved_custom_mesh_refinable,
         custom_mesh_path=None if resolved_custom_mesh_path is None else Path(resolved_custom_mesh_path).resolve(),
         custom_mesh_point_count=resolved_custom_mesh_point_count,
         custom_mesh_nn_radius_scale_coef=resolved_custom_mesh_nn_radius_scale_coef,
         fibonacci_sphere_enabled=resolved_fibonacci_sphere_enabled,
+        fibonacci_sphere_refinable=resolved_fibonacci_sphere_refinable,
         fibonacci_sphere_nn_radius_scale_coef=resolved_fibonacci_sphere_nn_radius_scale_coef,
     )
     _set_ui_path(viewer, "colmap_root_path", dataset_root)
@@ -371,28 +400,37 @@ def _update_import_settings(
     viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)
     viewer.ui._values["colmap_training_image_color_init"] = bool(training_image_color_init)
     viewer.ui._values["colmap_photometric_compensation_enabled"] = bool(photometric_compensation_enabled)
+    viewer.ui._values["training_dataset_pool_size"] = max(int(dataset_pool_size), 0)
+    viewer.ui._values["colmap_dataset_residency"] = str(dataset_residency).lower()
     _set_ui_path(viewer, "colmap_custom_ply_path", custom_ply_path)
     viewer.ui._values["colmap_image_downscale_mode"] = 1 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_MAX_SIZE else 2 if str(image_downscale_mode) == _COLMAP_IMAGE_DOWNSCALE_SCALE else 0
     viewer.ui._values["colmap_image_max_size"] = max(int(image_downscale_max_size), 1)
     viewer.ui._values["colmap_image_scale"] = float(np.clip(image_downscale_scale, 1e-6, 1.0))
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
+    viewer.ui._values["colmap_max_pose_subset"] = max(int(max_pose_subset), 0)
     viewer.ui._values["colmap_min_track_length"] = max(int(min_track_length), 0)
     viewer.ui._values["colmap_init_neighbor_count"] = max(int(init_neighbor_count), 2)
     viewer.ui._values["colmap_init_anisotropy_strength"] = float(np.clip(init_anisotropy_strength, 0.0, 1.0))
     viewer.ui._values["colmap_depth_point_count"] = max(int(depth_point_count), 1)
     viewer.ui._values["colmap_pointcloud_enabled"] = resolved_pointcloud_enabled
+    viewer.ui._values["colmap_pointcloud_refinable"] = resolved_pointcloud_refinable
     viewer.ui._values["colmap_pointcloud_nn_radius_scale_coef"] = resolved_pointcloud_nn_radius_scale_coef
     viewer.ui._values["colmap_diffused_enabled"] = resolved_diffused_enabled
+    viewer.ui._values["colmap_diffused_refinable"] = resolved_diffused_refinable
     viewer.ui._values["colmap_diffused_point_count"] = max(int(diffused_point_count), 1)
     viewer.ui._values["colmap_diffused_diffusion_radius"] = resolved_diffused_diffusion_radius
+    viewer.ui._values["colmap_diffused_visibility_strength"] = resolved_diffused_visibility_strength
     viewer.ui._values["colmap_diffused_nn_radius_scale_coef"] = resolved_diffused_nn_radius_scale_coef
     viewer.ui._values["colmap_custom_ply_enabled"] = resolved_custom_ply_enabled
+    viewer.ui._values["colmap_custom_ply_refinable"] = resolved_custom_ply_refinable
     viewer.ui._values["colmap_custom_ply_nn_radius_scale_coef"] = resolved_custom_ply_nn_radius_scale_coef
     viewer.ui._values["colmap_custom_mesh_enabled"] = resolved_custom_mesh_enabled
+    viewer.ui._values["colmap_custom_mesh_refinable"] = resolved_custom_mesh_refinable
     _set_ui_path(viewer, "colmap_custom_mesh_path", resolved_custom_mesh_path)
     viewer.ui._values["colmap_custom_mesh_point_count"] = resolved_custom_mesh_point_count
     viewer.ui._values["colmap_custom_mesh_nn_radius_scale_coef"] = resolved_custom_mesh_nn_radius_scale_coef
     viewer.ui._values["colmap_fibonacci_sphere_enabled"] = resolved_fibonacci_sphere_enabled
+    viewer.ui._values["colmap_fibonacci_sphere_refinable"] = resolved_fibonacci_sphere_refinable
     viewer.ui._values["colmap_fibonacci_sphere_point_count"] = max(int(fibonacci_sphere_point_count), 0)
     viewer.ui._values["colmap_fibonacci_sphere_radius_multiplier"] = max(float(fibonacci_sphere_radius_multiplier), 0.0)
     viewer.ui._values["colmap_fibonacci_sphere_color"] = resolved_fibonacci_sphere_color

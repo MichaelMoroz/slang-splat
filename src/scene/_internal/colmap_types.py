@@ -5,7 +5,39 @@ from pathlib import Path
 
 import numpy as np
 
-from ...renderer.camera import Camera
+from ...renderer.camera import PROJECTION_MODEL_EQUIRECTANGULAR, PROJECTION_MODEL_PINHOLE, Camera
+
+COLMAP_SIMPLE_PINHOLE_MODEL_ID = 0
+COLMAP_PINHOLE_MODEL_ID = 1
+COLMAP_SIMPLE_RADIAL_MODEL_ID = 2
+COLMAP_RADIAL_MODEL_ID = 3
+COLMAP_OPENCV_MODEL_ID = 4
+COLMAP_FULL_OPENCV_MODEL_ID = 6
+COLMAP_EQUIRECTANGULAR_MODEL_ID = 17
+COLMAP_CAMERA_MODEL_IDS = {
+    "SIMPLE_PINHOLE": COLMAP_SIMPLE_PINHOLE_MODEL_ID,
+    "PINHOLE": COLMAP_PINHOLE_MODEL_ID,
+    "SIMPLE_RADIAL": COLMAP_SIMPLE_RADIAL_MODEL_ID,
+    "RADIAL": COLMAP_RADIAL_MODEL_ID,
+    "OPENCV": COLMAP_OPENCV_MODEL_ID,
+    "FULL_OPENCV": COLMAP_FULL_OPENCV_MODEL_ID,
+    "EQUIRECTANGULAR": COLMAP_EQUIRECTANGULAR_MODEL_ID,
+}
+COLMAP_CAMERA_MODEL_NAMES = {model_id: name for name, model_id in COLMAP_CAMERA_MODEL_IDS.items()}
+COLMAP_CAMERA_MODEL_PARAM_COUNTS = {
+    COLMAP_SIMPLE_PINHOLE_MODEL_ID: 3,
+    COLMAP_PINHOLE_MODEL_ID: 4,
+    COLMAP_SIMPLE_RADIAL_MODEL_ID: 4,
+    COLMAP_RADIAL_MODEL_ID: 5,
+    COLMAP_OPENCV_MODEL_ID: 8,
+    COLMAP_FULL_OPENCV_MODEL_ID: 12,
+    COLMAP_EQUIRECTANGULAR_MODEL_ID: 2,
+}
+COLMAP_SUPPORTED_CAMERA_MODEL_NAMES = tuple(COLMAP_CAMERA_MODEL_IDS)
+
+
+def colmap_projection_model(model_id: int) -> int:
+    return PROJECTION_MODEL_EQUIRECTANGULAR if int(model_id) == COLMAP_EQUIRECTANGULAR_MODEL_ID else PROJECTION_MODEL_PINHOLE
 
 
 @dataclass(slots=True)
@@ -78,6 +110,7 @@ class ColmapFrame:
     k5: float = 0.0
     k6: float = 0.0
     camera_id: int | None = None
+    model_id: int = COLMAP_PINHOLE_MODEL_ID
 
     def make_camera(self, near: float = 0.1, far: float = 120.0) -> Camera:
         return Camera.from_colmap(
@@ -97,6 +130,7 @@ class ColmapFrame:
             distortion_k6=self.k6,
             near=near,
             far=far,
+            projection_model=colmap_projection_model(self.model_id),
         )
 
 

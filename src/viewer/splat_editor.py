@@ -1,9 +1,10 @@
 """Controller for the viewer's "Edit Splat" tools.
 
-Bridges the pure :mod:`src.scene.splat_edit` operations to the live viewer:
-maintains the selection mask, applies bounding-box / histogram-range selections,
-runs resample / property edits, writes the result back to the active scene (loaded
-PLY or the live trainer), and keeps the GPU selection highlight in sync.
+Drives the renderer's GPU edit kernels for the active scene (loaded PLY or live
+trainer): the selection lives entirely in the GPU highlight buffer, and box /
+histogram-range selection, property edits, and resampling all run in place on the
+param buffer with no CPU round-trip. The pure-numpy :mod:`src.scene.splat_edit`
+ops remain as the CPU reference the kernels are validated against.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..scene.gaussian_scene import GaussianScene
 from ..scene import splat_edit
 from .state import SceneCountProxy
 
@@ -26,7 +26,7 @@ DEFAULT_HIGHLIGHT_MIX = 0.65
 class SplatEditorState:
     """Mutable UI/selection state for the splat editor, stored on the viewer."""
 
-    selection: np.ndarray | None = None
+    selected_count: int = 0
     scene_count: int = 0
     # Oriented bounding box (world-from-box rotation columns are the box axes).
     box_center: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float32))
@@ -49,6 +49,7 @@ class SplatEditorState:
     edit_scale_enabled: bool = False
     highlight_color: tuple[float, float, float] = DEFAULT_HIGHLIGHT_COLOR
     highlight_mix: float = DEFAULT_HIGHLIGHT_MIX
+    preview_enabled: bool = True
     status: str = ""
 
 
@@ -129,60 +130,52 @@ def _display_renderer(viewer: object) -> object | None:
     return getattr(viewer.s, "renderer", None)
 
 
-def current_scene(viewer: object) -> GaussianScene | None:
-    """Read the editable scene (live trainer state takes priority over a loaded PLY)."""
-    trainer = getattr(viewer.s, "trainer", None)
-    if trainer is not None:
-        try:
-            return trainer.read_live_scene()
-        except Exception:
-            return None
-    scene = getattr(viewer.s, "scene", None)
-    return scene if isinstance(scene, GaussianScene) else None
-
-
 def has_editable_scene(viewer: object) -> bool:
-    trainer = getattr(viewer.s, "trainer", None)
-    if trainer is not None:
-        return int(getattr(trainer, "_scene_count", 0)) > 0
-    return isinstance(getattr(viewer.s, "scene", None), GaussianScene)
+    return _scene_count(viewer) > 0
 
 
 def _scene_count(viewer: object) -> int:
-    trainer = getattr(viewer.s, "trainer", None)
-    if trainer is not None:
-        return int(getattr(trainer, "_scene_count", 0))
-    scene = getattr(viewer.s, "scene", None)
-    return int(scene.count) if isinstance(scene, GaussianScene) else 0
+    renderer = _display_renderer(viewer)
+    return int(getattr(renderer, "_scene_count", 0)) if renderer is not None else 0
 
 
-def ensure_selection(state: SplatEditorState, count: int) -> np.ndarray:
-    """Return a selection mask sized to ``count``, resetting it if the count changed."""
-    if state.selection is None or int(state.selection.shape[0]) != int(count):
-        state.selection = np.zeros((max(int(count), 0),), dtype=bool)
-        state.scene_count = int(count)
-    return state.selection
+_SELECT_MODES = {"replace": 0, "add": 1, "subtract": 2, "intersect": 3}
 
 
 def selected_count(viewer: object) -> int:
+    return int(editor_state(viewer).selected_count)
+
+
+def sync_selection_to_scene(viewer: object) -> object | None:
+    """Clear a stale GPU selection if the scene count changed under the editor (e.g. refinement)."""
+    renderer = _display_renderer(viewer)
+    if renderer is None:
+        return None
     state = editor_state(viewer)
-    if state.selection is None:
-        return 0
-    return int(state.selection.sum())
+    count = int(getattr(renderer, "_scene_count", 0))
+    if int(state.scene_count) != count:
+        state.scene_count = count
+        state.selected_count = int(renderer.edit_select_set_all(renderer.SELECT_SET_CLEAR)) if count > 0 else 0
+    return renderer
+
+
+def _scalar_kind_id(renderer: object, kind: str) -> int:
+    return {"scale": renderer.SELECT_SCALAR_SCALE, "opacity": renderer.SELECT_SCALAR_OPACITY, "color": renderer.SELECT_SCALAR_COLOR}[kind]
 
 
 def refresh_histograms(viewer: object, *, force: bool = False) -> None:
     state = editor_state(viewer)
     if not (force or state.histograms_dirty):
         return
-    scene = current_scene(viewer)
-    if scene is None or scene.count == 0:
+    renderer = _display_renderer(viewer)
+    if renderer is None or _scene_count(viewer) == 0:
         state.histograms = {}
         state.histograms_dirty = False
         return
+    # Histograms and ranges come from GPU reductions: only the bin counters cross the
+    # bus, so opening the editor never reads the full scene back to the CPU.
     for kind in splat_edit.SELECTION_SCALARS:
-        values = splat_edit.selection_scalar(scene, kind)
-        counts, edges = splat_edit.log10_histogram(values, _HISTOGRAM_BINS)
+        counts, edges = renderer.edit_scalar_histogram(_scalar_kind_id(renderer, kind), _HISTOGRAM_BINS)
         state.histograms[kind] = (counts, edges)
         if kind not in state.ranges:
             state.ranges[kind] = (float(edges[0]), float(edges[-1]))
@@ -193,10 +186,11 @@ def init_box_to_scene(viewer: object, *, force: bool = False) -> None:
     state = editor_state(viewer)
     if state.box_initialized and not force:
         return
-    scene = current_scene(viewer)
-    if scene is None or scene.count == 0:
+    renderer = _display_renderer(viewer)
+    bounds = renderer.edit_scene_bounds() if (renderer is not None and _scene_count(viewer) > 0) else None
+    if bounds is None:
         return
-    lo, hi = splat_edit.scene_bounds(scene)
+    lo, hi = bounds
     center = (lo + hi) * 0.5
     extent = np.maximum((hi - lo) * 0.5, 1e-4)
     state.box_center = center.astype(np.float32)
@@ -207,141 +201,174 @@ def init_box_to_scene(viewer: object, *, force: bool = False) -> None:
 
 # --- selection mutation -------------------------------------------------------
 
-def _apply_selection(viewer: object, new_mask: np.ndarray, mode: str) -> None:
-    state = editor_state(viewer)
-    mask = ensure_selection(state, new_mask.shape[0])
-    if mode == "replace":
-        state.selection = new_mask.copy()
-    elif mode == "subtract":
-        state.selection = mask & ~new_mask
-    elif mode == "intersect":
-        state.selection = mask & new_mask
-    else:  # add
-        state.selection = mask | new_mask
-    sync_highlight(viewer)
-
-
 def select_box(viewer: object, mode: str = "add") -> int:
+    renderer = sync_selection_to_scene(viewer)
     state = editor_state(viewer)
-    scene = current_scene(viewer)
-    if scene is None or scene.count == 0:
+    if renderer is None or _scene_count(viewer) == 0:
         return 0
     init_box_to_scene(viewer)
-    mask = splat_edit.select_in_box(scene, state.box_center, state.box_half_extents, rotation=box_rotation_matrix(state))
-    _apply_selection(viewer, mask, mode)
-    state.status = f"Selected {int(mask.sum())} splats in box ({selected_count(viewer)} total)."
-    return int(mask.sum())
+    axes = box_rotation_matrix(state).T  # rows = box axes (columns of world-from-box)
+    hit = renderer.edit_select_box(state.box_center, axes, state.box_half_extents, _SELECT_MODES.get(mode, 1))
+    state.selected_count = int(hit)
+    sync_highlight(viewer)
+    state.status = f"Selected {int(hit)} splats total (box)."
+    return int(hit)
 
 
 def select_range(viewer: object, kind: str, mode: str = "add") -> int:
+    renderer = sync_selection_to_scene(viewer)
     state = editor_state(viewer)
-    scene = current_scene(viewer)
-    if scene is None or scene.count == 0:
+    if renderer is None or _scene_count(viewer) == 0:
         return 0
     low, high = state.ranges.get(kind, (float("-inf"), float("inf")))
-    values = splat_edit.selection_scalar(scene, kind)
-    mask = splat_edit.select_in_range(values, low, high)
-    _apply_selection(viewer, mask, mode)
-    state.status = f"Selected {int(mask.sum())} splats by {kind} range ({selected_count(viewer)} total)."
-    return int(mask.sum())
+    hit = renderer.edit_select_range(_scalar_kind_id(renderer, kind), low, high, _SELECT_MODES.get(mode, 1))
+    state.selected_count = int(hit)
+    sync_highlight(viewer)
+    state.status = f"Selected {int(hit)} splats total by {kind} range."
+    return int(hit)
 
 
 def invert_selection(viewer: object) -> None:
+    renderer = sync_selection_to_scene(viewer)
     state = editor_state(viewer)
-    mask = ensure_selection(state, _scene_count(viewer))
-    state.selection = ~mask
-    state.status = f"Inverted selection ({selected_count(viewer)} total)."
+    if renderer is None or _scene_count(viewer) == 0:
+        return
+    state.selected_count = int(renderer.edit_select_set_all(renderer.SELECT_SET_INVERT))
     sync_highlight(viewer)
+    state.status = f"Inverted selection ({state.selected_count} total)."
 
 
 def clear_selection(viewer: object) -> None:
+    renderer = sync_selection_to_scene(viewer)
     state = editor_state(viewer)
-    state.selection = np.zeros((_scene_count(viewer),), dtype=bool)
-    state.status = "Cleared selection."
+    if renderer is not None and _scene_count(viewer) > 0:
+        renderer.edit_select_set_all(renderer.SELECT_SET_CLEAR)
+    state.selected_count = 0
     sync_highlight(viewer)
+    state.status = "Cleared selection."
 
 
 # --- highlight ----------------------------------------------------------------
 
 def sync_highlight(viewer: object) -> None:
     renderer = _display_renderer(viewer)
-    if renderer is None or not hasattr(renderer, "set_selection_highlight"):
+    if renderer is None or not hasattr(renderer, "set_highlight_visible"):
         return
     state = editor_state(viewer)
-    mask = state.selection
-    if mask is None or not bool(mask.any()):
-        renderer.set_selection_highlight(None)
-        return
-    renderer.set_selection_highlight(mask, color=state.highlight_color, mix=state.highlight_mix)
+    renderer.set_highlight_appearance(state.highlight_color, state.highlight_mix)
+    renderer.set_highlight_visible(state.selected_count > 0)
 
 
 def clear_highlight(viewer: object) -> None:
     renderer = _display_renderer(viewer)
-    if renderer is not None and hasattr(renderer, "set_selection_highlight"):
-        renderer.set_selection_highlight(None)
+    if renderer is not None and hasattr(renderer, "set_highlight_visible"):
+        renderer.set_highlight_visible(False)
+
+
+# --- selection preview --------------------------------------------------------
+
+_PREVIEW_RANGE_KINDS = (splat_edit.SELECT_SCALE, splat_edit.SELECT_OPACITY, splat_edit.SELECT_COLOR)
+
+
+def _active_preview_range(state: SplatEditorState, kind: str) -> tuple[float, float] | None:
+    """The (lo, hi) range for ``kind`` when it actually narrows the histogram, else None."""
+    value_range = state.ranges.get(kind)
+    if value_range is None:
+        return None
+    histogram = state.histograms.get(kind)
+    if histogram is not None:
+        edges = np.asarray(histogram[1], dtype=np.float64).reshape(-1)
+        if edges.size >= 2:
+            lo_full, hi_full = float(edges[0]), float(edges[-1])
+            tol = 1e-6 * max(hi_full - lo_full, 1e-12)
+            if value_range[0] <= lo_full + tol and value_range[1] >= hi_full - tol:
+                return None
+    return (float(value_range[0]), float(value_range[1]))
+
+
+def sync_preview(viewer: object) -> None:
+    """Push a display-only preview of the candidate selection (box + ranges) to the renderer."""
+    renderer = _display_renderer(viewer)
+    if renderer is None or not hasattr(renderer, "set_selection_preview"):
+        return
+    state = editor_state(viewer)
+    scale_range, opacity_range, color_range = (_active_preview_range(state, kind) for kind in _PREVIEW_RANGE_KINDS)
+    box_active = bool(state.box_enabled)
+    if not state.preview_enabled or not (box_active or scale_range or opacity_range or color_range):
+        renderer.clear_selection_preview()
+        return
+    renderer.set_selection_preview(
+        box_enabled=box_active,
+        box_center=state.box_center,
+        box_axes=box_rotation_matrix(state).T,  # rows = box axes (columns of world-from-box)
+        box_half_extents=state.box_half_extents,
+        scale_range=scale_range,
+        opacity_range=opacity_range,
+        color_range=color_range,
+    )
+
+
+def clear_preview(viewer: object) -> None:
+    renderer = _display_renderer(viewer)
+    if renderer is not None and hasattr(renderer, "clear_selection_preview"):
+        renderer.clear_selection_preview()
 
 
 # --- edit operations ----------------------------------------------------------
 
-def _write_back(viewer: object, new_scene: GaussianScene, new_mask: np.ndarray) -> None:
-    state = editor_state(viewer)
-    if is_editing_trainer(viewer):
-        viewer.s.trainer.replace_scene(new_scene)
-        viewer.s.scene = SceneCountProxy(new_scene.count)
-    else:
-        viewer.s.scene = new_scene
-        renderer = getattr(viewer.s, "renderer", None)
-        if renderer is not None:
-            renderer.set_scene(new_scene)
-    state.selection = np.asarray(new_mask, dtype=bool).reshape(-1)
-    state.scene_count = int(new_scene.count)
-    state.histograms_dirty = True
-    sync_highlight(viewer)
-
-
 def apply_resample(viewer: object) -> bool:
+    renderer = sync_selection_to_scene(viewer)
     state = editor_state(viewer)
-    scene = current_scene(viewer)
-    if scene is None or scene.count == 0:
+    if renderer is None or _scene_count(viewer) == 0:
         state.status = "No scene to edit."
         return False
-    mask = ensure_selection(state, scene.count)
-    if not mask.any():
+    if state.selected_count == 0:
         state.status = "Resample skipped: nothing selected."
         return False
     ratio = max(float(state.resample_percent), 0.0) / 100.0
-    before = scene.count
-    new_scene, new_mask = splat_edit.resample_selection(scene, mask, ratio)
-    if new_scene is scene:
+    if abs(ratio - 1.0) < 1e-9:
         state.status = "Resample made no change (ratio = 100%)."
         return False
-    _write_back(viewer, new_scene, new_mask)
-    delta = new_scene.count - before
+    before = _scene_count(viewer)
+    seed = int(np.random.default_rng().integers(0, 2**32, dtype=np.uint64))
+    if is_editing_trainer(viewer):
+        new_count = int(viewer.s.trainer.resample_selection(ratio, seed))
+        viewer.s.scene = SceneCountProxy(new_count)
+    elif ratio > 1.0:
+        # Densify reuses the training refinement split, which only exists on a trainer.
+        state.status = "Densify needs an active training session (it reuses the refinement split)."
+        return False
+    else:
+        new_count = int(renderer.edit_resample(ratio, seed))
+    state.scene_count = new_count
+    state.selected_count = int(renderer.edit_selection_count())
+    state.histograms_dirty = True
+    sync_highlight(viewer)
+    delta = new_count - before
     verb = "Added" if delta >= 0 else "Removed"
-    state.status = f"Resampled selection: {verb} {abs(delta)} splats ({before} -> {new_scene.count})."
+    state.status = f"Resampled selection: {verb} {abs(delta)} splats ({before} -> {new_count})."
     return True
 
 
 def apply_edit_properties(viewer: object) -> bool:
+    renderer = sync_selection_to_scene(viewer)
     state = editor_state(viewer)
-    scene = current_scene(viewer)
-    if scene is None or scene.count == 0:
+    if renderer is None or _scene_count(viewer) == 0:
         state.status = "No scene to edit."
         return False
-    mask = ensure_selection(state, scene.count)
-    if not mask.any():
+    if state.selected_count == 0:
         state.status = "Edit skipped: nothing selected."
         return False
     if not (state.edit_color_enabled or state.edit_opacity_enabled or state.edit_scale_enabled):
         state.status = "Edit skipped: enable at least one property."
         return False
-    new_scene = splat_edit.edit_properties(
-        scene,
-        mask,
+    renderer.edit_properties(
         color=state.edit_color if state.edit_color_enabled else None,
         opacity=state.edit_opacity if state.edit_opacity_enabled else None,
-        total_scale_value=state.edit_scale if state.edit_scale_enabled else None,
+        scale=state.edit_scale if state.edit_scale_enabled else None,
     )
-    _write_back(viewer, new_scene, mask)
-    state.status = f"Edited properties of {int(mask.sum())} splats."
+    if is_editing_trainer(viewer):
+        viewer.s.scene = SceneCountProxy(_scene_count(viewer))
+    state.histograms_dirty = True
+    state.status = f"Edited properties of {state.selected_count} splats."
     return True

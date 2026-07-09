@@ -28,5 +28,5 @@
 
 ## Notes
 - The interface is pure CUDA through `slangpy.create_torch_device(type=spy.DeviceType.cuda, ...)`.
-- Viewer and CLI remain Vulkan-first; this module is an optional CUDA/PyTorch path.
+- Viewer and headless automation remain Vulkan-first; this module is an optional CUDA/PyTorch path.
 - PyTorch is intentionally not part of `requirements.txt`; install a CUDA-enabled PyTorch build separately before using this interface.

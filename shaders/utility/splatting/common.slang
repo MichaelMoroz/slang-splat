@@ -27,6 +27,7 @@ static const uint DEBUG_MODE_BLACK_NEGATIVE = 17u;
 static const uint DEBUG_MODE_GRAD_VARIANCE = 18u;
 static const uint DEBUG_MODE_REFINEMENT_DISTRIBUTION = 19u;
 static const uint DEBUG_MODE_VIEWED_FRACTION_EMA = 20u;
+static const uint DEBUG_MODE_UNREFINABLE = 21u;
 static const uint DEBUG_GRAD_STATS_STRIDE = 2u;
 static const float SPLAT_CONTRIBUTION_FIXED_SCALE = 256.0;
 static const uint DEBUG_SH_COEFF_COUNT = SH_COEFF_COUNT;
@@ -50,6 +51,9 @@ static const uint TRAIN_SUBSAMPLE_HASH_X = 0xc2b2ae35u;
 static const uint TRAIN_SUBSAMPLE_HASH_Y = 0x27d4eb2fu;
 static const uint TRAIN_SUBSAMPLE_HASH_FACTOR = 0x165667b1u;
 
+static const uint TRAIN_SUBSAMPLE_MODE_STRATIFIED = 0u;
+static const uint TRAIN_SUBSAMPLE_MODE_CROP = 1u;
+
 struct TrainingSubsampleParams
 {
     uint enabled;
@@ -58,6 +62,14 @@ struct TrainingSubsampleParams
     uint nativeHeight;
     uint frameIndex;
     uint stepIndex;
+    // TRAIN_SUBSAMPLE_MODE_STRATIFIED renders one hash-jittered native pixel per
+    // factor x factor block (decorrelated samples, SSIM sees a factor-times-wider
+    // window). TRAIN_SUBSAMPLE_MODE_CROP renders a contiguous native-resolution crop at
+    // cropX/cropY through a crop camera (exact native-scale SSIM); both modes render the
+    // same pixel budget into the same low-res buffer.
+    uint mode;
+    uint cropX;
+    uint cropY;
 };
 
 uint training_subsample_hash(uint2 lowResPixel, TrainingSubsampleParams params)
@@ -74,6 +86,13 @@ uint2 training_sample_native_pixel(uint2 lowResPixel, TrainingSubsampleParams pa
     uint stride = max(params.factor, 1u);
     uint2 basePixel = lowResPixel * stride;
     if (params.enabled == 0u) return basePixel;
+    if (params.mode == TRAIN_SUBSAMPLE_MODE_CROP)
+    {
+        return uint2(
+            min(params.cropX + lowResPixel.x, params.nativeWidth - 1u),
+            min(params.cropY + lowResPixel.y, params.nativeHeight - 1u)
+        );
+    }
 
     uint blockWidth = max(min(stride, params.nativeWidth - min(basePixel.x, params.nativeWidth - 1u)), 1u);
     uint blockHeight = max(min(stride, params.nativeHeight - min(basePixel.y, params.nativeHeight - 1u)), 1u);
@@ -322,6 +341,42 @@ struct Ellipse
             && (centerPx.y - radiusPx) < viewport.y;
     }
 
+    float conicDeterminant()
+    {
+        return conic.x * conic.z - conic.y * conic.y;
+    }
+
+    bool hasAnalyticConic()
+    {
+        float det = conicDeterminant();
+        return all(isfinite(conic))
+            && conic.x > POSITIVE_CONIC_FLOOR
+            && conic.z > POSITIVE_CONIC_FLOOR
+            && det > CONIC_DETERMINANT_FLOOR;
+    }
+
+    // Equirectangular cap rects ride in the conic slots as (-xExtent, 0, -yExtent).
+    bool isBBoxRect()
+    {
+        return conic.x < 0.0 && conic.z < 0.0;
+    }
+
+    float2 rectExtent()
+    {
+        return float2(-conic.x, -conic.z);
+    }
+
+    float clippedBBoxAreaPx(float2 viewport)
+    {
+        if (!all(isfinite(centerPx)) || !isfinite(radiusPx) || !(radiusPx > 0.0)) return 0.0;
+        float2 halfExtent = all(isfinite(bboxExtent)) ? max(bboxExtent, float2(0.0)) : float2(radiusPx);
+        if (!(halfExtent.x > 0.0) || !(halfExtent.y > 0.0)) halfExtent = float2(radiusPx);
+        float2 clippedMin = max(centerPx - halfExtent, float2(0.0));
+        float2 clippedMax = min(centerPx + halfExtent, viewport);
+        float2 clippedExtent = max(clippedMax - clippedMin, float2(0.0));
+        return clippedExtent.x * clippedExtent.y;
+    }
+
     float clippedVerticalLength(float x, float2 viewport, float det)
     {
         float dx = x - centerPx.x;
@@ -345,10 +400,10 @@ struct Ellipse
     float clippedAreaPx(float2 viewport)
     {
         static const uint CLIPPED_AREA_SAMPLE_COUNT = 32u;
-        float det = conic.x * conic.z - conic.y * conic.y;
-        if (!all(isfinite(conic)) || !(conic.x > 0.0) || !(conic.z > 0.0) || !(det > CONIC_DETERMINANT_FLOOR)) return 0.0;
+        float det = conicDeterminant();
+        if (!hasAnalyticConic()) return clippedBBoxAreaPx(viewport);
         float2 extent = sqrt(float2(conic.z, conic.x) / det);
-        if (!all(isfinite(extent))) return 0.0;
+        if (!all(isfinite(extent))) return clippedBBoxAreaPx(viewport);
         bool integrateX = extent.x <= extent.y;
         float2 bounds = integrateX
             ? float2(max(centerPx.x - extent.x, 0.0), min(centerPx.x + extent.x, viewport.x))
@@ -511,6 +566,7 @@ float gaussian_scale_volume(float3 logScale)
 
 float projected_ellipse_area(float3 conic)
 {
+    if (conic.x < 0.0 && conic.z < 0.0) return max(4.0 * conic.x * conic.z, SMALL_VALUE);
     float det = conic.x * conic.z - conic.y * conic.y;
     return max(0.5 * TAU_RADIANS / sqrt(max(det, CONIC_DETERMINANT_FLOOR)), SMALL_VALUE);
 }

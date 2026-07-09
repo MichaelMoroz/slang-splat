@@ -22,6 +22,11 @@ def _clear_modules(*names: str) -> None:
         sys.modules.pop(name, None)
 
 
+def _project_python_path(repo_root: Path) -> Path:
+    venv_root = repo_root / bootstrap._project_venv_dir_name()
+    return venv_root / ("Scripts/python.exe" if bootstrap.os.name == "nt" else "bin/python")
+
+
 def test_create_project_venv_uses_supported_python_when_current_interpreter_is_unsupported(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -29,7 +34,7 @@ def test_create_project_venv_uses_supported_python_when_current_interpreter_is_u
     supported_python = tmp_path / "python313" / "python.exe"
     supported_python.parent.mkdir(parents=True)
     supported_python.write_text("", encoding="utf-8")
-    project_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    project_python = _project_python_path(tmp_path)
     calls: list[tuple[list[str], Path, bool]] = []
 
     monkeypatch.setattr(bootstrap, "_supported_venv_python", lambda: supported_python)
@@ -44,15 +49,25 @@ def test_create_project_venv_uses_supported_python_when_current_interpreter_is_u
     monkeypatch.setattr(bootstrap.subprocess, "run", _fake_run)
 
     assert bootstrap._create_project_venv(tmp_path, clear=True) == project_python
-    assert calls == [([str(supported_python), "-m", "venv", "--clear", bootstrap._PROJECT_VENV_DIR_NAME], tmp_path.resolve(), True)]
+    assert calls == [([str(supported_python), "-m", "venv", "--clear", bootstrap._project_venv_dir_name()], tmp_path.resolve(), True)]
 
 
 def test_find_project_python_prefers_repo_venv(tmp_path: Path) -> None:
-    project_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    project_python = _project_python_path(tmp_path)
     project_python.parent.mkdir(parents=True)
     project_python.write_text("", encoding="utf-8")
 
     assert bootstrap.find_project_python(tmp_path) == project_python
+
+
+def test_current_interpreter_match_is_lexical_not_base_executable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    current_python = tmp_path / "python.exe"
+    project_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+
+    monkeypatch.setattr(sys, "executable", str(current_python))
+
+    assert bootstrap._current_interpreter_matches(current_python)
+    assert not bootstrap._current_interpreter_matches(project_python)
 
 
 def test_missing_requirements_uses_import_name_aliases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,7 +115,7 @@ def test_project_dependencies_available_reexecs_into_repo_venv_when_current_inte
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    project_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    project_python = _project_python_path(tmp_path)
     project_python.parent.mkdir(parents=True)
     project_python.write_text("", encoding="utf-8")
     current_python = tmp_path / "external" / "python.exe"
@@ -147,7 +162,7 @@ def test_project_dependencies_available_creates_repo_venv_when_missing_for_exter
 ) -> None:
     current_python = tmp_path / "external" / "python.exe"
     current_prefix = tmp_path / "external-prefix"
-    project_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    project_python = _project_python_path(tmp_path)
     argv = [str(tmp_path / "viewer.py")]
     externally_managed_root = tmp_path / "managed"
     externally_managed_root.mkdir()
@@ -175,7 +190,7 @@ def test_project_dependencies_available_creates_repo_venv_when_missing_for_exter
         env: dict[str, str] | None = None,
         check: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        if arguments == [str(supported_python), "-m", "venv", bootstrap._PROJECT_VENV_DIR_NAME]:
+        if arguments == [str(supported_python), "-m", "venv", bootstrap._project_venv_dir_name()]:
             project_python.parent.mkdir(parents=True)
             project_python.write_text("", encoding="utf-8")
             calls.append(("venv", arguments, cwd, dict(env) if env is not None else None, check))
@@ -189,7 +204,7 @@ def test_project_dependencies_available_creates_repo_venv_when_missing_for_exter
         bootstrap.ensure_project_dependencies_available(tmp_path)
 
     assert exc.value.code == 0
-    assert calls[0] == ("venv", [str(supported_python), "-m", "venv", bootstrap._PROJECT_VENV_DIR_NAME], tmp_path.resolve(), None, True)
+    assert calls[0] == ("venv", [str(supported_python), "-m", "venv", bootstrap._project_venv_dir_name()], tmp_path.resolve(), None, True)
     assert len(calls) == 2
     relaunch_kind, relaunch_args, relaunch_cwd, relaunch_env, relaunch_check = calls[1]
     assert relaunch_kind == "reexec"
@@ -200,6 +215,69 @@ def test_project_dependencies_available_creates_repo_venv_when_missing_for_exter
     assert relaunch_env[bootstrap._BOOTSTRAP_REEXEC_ENV] == str(project_python.resolve())
     assert relaunch_env["VIRTUAL_ENV"] == str(project_python.parent.parent)
     assert "PYTHONHOME" not in relaunch_env
+
+
+def test_project_dependencies_available_uses_wsl_venv_instead_of_windows_venv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    windows_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    windows_python.parent.mkdir(parents=True)
+    windows_python.write_text("", encoding="utf-8")
+    wsl_python = tmp_path / ".venv-wsl" / "bin" / "python"
+    current_python = tmp_path / "usr" / "bin" / "python3"
+    current_prefix = tmp_path / "usr"
+    externally_managed_root = tmp_path / "managed"
+    externally_managed_root.mkdir()
+    (externally_managed_root / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
+    calls: list[tuple[str, list[str], Path | None, dict[str, str] | None, bool]] = []
+
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
+    monkeypatch.setattr(sys, "executable", str(current_python))
+    monkeypatch.setattr(sys, "prefix", str(current_prefix))
+    monkeypatch.setattr(sys, "base_prefix", str(current_prefix), raising=False)
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "viewer.py"), "--headless"], raising=False)
+    monkeypatch.setattr(sys, "orig_argv", [str(current_python), str(tmp_path / "viewer.py"), "--headless"], raising=False)
+    monkeypatch.setattr(bootstrap, "_missing_requirements", lambda repo_root: ("numpy",))
+    monkeypatch.setattr(bootstrap, "_slangpy_available", lambda: False)
+    monkeypatch.setattr(bootstrap, "_repo_root", lambda repo_root=None: tmp_path if repo_root is not None else tmp_path)
+    monkeypatch.setattr(bootstrap, "_running_under_wsl", lambda: True)
+    monkeypatch.setattr(bootstrap, "_project_venv_dir_name", lambda: ".venv-wsl")
+    monkeypatch.setattr(bootstrap, "_project_python_candidates", lambda repo_root: (wsl_python,))
+    monkeypatch.setattr(bootstrap, "_running_inside_virtual_environment", lambda: False)
+    monkeypatch.setattr(bootstrap, "_current_python_externally_managed", lambda: True)
+    monkeypatch.setattr(bootstrap, "_current_interpreter_matches", lambda path: False)
+    monkeypatch.setattr(bootstrap.sysconfig, "get_path", lambda name: str(externally_managed_root) if name == "stdlib" else None)
+    monkeypatch.setattr(bootstrap, "_supported_venv_python", lambda: current_python)
+    monkeypatch.delenv(bootstrap._BOOTSTRAP_REEXEC_ENV, raising=False)
+
+    def _fake_run(
+        arguments: list[str],
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        if arguments == [str(current_python), "-m", "venv", ".venv-wsl"]:
+            wsl_python.parent.mkdir(parents=True)
+            wsl_python.write_text("", encoding="utf-8")
+            calls.append(("venv", arguments, cwd, dict(env) if env is not None else None, check))
+            return subprocess.CompletedProcess(arguments, 0)
+        calls.append(("reexec", arguments, cwd, dict(env) if env is not None else None, check))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", _fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        bootstrap._maybe_reexec_into_project_python(tmp_path)
+
+    assert exc.value.code == 0
+    assert calls[0] == ("venv", [str(current_python), "-m", "venv", ".venv-wsl"], tmp_path.resolve(), None, True)
+    assert calls[1][0] == "reexec"
+    assert calls[1][1] == [str(wsl_python.resolve()), str(tmp_path / "viewer.py"), "--headless"]
+    assert calls[1][3] is not None
+    assert calls[1][3][bootstrap._BOOTSTRAP_REEXEC_ENV] == str(wsl_python.resolve())
+    assert calls[1][3]["VIRTUAL_ENV"] == str(wsl_python.parent.parent)
+    assert str(windows_python) not in calls[1][1][0]
 
 
 def test_ensure_project_python_does_not_create_repo_venv_when_running_inside_other_local_venv(
@@ -227,7 +305,7 @@ def test_project_dependencies_available_does_not_reexec_into_repo_venv_when_runn
     current_prefix = tmp_path / ".venv2"
     current_python = current_prefix / "Scripts" / "python.exe"
     base_prefix = tmp_path / "base-python"
-    project_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    project_python = _project_python_path(tmp_path)
     calls: list[str] = []
 
     current_python.parent.mkdir(parents=True)
@@ -312,57 +390,3 @@ def test_viewer_entrypoint_bootstraps_before_app_import(monkeypatch: pytest.Monk
 
     assert builtins._entrypoint_calls == ["ensure", "import-app"]
     _clear_modules("slangpy_bootstrap", "src", "src.viewer", "src.viewer.app")
-
-
-def test_cli_entrypoint_bootstraps_before_cli_import(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    sanitized_path = [str(tmp_path), *(entry for entry in sys.path if Path(entry or ".").resolve() != repo_root)]
-    _write_file(tmp_path / "src" / "__init__.py", "")
-    _write_file(tmp_path / "src" / "app" / "__init__.py", "")
-    _write_file(
-        tmp_path / "src" / "app" / "cli.py",
-        "import builtins\n"
-        "builtins._entrypoint_calls.append('import-cli')\n"
-        "def parse_args():\n"
-        "    return None\n\n"
-        "def main():\n"
-        "    return 0\n",
-    )
-    bootstrap_module = ModuleType("slangpy_bootstrap")
-    bootstrap_module.ensure_project_dependencies_available = lambda: builtins._entrypoint_calls.append("ensure")
-    _clear_modules("slangpy_bootstrap", "src", "src.app", "src.app.cli")
-    monkeypatch.setitem(sys.modules, "slangpy_bootstrap", bootstrap_module)
-    monkeypatch.setattr(sys, "path", sanitized_path)
-    monkeypatch.setattr(builtins, "_entrypoint_calls", [], raising=False)
-
-    runpy.run_path(str(repo_root / "cli.py"))
-
-    assert builtins._entrypoint_calls == ["ensure", "import-cli"]
-    _clear_modules("slangpy_bootstrap", "src", "src.app", "src.app.cli")
-
-
-def test_render_entrypoint_bootstraps_before_cli_import(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    sanitized_path = [str(tmp_path), *(entry for entry in sys.path if Path(entry or ".").resolve() != repo_root)]
-    _write_file(tmp_path / "src" / "__init__.py", "")
-    _write_file(tmp_path / "src" / "app" / "__init__.py", "")
-    _write_file(
-        tmp_path / "src" / "app" / "cli.py",
-        "import builtins\n"
-        "builtins._entrypoint_calls.append('import-render-cli')\n"
-        "def parse_single_render_args():\n"
-        "    return None\n\n"
-        "def render_main():\n"
-        "    return 0\n",
-    )
-    bootstrap_module = ModuleType("slangpy_bootstrap")
-    bootstrap_module.ensure_project_dependencies_available = lambda: builtins._entrypoint_calls.append("ensure")
-    _clear_modules("slangpy_bootstrap", "src", "src.app", "src.app.cli")
-    monkeypatch.setitem(sys.modules, "slangpy_bootstrap", bootstrap_module)
-    monkeypatch.setattr(sys, "path", sanitized_path)
-    monkeypatch.setattr(builtins, "_entrypoint_calls", [], raising=False)
-
-    runpy.run_path(str(repo_root / "render.py"))
-
-    assert builtins._entrypoint_calls == ["ensure", "import-render-cli"]
-    _clear_modules("slangpy_bootstrap", "src", "src.app", "src.app.cli")

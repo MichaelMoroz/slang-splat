@@ -23,6 +23,36 @@ def _make_scene(count: int, *, seed: int = 0) -> GaussianScene:
     )
 
 
+def test_gaussian_scene_refinable_validation_and_subset() -> None:
+    base = _make_scene(4, seed=13)
+    refinable = np.array([True, False, True, False])
+    scene = GaussianScene(
+        positions=base.positions,
+        scales=base.scales,
+        rotations=base.rotations,
+        opacities=base.opacities,
+        colors=base.colors,
+        sh_coeffs=base.sh_coeffs,
+        refinable=refinable,
+    )
+
+    assert scene.refinable is not None
+    assert scene.refinable.dtype == np.bool_
+    np.testing.assert_array_equal(scene.refinable, refinable)
+    np.testing.assert_array_equal(scene.subset(2).refinable, refinable[:2])
+
+    with pytest.raises(ValueError, match="refinable"):
+        GaussianScene(
+            positions=base.positions,
+            scales=base.scales,
+            rotations=base.rotations,
+            opacities=base.opacities,
+            colors=base.colors,
+            sh_coeffs=base.sh_coeffs,
+            refinable=np.ones((3,), dtype=bool),
+        )
+
+
 def test_total_scale_is_linear_geometric_mean() -> None:
     scene = _make_scene(5)
     expected = np.exp(np.mean(scene.scales[:, :3], axis=1))
@@ -81,40 +111,9 @@ def test_log10_histogram_handles_nonpositive_and_empty() -> None:
     assert edges.shape[0] == 5
 
 
-def test_resample_sparsify_removes_only_selected() -> None:
-    scene = _make_scene(100, seed=1)
-    mask = np.zeros(100, dtype=bool)
-    mask[:40] = True
-    new_scene, new_mask = splat_edit.resample_selection(scene, mask, 0.5, rng=np.random.default_rng(7))
-    # 60 unselected kept + 20 of the selected retained.
-    assert new_scene.count == 80
-    assert int(new_mask.sum()) == 20
-    # Unselected splats (originals 40..99) are preserved verbatim somewhere in the result.
-    assert new_scene.count == int((~mask).sum()) + 20
-
-
-def test_resample_densify_adds_selected_children() -> None:
-    scene = _make_scene(20, seed=2)
-    mask = np.zeros(20, dtype=bool)
-    mask[:10] = True
-    new_scene, new_mask = splat_edit.resample_selection(scene, mask, 2.0, rng=np.random.default_rng(9))
-    assert new_scene.count == 30  # 20 original + 10 new children
-    assert int(new_mask.sum()) == 20  # 10 selected originals + 10 children
-    # Children are shrunk relative to their parents.
-    child_scales = new_scene.scales[20:, :3]
-    assert np.all(child_scales < scene.scales[:10, :3].max() + 1e-3)
-
-
-def test_resample_noop_when_ratio_one_or_empty_selection() -> None:
-    scene = _make_scene(10)
-    mask = np.zeros(10, dtype=bool)
-    mask[:5] = True
-    same_scene, same_mask = splat_edit.resample_selection(scene, mask, 1.0)
-    assert same_scene is scene
-    np.testing.assert_array_equal(same_mask, mask)
-    empty = np.zeros(10, dtype=bool)
-    s2, m2 = splat_edit.resample_selection(scene, empty, 0.1)
-    assert s2 is scene and not m2.any()
+# Resampling (sparsify/densify) is intentionally absent here: the trainer routes both
+# through the training refinement pass (GaussianTrainer.resample_selection), and the
+# trainer-free renderer path is GPU-only (GaussianRenderer.edit_resample).
 
 
 def test_edit_properties_sets_color_opacity_scale_on_selection_only() -> None:
@@ -149,7 +148,5 @@ def test_edit_properties_preserves_anisotropy_ratio() -> None:
 
 def test_mask_length_validation() -> None:
     scene = _make_scene(4)
-    with pytest.raises(ValueError):
-        splat_edit.resample_selection(scene, np.zeros(3, dtype=bool), 0.5)
     with pytest.raises(ValueError):
         splat_edit.edit_properties(scene, np.zeros(5, dtype=bool), opacity=0.5)

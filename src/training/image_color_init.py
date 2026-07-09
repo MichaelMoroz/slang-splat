@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import slangpy as spy
@@ -97,3 +98,29 @@ class TrainingImageColorInitializer:
             self._dispatch_clear(encoder, count)
             for frame, texture in zip(frames, frame_textures, strict=False):
                 self._dispatch_sample_frame(encoder, renderer, frame, texture, count)
+
+    def apply_streaming(
+        self,
+        renderer: GaussianRenderer,
+        frames: list[ColmapFrame],
+        texture_provider: Callable[[int, spy.CommandEncoder], spy.Texture],
+        mark_submitted: Callable[[int, int], None],
+        splat_count: int,
+    ) -> None:
+        count = max(int(splat_count), 0)
+        if count <= 0 or len(frames) == 0:
+            return
+        self._ensure_buffers(count)
+        encoder = self.device.create_command_encoder()
+        with debug_region(encoder, "Training Image Color Init Clear", 119):
+            self._dispatch_clear(encoder, count)
+        self.device.submit_command_buffer(encoder.finish())
+        self.device.wait()
+        for frame_index, frame in enumerate(frames):
+            encoder = self.device.create_command_encoder()
+            texture = texture_provider(frame_index, encoder)
+            with debug_region(encoder, "Training Image Color Init Sample", 119):
+                self._dispatch_sample_frame(encoder, renderer, frame, texture, count)
+            submission = self.device.submit_command_buffer(encoder.finish())
+            mark_submitted(frame_index, submission)
+            self.device.wait()

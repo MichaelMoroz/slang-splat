@@ -904,6 +904,32 @@ def test_debug_splat_age_render_smoke(device):
     assert float(np.max(channel_spread)) > 1e-4
 
 
+def test_debug_unrefinable_render_highlights_negative_init(device):
+    scene = make_scene(8, seed=48)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        radius_scale=2.0,
+        list_capacity_multiplier=32,
+        debug_mode=GaussianRenderer.DEBUG_MODE_UNREFINABLE,
+    )
+    init = np.zeros((scene.count, 4), dtype=np.float32)
+    init[:, 3] = 1.0
+    renderer.upload_debug_splat_init(init)
+    positive = renderer.render(scene, camera, background=np.zeros((3,), dtype=np.float32))
+    init[:, 3] = -1.0
+    renderer.upload_debug_splat_init(init)
+    negative = renderer.render(scene, camera, background=np.zeros((3,), dtype=np.float32))
+
+    assert positive.image.shape == (64, 64, 4)
+    assert negative.image.shape == (64, 64, 4)
+    assert np.all(np.isfinite(positive.image))
+    assert np.all(np.isfinite(negative.image))
+    assert float(np.max(negative.image[..., 0])) > float(np.max(positive.image[..., 0])) + 0.05
+
+
 def test_debug_splat_density_render_smoke(device):
     scene = make_scene(24, seed=53)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

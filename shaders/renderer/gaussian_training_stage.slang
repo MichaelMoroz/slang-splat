@@ -140,14 +140,17 @@ uniform PPISPTonemap g_LetterboxPPISPParams;
 
 uniform RWStructuredBuffer<float> g_SrcSplatParams;
 uniform StructuredBuffer<float> g_SrcSplatAge;
+uniform StructuredBuffer<float4> g_SrcSplatInit;
 uniform StructuredBuffer<float2> g_SrcAdamMoments;
 uniform RWStructuredBuffer<float> g_DstSplatParams;
 uniform RWStructuredBuffer<float> g_DstSplatAge;
+uniform RWStructuredBuffer<float4> g_DstSplatInit;
 uniform RWStructuredBuffer<float2> g_DstAdamMoments;
 uniform RWStructuredBuffer<float> g_DstSplatContributionHistory;
 uniform RWStructuredBuffer<float> g_DstSplatViewedFractionHistory;
 uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<float> g_AppendSplatAge;
+uniform RWStructuredBuffer<float4> g_AppendSplatInit;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
 uniform StructuredBuffer<float> g_SplatVisibleAreaPx;
@@ -309,9 +312,32 @@ float splat_refinement_distribution_signal_raw(uint splatId)
     return refinement_distribution_viewed_fraction_signal(splat_viewed_fraction_ema_raw(splatId));
 }
 
+bool refinement_is_refinable(uint splatId)
+{
+    return g_SrcSplatInit[splatId].w >= 0.0;
+}
+
+float4 refinement_child_init(uint splatId)
+{
+    float4 init = g_SrcSplatInit[splatId];
+    init.w = abs(init.w);
+    return init;
+}
+
+uint refinement_effective_clone_count(uint splatId)
+{
+    return refinement_is_refinable(splatId) ? min(g_CloneCounts[splatId], REFINEMENT_MAX_CLONES_PER_SPLAT) : 0u;
+}
+
 bool should_cull_refinement_splat(uint splatId, float alpha)
 {
-    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || splat_refinement_contribution_raw(splatId) < g_RefinementMinContributionThreshold;
+    // The prune mask wins even for non-refinable splats: training only ever marks
+    // refinable splats (csMarkRefinementPruneMask ranks eligible splats, and eligibility
+    // requires refinable), but the splat editor uploads an explicit mask to delete a
+    // user selection, which may deliberately include frozen splats.
+    if (g_RefinementPruneMask[splatId] != 0u) return true;
+    if (!refinement_is_refinable(splatId)) return false;
+    return alpha < g_RefinementAlphaCullThreshold || splat_refinement_contribution_raw(splatId) < g_RefinementMinContributionThreshold;
 }
 
 uint refinement_prune_target_count(uint candidateCount)
@@ -375,6 +401,7 @@ PinholeCamera refinement_camera(uint cameraIndex)
     params.farDepth = row2.z;
     params.projDistortionK1K2P1P2 = float4(row5.z, row5.w, row6.x, row6.y);
     params.projDistortionK3K4K5K6 = float4(row6.z, row6.w, row7.x, row7.y);
+    params.projectionModel = uint(max(row7.z, 0.0));
     return PinholeCamera.from_params(params);
 }
 
@@ -390,9 +417,8 @@ float3 apply_support_radius_lower_bound(float3 logScale, float supportRadius)
 
 float refinement_min_support_radius(PinholeCamera camera, float3 worldPos)
 {
-    float minFocal = max(min(camera.params.focalPixels.x, camera.params.focalPixels.y), SMALL_VALUE);
     float cameraDistance = length(worldPos - camera.position_world());
-    return cameraDistance * max(g_RefinementMinScreenRadiusPx, 0.0) / minFocal;
+    return camera.pixel_world_size_max(cameraDistance) * (max(g_RefinementMinScreenRadiusPx, 0.0) / SPLAT_PIXEL_CLAMP_PX);
 }
 
 void copy_adam_state(uint srcSplatId, uint dstSplatId)
@@ -522,6 +548,7 @@ uint refinement_gradient_stat_index(uint splatId, uint slot)
 
 float refinement_sampling_distribution(uint splatId)
 {
+    if (!refinement_is_refinable(splatId)) return 0.0;
     float varianceWeight = 0.0;
     if (g_SplatContributionInfo[splatId].y > 0u)
     {
@@ -1232,7 +1259,7 @@ void csPrepareRefinementCounts(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (should_cull_refinement_splat(splatId, alpha)) return;
     uint _;
     InterlockedAdd(g_AppendCounter[0], 1u, _);
-    uint cloneCount = g_CloneCounts[splatId];
+    uint cloneCount = refinement_effective_clone_count(splatId);
     if (cloneCount > 0u) InterlockedAdd(g_TotalCloneCounter[0], cloneCount, _);
 }
 
@@ -1242,6 +1269,7 @@ void csClampRefinementMinScreenSize(uint3 dispatchThreadID : SV_DispatchThreadID
 {
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_SrcSplatCount) return;
+    if (!refinement_is_refinable(splatId)) return;
     if (g_RefinementCameraCount == 0u) return;
 
     SplatState source = load_splat_state(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId);
@@ -1265,7 +1293,7 @@ void csPrepareRefinementPruneSortInputs(uint3 dispatchThreadID : SV_DispatchThre
 
     float alpha = opacity_from_raw(load_splat_raw_opacity(g_SrcSplatParams, g_SrcSplatCount, g_SrcPackedParamCount, splatId));
     float contribution = splat_refinement_contribution_raw(splatId);
-    bool eligible = alpha >= g_RefinementAlphaCullThreshold && contribution >= g_RefinementMinContributionThreshold;
+    bool eligible = refinement_is_refinable(splatId) && alpha >= g_RefinementAlphaCullThreshold && contribution >= g_RefinementMinContributionThreshold;
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementPruneMask[splatId] = 0u;
     uint bits = asuint(contribution);
@@ -1293,7 +1321,7 @@ void csPrepareRefinementSamplingWeights(uint3 dispatchThreadID : SV_DispatchThre
     if (splatId >= g_SrcSplatCount) return;
 
     g_CloneCounts[splatId] = 0u;
-    bool eligible = g_RefinementEligibleMask[splatId] != 0u && g_RefinementPruneMask[splatId] == 0u;
+    bool eligible = refinement_is_refinable(splatId) && g_RefinementEligibleMask[splatId] != 0u && g_RefinementPruneMask[splatId] == 0u;
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementWeights[splatId] = eligible ? refinement_sampling_distribution(splatId) : 0.0;
 }
@@ -1346,9 +1374,10 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     float alpha = opacity_from_raw(source.rawOpacity);
     if (should_cull_refinement_splat(splatId, alpha)) return;
 
-    uint cloneCount = min(g_CloneCounts[splatId], REFINEMENT_MAX_CLONES_PER_SPLAT);
+    bool refinable = refinement_is_refinable(splatId);
+    uint cloneCount = refinement_effective_clone_count(splatId);
     bool solveOpacity = g_RefinementSolveOpacity != 0u && cloneCount > 0u;
-    if (!solveOpacity)
+    if (refinable && !solveOpacity)
     {
         float alpha = opacity_from_raw(source.rawOpacity);
         float scaledAlpha = alpha * saturate(g_RefinementOpacityMul);
@@ -1360,6 +1389,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint emittedCloneCount = 0u;
     if (cloneCount > 0u)
     {
+        float4 init = refinement_child_init(splatId);
         uint childBase = 0u;
         InterlockedAdd(g_TotalCloneCounter[0], cloneCount, childBase);
         uint availableChildren = childBase < g_AppendSplatCount ? (g_AppendSplatCount - childBase) : 0u;
@@ -1375,6 +1405,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         }
         store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
         g_DstSplatAge[parentIndex] = 1.0;
+        g_DstSplatInit[parentIndex] = init;
         g_DstSplatContributionHistory[parentIndex] = 0.0;
         g_DstSplatViewedFractionHistory[parentIndex] = 0.0;
         copy_adam_state(splatId, parentIndex);
@@ -1384,8 +1415,10 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
             uint childIndex = g_SurvivorCount + childBase + childSlot;
             store_splat_state(g_AppendParams, g_AppendSplatCount, g_DstPackedParamCount, childBase + childSlot, child);
             g_AppendSplatAge[childBase + childSlot] = 1.0;
+            g_AppendSplatInit[childBase + childSlot] = init;
             store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, childIndex, child);
             g_DstSplatAge[childIndex] = 1.0;
+            g_DstSplatInit[childIndex] = init;
             g_DstSplatContributionHistory[childIndex] = 0.0;
             g_DstSplatViewedFractionHistory[childIndex] = 0.0;
             copy_adam_state(splatId, childIndex);
@@ -1395,7 +1428,9 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, source);
     float age = g_SrcSplatAge[splatId];
-    g_DstSplatAge[parentIndex] = max(isfinite(age) ? age : 0.0, 0.0) * 0.5;
+    float safeAge = max(isfinite(age) ? age : 0.0, 0.0);
+    g_DstSplatAge[parentIndex] = refinable ? safeAge * 0.5 : safeAge;
+    g_DstSplatInit[parentIndex] = g_SrcSplatInit[splatId];
     g_DstSplatContributionHistory[parentIndex] = splat_contribution_ema_raw(splatId);
     g_DstSplatViewedFractionHistory[parentIndex] = splat_viewed_fraction_ema_raw(splatId);
     copy_adam_state(splatId, parentIndex);

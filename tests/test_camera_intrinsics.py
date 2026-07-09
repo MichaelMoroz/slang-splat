@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.renderer import Camera
+from src.renderer import Camera, PROJECTION_MODEL_EQUIRECTANGULAR
 
 
 def test_look_at_camera_defaults_to_center_principal_point():
@@ -81,3 +81,32 @@ def test_full_opencv_distorted_screen_ray_roundtrips_through_projection():
 
     assert ok
     np.testing.assert_allclose(projected, screen, rtol=0.0, atol=1e-4)
+
+
+def test_equirectangular_projection_maps_full_sphere_and_roundtrips():
+    camera = Camera.look_at(
+        position=(0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+    width, height = 400, 200
+
+    cases = (
+        ((0.0, 0.0, 1.0), (200.0, 100.0)),
+        ((1.0, 0.0, 0.0), (300.0, 100.0)),
+        ((0.0, -1.0, 0.0), (200.0, 0.0)),
+        ((0.0, 0.0, -1.0), (0.0, 100.0)),
+    )
+    for world_pos, expected_screen in cases:
+        screen, ok = camera.project_world_to_screen(np.asarray(world_pos, dtype=np.float32), width, height)
+        assert ok
+        np.testing.assert_allclose(screen, np.asarray(expected_screen, dtype=np.float32), rtol=0.0, atol=1e-5)
+
+    sample_screen = np.array((123.5, 45.25), dtype=np.float32)
+    ray = camera.screen_to_world_ray(sample_screen, width, height)
+    point = camera.position + ray * np.float32(7.0)
+    projected, ok = camera.project_world_to_screen(point, width, height)
+
+    assert ok
+    np.testing.assert_allclose(projected, sample_screen, rtol=0.0, atol=1e-4)
+    assert camera.gpu_params(width, height)["projectionModel"] == np.uint32(PROJECTION_MODEL_EQUIRECTANGULAR)

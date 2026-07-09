@@ -31,7 +31,7 @@ from ..scene import (
     sample_colmap_fibonacci_sphere_points,
     sample_mesh_surface_points,
 )
-from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
+from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size, select_wide_coverage_image_ids
 from ..training import resolve_sh_band
 from ..scene._internal.colmap_ops import (
     DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
@@ -57,7 +57,7 @@ from ..training import (
 )
 from ..training.image_color_init import TrainingImageColorInitializer
 from ..scene._internal.colmap_binary import count_colmap_points3d
-from ..scene._internal.colmap_types import ColmapFrame, ColmapReconstruction, point_tables
+from ..scene._internal.colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID, COLMAP_PINHOLE_MODEL_ID, ColmapFrame, ColmapReconstruction, point_tables
 from .session_colmap_utils import (
     _COLMAP_CAMERA_MODEL_NAMES,
     _COLMAP_DB_SAMPLE_LIMIT,
@@ -88,6 +88,7 @@ from .session_colmap_utils import (
     _suggest_images_root_from_dataset_root,
     _update_import_settings as _update_import_settings_impl,
 )
+from .buffer_debug import query_total_device_vram_capacity
 from .session_dataset_utils import (
     _CompressedDatasetTexture,
     _bc_payload_byte_count,
@@ -96,6 +97,12 @@ from .session_dataset_utils import (
     _dataset_bc7_cache_path,
     _parse_compressed_dataset_texture,
 )
+from .vram_estimate import resolve_import_residency
+
+# When max_gaussians is "unbounded" (<=0) we still need a splat count for the
+# residency VRAM estimate; the dataset term dominates the decision so a typical
+# scene size is sufficient here.
+_COLMAP_RESIDENCY_FALLBACK_SPLATS = 2_000_000
 from .state import (
     COLMAP_ROTATION_MODE_AUTO,
     COLMAP_ROTATION_MODE_NONE,
@@ -128,6 +135,28 @@ def _resolve_viewer_image_io_threads(available_cpu_threads: int | None = None) -
 
 
 _VIEWER_IMAGE_IO_THREADS = _resolve_viewer_image_io_threads()
+_MAX_DATASET_COMPRESSION_THREADS = max(int(os.cpu_count() or 1), 1)
+DEFAULT_DATASET_COMPRESSION_THREADS = _VIEWER_IMAGE_IO_THREADS
+
+
+def _resolve_dataset_compression_threads(value: int | None) -> int:
+    # 0/None means "use the machine default" (all cores but one); otherwise clamp to a
+    # sane worker count so a saved value can never exceed the logical CPU count.
+    if value is None or int(value) <= 0:
+        return DEFAULT_DATASET_COMPRESSION_THREADS
+    return max(1, min(int(value), _MAX_DATASET_COMPRESSION_THREADS))
+
+
+def _dataset_compression_threads_from_ui(viewer: object) -> int:
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    return _resolve_dataset_compression_threads(values.get("colmap_dataset_compression_threads"))
+
+
+def _max_pose_subset_from_ui(viewer: object) -> int:
+    # 0 / absent keeps every pose; a positive value caps the training set to that many
+    # widest-coverage poses.
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    return max(int(values.get("colmap_max_pose_subset", 0) or 0), 0)
 
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "max_sh_band",
@@ -284,10 +313,11 @@ def _apply_alpha_mask_to_rgba8(
     images_root: Path,
     alpha_mask_root: Path | None,
     alpha_mask_path_index: object | None,
+    mask_path: Path | None = None,
 ) -> np.ndarray:
     if alpha_mask_root is None:
         return rgba8
-    mask_path = _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
+    mask_path = Path(mask_path) if mask_path is not None else _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
     composed = np.ascontiguousarray(rgba8, dtype=np.uint8).copy()
     composed[:, :, 3] = _load_alpha_mask_u8(mask_path, (max(int(frame.width), 1), max(int(frame.height), 1)))
     return composed
@@ -354,14 +384,16 @@ def _compress_dataset_frame_to_bc7_cache(
     return cache_path
 
 
-def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path) -> _CompressedDatasetTexture:
-    cache_path = _dataset_bc7_cache_path(images_root, frame)
+def _load_or_create_bc7_dataset_texture(frame: ColmapFrame, images_root: Path, cache_path: Path | None = None) -> _CompressedDatasetTexture:
+    # `cache_path` may be precomputed by the caller (e.g. the streaming payload
+    # provider) so the per-frame load does no path resolution at all.
+    cache_path = _dataset_bc7_cache_path(images_root, frame) if cache_path is None else Path(cache_path)
     if not cache_path.exists():
-        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root)
+        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, cache_path=cache_path)
     payload = _parse_compressed_dataset_texture(cache_path)
     if payload.format != spy.Format.bc7_unorm_srgb or payload.width != int(frame.width) or payload.height != int(frame.height):
         cache_path.unlink(missing_ok=True)
-        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root)
+        cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, cache_path=cache_path)
         payload = _parse_compressed_dataset_texture(cache_path)
     if payload.format != spy.Format.bc7_unorm_srgb:
         raise RuntimeError(f"Expected BC7 UNORM SRGB cache for {frame.image_path.name}, got {payload.format}")
@@ -389,16 +421,23 @@ def _load_or_create_masked_bc7_dataset_texture(
     images_root: Path,
     alpha_mask_root: Path,
     alpha_mask_path_index: object | None,
+    *,
+    mask_path: Path | None = None,
+    cache_path: Path | None = None,
 ) -> _CompressedDatasetTexture:
     """BC7 texture with the alpha mask baked in, cached separately and keyed by mask identity."""
-    mask_path = _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
-    cache_path = _dataset_bc7_cache_path(images_root, frame, alpha_mask_token=_alpha_mask_cache_token(mask_path))
+    mask_path = Path(mask_path) if mask_path is not None else _resolve_alpha_mask_path(frame, images_root, Path(alpha_mask_root).resolve(), alpha_mask_path_index)
+    cache_path = (
+        _dataset_bc7_cache_path(images_root, frame, alpha_mask_token=_alpha_mask_cache_token(mask_path))
+        if cache_path is None
+        else Path(cache_path)
+    )
     if cache_path.exists():
         payload = _parse_compressed_dataset_texture(cache_path)
         if payload.format == spy.Format.bc7_unorm_srgb and payload.width == int(frame.width) and payload.height == int(frame.height):
             return payload
         cache_path.unlink(missing_ok=True)
-    rgba8 = _apply_alpha_mask_to_rgba8(load_training_frame_rgba8(frame), frame, images_root, alpha_mask_root, alpha_mask_path_index)
+    rgba8 = _apply_alpha_mask_to_rgba8(load_training_frame_rgba8(frame), frame, images_root, alpha_mask_root, alpha_mask_path_index, mask_path=mask_path)
     cache_path = _compress_dataset_frame_to_bc7_cache(frame, images_root, rgba8=rgba8, cache_path=cache_path)
     payload = _parse_compressed_dataset_texture(cache_path)
     if payload.format != spy.Format.bc7_unorm_srgb or payload.width != int(frame.width) or payload.height != int(frame.height):
@@ -541,6 +580,20 @@ def _profile_images_subdir(viewer: object) -> str | None:
         return images_path.name
 
 
+def _select_import_image_items(progress: ColmapImportProgress) -> list[tuple[int, object]]:
+    """Image (id, record) pairs to build frames for: camera-model filtered, then the
+    widest-coverage subset when a pose cap is set."""
+    items = sorted(progress.recon.images.items())
+    selected = {int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())}
+    if selected:
+        items = [(image_id, image) for image_id, image in items if int(image.camera_id) in selected]
+    target = int(getattr(progress, "max_pose_subset", 0))
+    if 0 < target < len(items):
+        keep = set(select_wide_coverage_image_ids(progress.recon, [image_id for image_id, _ in items], target))
+        items = [(image_id, image) for image_id, image in items if int(image_id) in keep]
+    return items
+
+
 def _append_training_frame(progress: ColmapImportProgress, image_id: int, image: object) -> None:
     if progress.recon is None:
         raise RuntimeError("COLMAP import progress is missing reconstruction state.")
@@ -561,20 +614,28 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
         downscale_scale=progress.image_downscale_scale,
     )
     sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
+    is_equirectangular = int(getattr(camera, "model_id", -1)) == COLMAP_EQUIRECTANGULAR_MODEL_ID
     frame = ColmapFrame(
         image_id,
         image_path,
         image.q_wxyz.astype(np.float32),
         image.t_xyz.astype(np.float32),
-        float(camera.fx) * sx,
-        float(camera.fy) * sy,
-        float(camera.cx) * sx,
-        float(camera.cy) * sy,
+        0.0 if is_equirectangular else float(camera.fx) * sx,
+        0.0 if is_equirectangular else float(camera.fy) * sy,
+        0.0 if is_equirectangular else float(camera.cx) * sx,
+        0.0 if is_equirectangular else float(camera.cy) * sy,
         int(width),
         int(height),
         float(getattr(camera, "k1", 0.0)),
         float(getattr(camera, "k2", 0.0)),
+        float(getattr(camera, "p1", 0.0)),
+        float(getattr(camera, "p2", 0.0)),
+        float(getattr(camera, "k3", 0.0)),
+        float(getattr(camera, "k4", 0.0)),
+        float(getattr(camera, "k5", 0.0)),
+        float(getattr(camera, "k6", 0.0)),
         camera_id=int(image.camera_id),
+        model_id=int(getattr(camera, "model_id", COLMAP_PINHOLE_MODEL_ID)),
     )
     if progress.init_mode == _COLMAP_IMPORT_DEPTH:
         progress.frame_images.append(image)
@@ -629,7 +690,7 @@ def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
     _close_colmap_texture_loader(progress)
     if bool(progress.compress_dataset_using_bc7):
         _ensure_dataset_bc7_texconv()
-    loader = ThreadPoolExecutor(max_workers=_VIEWER_IMAGE_IO_THREADS, thread_name_prefix="viewer-target")
+    loader = ThreadPoolExecutor(max_workers=_resolve_dataset_compression_threads(getattr(progress, "dataset_compression_threads", None)), thread_name_prefix="viewer-target")
     progress.native_rgba8_loader = loader
     active_alpha_mask_root = progress.alpha_mask_root if bool(progress.use_alpha_masks) else None
     active_alpha_mask_path_index = progress.alpha_mask_path_index if bool(progress.use_alpha_masks) else None
@@ -676,13 +737,110 @@ def _create_native_dataset_textures(
     textures: list[spy.Texture] = []
     if use_bc7:
         _ensure_dataset_bc7_texconv()
-    with ThreadPoolExecutor(max_workers=_VIEWER_IMAGE_IO_THREADS, thread_name_prefix="viewer-target") as executor:
+    with ThreadPoolExecutor(max_workers=_dataset_compression_threads_from_ui(viewer), thread_name_prefix="viewer-target") as executor:
         for payload in executor.map(
             lambda frame: _load_dataset_texture(frame, resolved_images_root, use_bc7, active_alpha_mask_root, alpha_mask_path_index),
             frames,
         ):
             textures.append(_create_native_dataset_texture_from_bc_payload(viewer, payload) if isinstance(payload, _CompressedDatasetTexture) else _create_native_dataset_texture_from_rgba8(viewer, payload))
     return textures
+
+
+def _training_dataset_pool_size_from_ui(viewer: object) -> int:
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    return max(int(values.get("training_dataset_pool_size", 16)), 0)
+
+
+def _dataset_residency_from_ui(viewer: object) -> str:
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    return str(values.get("colmap_dataset_residency", "auto")).lower()
+
+
+def _training_dataset_pool_size(viewer: object) -> int:
+    import_cfg = getattr(getattr(viewer, "s", None), "colmap_import", None)
+    if import_cfg is not None and hasattr(import_cfg, "dataset_pool_size"):
+        return max(int(import_cfg.dataset_pool_size), 0)
+    return _training_dataset_pool_size_from_ui(viewer)
+
+
+def _training_steps_per_frame_value(viewer: object) -> int:
+    values = getattr(getattr(viewer, "ui", None), "_values", {})
+    return max(int(values.get("training_steps_per_frame", 8)), 1)
+
+
+def _streaming_dataset_enabled(pool_size: int, frames: list[ColmapFrame]) -> bool:
+    return int(pool_size) > 0 and int(pool_size) < len(frames)
+
+
+def _resolve_import_dataset_pool_size(
+    viewer: object,
+    frames: list[ColmapFrame],
+    *,
+    requested_pool_size: int,
+    dataset_residency: str,
+    compress_dataset_using_bc7: bool,
+) -> int:
+    if not frames:
+        return max(int(requested_pool_size), 0)
+    estimate_capacity = None
+    estimate_device = getattr(viewer, "device", None)
+    if estimate_device is not None:
+        try:
+            estimate_capacity, _ = query_total_device_vram_capacity(estimate_device)
+        except Exception:
+            estimate_capacity = None
+    try:
+        values = getattr(getattr(viewer, "ui", None), "_values", {})
+        estimate_splat_count = max(int(values.get("max_gaussians", 0)), 0) or _COLMAP_RESIDENCY_FALLBACK_SPLATS
+        pool_size, _ = resolve_import_residency(
+            residency=dataset_residency,
+            frame_sizes=[(int(frame.width), int(frame.height)) for frame in frames],
+            splat_count=estimate_splat_count,
+            max_sh_band=int(values.get("max_sh_band", 3)),
+            compress_bc7=bool(compress_dataset_using_bc7),
+            requested_pool_size=max(int(requested_pool_size), 0),
+            capacity_bytes=estimate_capacity,
+            refinement_growth_per_step=float(values.get("refinement_max_growth_per_step", 0.30)),
+        )
+        return max(int(pool_size), 0)
+    except Exception:
+        return max(int(requested_pool_size), 0)
+
+
+def _dataset_texture_format(compress_dataset_using_bc7: bool) -> spy.Format:
+    return spy.Format.bc7_unorm_srgb if bool(compress_dataset_using_bc7) else spy.Format.rgba8_unorm_srgb
+
+
+def _make_dataset_payload_provider(
+    frames: list[ColmapFrame],
+    images_root: Path,
+    compress_dataset_using_bc7: bool,
+    alpha_mask_root: Path | None,
+    alpha_mask_path_index: object | None,
+):
+    resolved_images_root = Path(images_root).resolve()
+    active_alpha_mask_root = None if alpha_mask_root is None else Path(alpha_mask_root).resolve()
+    # Precompute the BC7 cache path for every frame once (provider-local) for the
+    # common unmasked path, so streaming loads never resolve paths at runtime and
+    # don't depend on the process-global resolver staying valid.
+    if bool(compress_dataset_using_bc7) and active_alpha_mask_root is None:
+        cache_paths = [_dataset_bc7_cache_path(resolved_images_root, frame) for frame in frames]
+        return lambda frame_index: _load_or_create_bc7_dataset_texture(frames[int(frame_index)], resolved_images_root, cache_path=cache_paths[int(frame_index)])
+    if bool(compress_dataset_using_bc7):
+        mask_paths = [_resolve_alpha_mask_path(frame, resolved_images_root, active_alpha_mask_root, alpha_mask_path_index) for frame in frames]
+        cache_paths = [
+            _dataset_bc7_cache_path(resolved_images_root, frame, alpha_mask_token=_alpha_mask_cache_token(mask_path))
+            for frame, mask_path in zip(frames, mask_paths, strict=False)
+        ]
+        return lambda frame_index: _load_or_create_masked_bc7_dataset_texture(
+            frames[int(frame_index)],
+            resolved_images_root,
+            active_alpha_mask_root,
+            alpha_mask_path_index,
+            mask_path=mask_paths[int(frame_index)],
+            cache_path=cache_paths[int(frame_index)],
+        )
+    return lambda frame_index: _load_dataset_texture(frames[int(frame_index)], resolved_images_root, bool(compress_dataset_using_bc7), active_alpha_mask_root, alpha_mask_path_index)
 
 
 def _format_colmap_import_photometric_metric(value: float) -> str:
@@ -867,6 +1025,10 @@ def _import_cfg_enabled(import_cfg: object, attr_name: str, default: bool = Fals
     return bool(getattr(import_cfg, attr_name, default))
 
 
+def _import_cfg_refinable(import_cfg: object, attr_name: str) -> bool:
+    return bool(getattr(import_cfg, attr_name, True))
+
+
 def _import_cfg_nn_radius_scale_coef(import_cfg: object, attr_name: str, default: float = 0.5, fallback_attr: str | None = "nn_radius_scale_coef") -> float:
     fallback = default if fallback_attr is None else getattr(import_cfg, fallback_attr, default)
     return float(max(getattr(import_cfg, attr_name, fallback), 1e-4))
@@ -906,6 +1068,10 @@ def _diffused_diffusion_radius(import_cfg: object) -> float:
     return max(float(getattr(import_cfg, "diffused_diffusion_radius", 1.0)), 0.0)
 
 
+def _diffused_visibility_strength(import_cfg: object) -> float:
+    return float(np.clip(float(getattr(import_cfg, "diffused_visibility_strength", 0.5)), 0.0, 1.0))
+
+
 def _custom_mesh_path(import_cfg: object) -> Path | None:
     mesh_path = getattr(import_cfg, "custom_mesh_path", None)
     return None if mesh_path is None else Path(mesh_path)
@@ -935,6 +1101,12 @@ def _concat_gaussian_scenes(scenes: list[GaussianScene]) -> GaussianScene:
     # Sources may carry different SH coefficient counts (e.g. a DC-only point cloud
     # alongside full-SH scenes); pad them all to the largest so concatenation aligns.
     target_sh_coeffs = max(int(np.asarray(scene.sh_coeffs).shape[1]) for scene in scenes)
+    refinable = None
+    if any(scene.refinable is not None for scene in scenes):
+        refinable = np.concatenate([
+            np.ones((scene.count,), dtype=bool) if scene.refinable is None else np.asarray(scene.refinable, dtype=bool)
+            for scene in scenes
+        ], axis=0)
     return GaussianScene(
         positions=np.ascontiguousarray(np.concatenate([np.asarray(scene.positions, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         scales=np.ascontiguousarray(np.concatenate([np.asarray(scene.scales, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
@@ -942,6 +1114,7 @@ def _concat_gaussian_scenes(scenes: list[GaussianScene]) -> GaussianScene:
         opacities=np.ascontiguousarray(np.concatenate([np.asarray(scene.opacities, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         colors=np.ascontiguousarray(np.concatenate([np.asarray(scene.colors, dtype=np.float32) for scene in scenes], axis=0), dtype=np.float32),
         sh_coeffs=np.ascontiguousarray(np.concatenate([pad_sh_coeffs(np.asarray(scene.sh_coeffs, dtype=np.float32), target_sh_coeffs) for scene in scenes], axis=0), dtype=np.float32),
+        refinable=refinable,
     )
 
 
@@ -1045,7 +1218,13 @@ def _copy_gaussian_scene(scene: GaussianScene) -> GaussianScene:
         opacities=np.array(scene.opacities, dtype=np.float32, copy=True),
         colors=np.array(scene.colors, dtype=np.float32, copy=True),
         sh_coeffs=np.array(scene.sh_coeffs, dtype=np.float32, copy=True),
+        refinable=None if scene.refinable is None else np.array(scene.refinable, dtype=bool, copy=True),
     )
+
+
+def _set_scene_refinable(scene: GaussianScene, refinable: bool) -> GaussianScene:
+    scene.refinable = np.full((scene.count,), bool(refinable), dtype=bool)
+    return scene
 
 
 def _clear_cached_init_source(viewer: object) -> None:
@@ -1092,6 +1271,7 @@ def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] |
         round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "pointcloud_nn_radius_scale_coef")), 6),
         int(getattr(import_cfg, "diffused_point_count", 0)),
         round(float(_diffused_diffusion_radius(import_cfg)), 6),
+        round(float(_diffused_visibility_strength(import_cfg)), 6),
         round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "diffused_nn_radius_scale_coef")), 6),
         None if getattr(import_cfg, "custom_ply_path", None) is None else str(Path(import_cfg.custom_ply_path).resolve()),
         round(float(_import_cfg_nn_radius_scale_coef(import_cfg, "custom_ply_nn_radius_scale_coef", default=1.0, fallback_attr=None)), 6),
@@ -1161,6 +1341,7 @@ def _load_enabled_init_source_payloads(viewer: object, init: object) -> None:
                 _diffused_diffusion_radius(import_cfg),
                 int(init.seed),
                 min_track_length=min_track_length,
+                visibility_strength=_diffused_visibility_strength(import_cfg),
             )
             _store_point_source_cache(viewer, source_name, positions, colors)
             continue
@@ -1502,6 +1683,14 @@ def _training_debug_splat_age_buffer(viewer: object):
     )
 
 
+def _training_debug_splat_init_buffer(viewer: object):
+    return (
+        viewer.s.trainer.refinement_buffers["splat_init"]
+        if viewer.s.trainer is not None and "splat_init" in viewer.s.trainer.refinement_buffers
+        else None
+    )
+
+
 def _training_debug_splat_contribution_buffer(viewer: object):
     return (
         viewer.s.trainer.refinement_buffers["splat_contribution"]
@@ -1537,6 +1726,7 @@ def _clear_debug_buffers(renderer: GaussianRenderer | None) -> None:
     for setter_name in (
         "set_debug_grad_norm_buffer",
         "set_debug_grad_stats_buffer",
+        "set_debug_splat_init_buffer",
         "set_debug_splat_age_buffer",
         "set_debug_splat_contribution_buffer",
         "set_debug_splat_viewed_fraction_buffer",
@@ -1559,6 +1749,7 @@ def _apply_debug_buffers(viewer: object, renderer: GaussianRenderer | None) -> N
         else None
     )
     _set_optional_debug_binding(renderer, "set_debug_grad_stats_buffer", refinement_buffers.get("gradient_stats"))
+    _set_optional_debug_binding(renderer, "set_debug_splat_init_buffer", _training_debug_splat_init_buffer(viewer))
     _set_optional_debug_binding(renderer, "set_debug_splat_age_buffer", _training_debug_splat_age_buffer(viewer))
     _set_optional_debug_binding(renderer, "set_debug_splat_contribution_buffer", _training_debug_splat_contribution_buffer(viewer))
     _set_optional_debug_binding(renderer, "set_debug_splat_viewed_fraction_buffer", _training_debug_splat_viewed_fraction_buffer(viewer))
@@ -1672,7 +1863,14 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
     if previous_renderer is not None and _renderer_size(previous_renderer, role) == size and not force_recreate:
         return previous_renderer
     renderer = _create_renderer(viewer, size[0], size[1], allow_debug_overlays)
-    if isinstance(viewer.s.scene, GaussianScene):
+    # Prefer a GPU->GPU scene copy from the outgoing renderer so live splat-editor edits
+    # (which live only in the GPU buffer) survive a resize/recreate; fall back to the CPU
+    # scene only when there is no prior renderer to copy from.
+    if previous_renderer is not None and int(getattr(previous_renderer, "_scene_count", 0)) > 0:
+        enc = viewer.device.create_command_encoder()
+        previous_renderer.copy_scene_state_to(enc, renderer)
+        viewer.device.submit_command_buffer(enc.finish())
+    elif isinstance(viewer.s.scene, GaussianScene):
         renderer.set_scene(viewer.s.scene)
     return _finalize_renderer_replacement(viewer, role, renderer, previous_renderer)
 
@@ -1928,12 +2126,19 @@ def ensure_training_runtime_resolution(viewer: object) -> bool:
     return True
 
 
-def _dataset_metrics_output_path(dataset_root: Path | None) -> Path:
-    _DATASET_METRICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def _dataset_metrics_output_path(dataset_root: Path | None, output_path: Path | str | None = None) -> Path:
+    output = None if output_path is None else Path(output_path)
     dataset_name = "dataset" if dataset_root is None else str(dataset_root.name).strip() or "dataset"
     safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in dataset_name).strip("_") or "dataset"
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-    return _DATASET_METRICS_OUTPUT_DIR / f"{safe_name}_{timestamp}.txt"
+    if output is None:
+        _DATASET_METRICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        return _DATASET_METRICS_OUTPUT_DIR / f"{safe_name}_{timestamp}.txt"
+    if output.suffix.lower() == ".txt":
+        output.parent.mkdir(parents=True, exist_ok=True)
+        return output
+    output.mkdir(parents=True, exist_ok=True)
+    return output / f"{safe_name}_{timestamp}.txt"
 
 
 def _dataset_metrics_numeric_values(rows: tuple[object, ...], key: str) -> np.ndarray:
@@ -2006,8 +2211,8 @@ def _dataset_metrics_report_lines(report: DatasetMetricsReport) -> tuple[str, ..
     return tuple(lines)
 
 
-def _write_dataset_metrics_report(report: DatasetMetricsReport) -> Path:
-    report_path = _dataset_metrics_output_path(report.dataset_root)
+def _write_dataset_metrics_report(report: DatasetMetricsReport, output_path: Path | str | None = None) -> Path:
+    report_path = _dataset_metrics_output_path(report.dataset_root, output_path)
     report_with_path = replace(report, report_path=report_path)
     report_path.write_text("\n".join(_dataset_metrics_report_lines(report_with_path)) + "\n", encoding="utf-8")
     return report_path
@@ -2049,7 +2254,7 @@ def _reset_dataset_metrics_state(viewer: object, *, clear_report: bool = True, s
     viewer.s.dataset_metrics_status = str(status)
 
 
-def start_dataset_metrics_logging(viewer: object) -> None:
+def start_dataset_metrics_logging(viewer: object, output_path: Path | str | None = None) -> None:
     def _fail(message: str) -> None:
         viewer.s.dataset_metrics_status = message
         raise RuntimeError(message)
@@ -2084,6 +2289,7 @@ def start_dataset_metrics_logging(viewer: object) -> None:
         requested_frame_count=len(frames),
         splat_count=int(getattr(getattr(viewer.s.trainer, "scene", None), "count", 0)),
         dataset_root=getattr(viewer.s, "colmap_root", None),
+        report_output_path=None if output_path is None else Path(output_path),
         previous_force_prepass_count_readback=previous_force_prepass_count_readback,
         previous_renderer_size=previous_size,
         previous_renderer_capacity=previous_capacity,
@@ -2109,7 +2315,7 @@ def _complete_dataset_metrics_logging(viewer: object) -> None:
     )
     report_path = None
     try:
-        report_path = _write_dataset_metrics_report(report)
+        report_path = _write_dataset_metrics_report(report, getattr(task, "report_output_path", None))
     except Exception as exc:
         viewer.s.last_error = str(exc)
         viewer.s.dataset_metrics_status = f"Dataset metrics finished, but report write failed: {exc}"
@@ -2195,6 +2401,7 @@ def _refresh_training_frames(viewer: object) -> None:
         downscale_mode=str(getattr(import_cfg, "image_downscale_mode", _COLMAP_IMAGE_DOWNSCALE_ORIGINAL)),
         downscale_max_size=int(getattr(import_cfg, "image_downscale_max_size", 2048)),
         downscale_scale=float(getattr(import_cfg, "image_downscale_scale", 1.0)),
+        max_pose_subset=int(getattr(import_cfg, "max_pose_subset", 0)),
     )
 
 
@@ -2251,7 +2458,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             init_neighbor_count,
             init_anisotropy_strength,
         )
-        source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
+        source_scenes.append(_set_scene_refinable(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), _import_cfg_refinable(import_cfg, "pointcloud_refinable")))
 
     if _import_cfg_enabled(import_cfg, "diffused_enabled"):
         positions = getattr(viewer.s, "cached_init_diffused_positions", None)
@@ -2267,13 +2474,13 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             init_neighbor_count,
             init_anisotropy_strength,
         )
-        source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
+        source_scenes.append(_set_scene_refinable(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), _import_cfg_refinable(import_cfg, "diffused_refinable")))
 
     if _import_cfg_enabled(import_cfg, "custom_ply_enabled"):
         cached_ply_scene = getattr(viewer.s, "cached_init_custom_ply_scene", None)
         if cached_ply_scene is None:
             raise RuntimeError("Cached custom PLY scene is unavailable.")
-        source_scenes.append(_copy_gaussian_scene(cached_ply_scene))
+        source_scenes.append(_set_scene_refinable(_copy_gaussian_scene(cached_ply_scene), _import_cfg_refinable(import_cfg, "custom_ply_refinable")))
 
     if _import_cfg_enabled(import_cfg, "custom_mesh_enabled"):
         positions = getattr(viewer.s, "cached_init_custom_mesh_positions", None)
@@ -2288,7 +2495,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             init_neighbor_count,
             init_anisotropy_strength,
         )
-        source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
+        source_scenes.append(_set_scene_refinable(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), _import_cfg_refinable(import_cfg, "custom_mesh_refinable")))
 
     if _fibonacci_source_enabled(import_cfg):
         positions = getattr(viewer.s, "cached_init_fibonacci_positions", None)
@@ -2303,7 +2510,7 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
             init_neighbor_count,
             init_anisotropy_strength,
         )
-        source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
+        source_scenes.append(_set_scene_refinable(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init), _import_cfg_refinable(import_cfg, "fibonacci_sphere_refinable")))
 
     return _concat_gaussian_scenes(source_scenes), None
 
@@ -2311,6 +2518,15 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
 def _apply_training_image_color_init(viewer: object, trainer: GaussianTrainer, encoder: spy.CommandEncoder) -> None:
     import_cfg = getattr(viewer.s, "colmap_import", None)
     if not bool(getattr(import_cfg, "training_image_color_init", False)):
+        return
+    if bool(getattr(trainer, "dataset_targets_streaming", False)):
+        TrainingImageColorInitializer(viewer.device).apply_streaming(
+            trainer.renderer,
+            list(getattr(trainer, "frames", ())),
+            lambda frame_index, frame_encoder: trainer.get_frame_target_texture(frame_index, native_resolution=True, encoder=frame_encoder),
+            lambda frame_index, submission: trainer.mark_dataset_submitted([frame_index], submission),
+            int(getattr(trainer.scene, "count", 0)),
+        )
         return
     frame_textures = list(getattr(trainer, "_frame_targets_native", ()))
     if len(frame_textures) == 0:
@@ -2596,6 +2812,7 @@ def _finish_import_colmap_dataset(
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    max_pose_subset: int = 0,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
@@ -2609,26 +2826,36 @@ def _finish_import_colmap_dataset(
     target_alpha_threshold: float = _DEFAULT_TARGET_ALPHA_THRESHOLD,
     use_target_alpha_mask: bool = False,
     pointcloud_enabled: bool | None = None,
+    pointcloud_refinable: bool = True,
     pointcloud_nn_radius_scale_coef: float | None = None,
     diffused_enabled: bool | None = None,
+    diffused_refinable: bool = True,
     diffused_diffusion_radius: float = 1.0,
+    diffused_visibility_strength: float = 0.5,
     diffused_nn_radius_scale_coef: float | None = None,
     custom_ply_enabled: bool | None = None,
+    custom_ply_refinable: bool = True,
     custom_ply_nn_radius_scale_coef: float | None = None,
     custom_mesh_enabled: bool | None = None,
+    custom_mesh_refinable: bool = True,
     custom_mesh_path: Path | None = None,
     custom_mesh_point_count: int | None = None,
     custom_mesh_nn_radius_scale_coef: float | None = None,
     fibonacci_sphere_enabled: bool | None = None,
+    fibonacci_sphere_refinable: bool = True,
     fibonacci_sphere_nn_radius_scale_coef: float | None = None,
     recon: object = None,
     training_frames: list[ColmapFrame] | None = None,
     frame_targets_native: list[spy.Texture] | None = None,
     cached_init_point_positions: np.ndarray | None = None,
     cached_init_point_colors: np.ndarray | None = None,
+    dataset_pool_size: int | None = None,
+    dataset_residency: str | None = None,
 ) -> None:
     if recon is None or training_frames is None:
         raise RuntimeError("COLMAP import finalize requires reconstruction and training frames.")
+    resolved_dataset_pool_size = _training_dataset_pool_size(viewer) if dataset_pool_size is None else max(int(dataset_pool_size), 0)
+    resolved_dataset_residency = _dataset_residency_from_ui(viewer) if dataset_residency is None else str(dataset_residency).lower()
     resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
     xyz, _ = _point_tables(recon, min_track_length)
     _reset_loaded_runtime(viewer)
@@ -2649,11 +2876,14 @@ def _finish_import_colmap_dataset(
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         training_image_color_init=training_image_color_init,
         photometric_compensation_enabled=photometric_compensation_enabled,
+        dataset_pool_size=resolved_dataset_pool_size,
+        dataset_residency=resolved_dataset_residency,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        max_pose_subset=max_pose_subset,
         min_track_length=min_track_length,
         init_neighbor_count=init_neighbor_count,
         init_anisotropy_strength=init_anisotropy_strength,
@@ -2667,17 +2897,23 @@ def _finish_import_colmap_dataset(
         target_alpha_threshold=target_alpha_threshold,
         use_target_alpha_mask=use_target_alpha_mask,
         pointcloud_enabled=pointcloud_enabled,
+        pointcloud_refinable=pointcloud_refinable,
         pointcloud_nn_radius_scale_coef=pointcloud_nn_radius_scale_coef,
         diffused_enabled=diffused_enabled,
+        diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
+        diffused_visibility_strength=diffused_visibility_strength,
         diffused_nn_radius_scale_coef=diffused_nn_radius_scale_coef,
         custom_ply_enabled=custom_ply_enabled,
+        custom_ply_refinable=custom_ply_refinable,
         custom_ply_nn_radius_scale_coef=custom_ply_nn_radius_scale_coef,
         custom_mesh_enabled=custom_mesh_enabled,
+        custom_mesh_refinable=custom_mesh_refinable,
         custom_mesh_path=custom_mesh_path,
         custom_mesh_point_count=custom_mesh_point_count,
         custom_mesh_nn_radius_scale_coef=custom_mesh_nn_radius_scale_coef,
         fibonacci_sphere_enabled=fibonacci_sphere_enabled,
+        fibonacci_sphere_refinable=fibonacci_sphere_refinable,
         fibonacci_sphere_nn_radius_scale_coef=fibonacci_sphere_nn_radius_scale_coef,
     )
     viewer.s.colmap_root = Path(colmap_root)
@@ -2706,7 +2942,7 @@ def _finish_import_colmap_dataset(
             _ensure_cached_init_source(viewer, init_params_fn())
     apply_live_params(viewer)
     reset_main_camera(viewer)
-    initialize_training_scene(viewer, frame_targets_native=frame_targets_native)
+    initialize_training_scene(viewer, frame_targets_native=frame_targets_native, dataset_pool_size=resolved_dataset_pool_size)
     viewer.s.last_error = ""
     print(
         f"Loaded COLMAP: db={None if database_path is None else Path(database_path).resolve()} root={colmap_root} "
@@ -2733,6 +2969,7 @@ def import_colmap_dataset(
     image_downscale_max_size: int,
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
+    max_pose_subset: int = 0,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH,
@@ -2749,17 +2986,23 @@ def import_colmap_dataset(
     training_image_color_init: bool = False,
     photometric_compensation_enabled: bool = False,
     pointcloud_enabled: bool | None = None,
+    pointcloud_refinable: bool = True,
     pointcloud_nn_radius_scale_coef: float | None = None,
     diffused_enabled: bool | None = None,
+    diffused_refinable: bool = True,
     diffused_diffusion_radius: float = 1.0,
+    diffused_visibility_strength: float = 0.5,
     diffused_nn_radius_scale_coef: float | None = None,
     custom_ply_enabled: bool | None = None,
+    custom_ply_refinable: bool = True,
     custom_ply_nn_radius_scale_coef: float | None = None,
     custom_mesh_enabled: bool | None = None,
+    custom_mesh_refinable: bool = True,
     custom_mesh_path: Path | None = None,
     custom_mesh_point_count: int | None = None,
     custom_mesh_nn_radius_scale_coef: float | None = None,
     fibonacci_sphere_enabled: bool | None = None,
+    fibonacci_sphere_refinable: bool = True,
     fibonacci_sphere_nn_radius_scale_coef: float | None = None,
 ) -> None:
     _clear_loaded_scene(viewer)
@@ -2767,6 +3010,8 @@ def import_colmap_dataset(
     resolved_rotation_mode = min(max(int(rotation_mode), COLMAP_ROTATION_MODE_NONE), COLMAP_ROTATION_MODE_AUTO)
     resolved_custom_rotation_deg = tuple(float(v) for v in np.asarray(custom_rotation_deg, dtype=np.float32).reshape(3))
     recon = _load_aligned_colmap_reconstruction(root, rotation_mode=resolved_rotation_mode, custom_rotation_deg=resolved_custom_rotation_deg)
+    pool_size = _training_dataset_pool_size_from_ui(viewer)
+    dataset_residency = _dataset_residency_from_ui(viewer)
     viewer.s.colmap_import = ColmapImportSettings(
         images_root=Path(images_root).resolve(),
         alpha_mask_root=None if alpha_mask_root is None else Path(alpha_mask_root).resolve(),
@@ -2776,21 +3021,29 @@ def import_colmap_dataset(
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         training_image_color_init=bool(training_image_color_init),
         photometric_compensation_enabled=bool(photometric_compensation_enabled),
+        dataset_pool_size=pool_size,
+        dataset_residency=dataset_residency,
         nn_radius_scale_coef=float(nn_radius_scale_coef),
         init_neighbor_count=max(int(init_neighbor_count), 2),
         init_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
         pointcloud_enabled=bool(pointcloud_enabled),
+        pointcloud_refinable=bool(pointcloud_refinable),
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef if pointcloud_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
         diffused_enabled=bool(diffused_enabled),
+        diffused_refinable=bool(diffused_refinable),
         diffused_diffusion_radius=max(float(diffused_diffusion_radius), 0.0),
+        diffused_visibility_strength=float(np.clip(float(diffused_visibility_strength), 0.0, 1.0)),
         diffused_nn_radius_scale_coef=float(max(diffused_nn_radius_scale_coef if diffused_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
         custom_ply_enabled=bool(custom_ply_enabled),
+        custom_ply_refinable=bool(custom_ply_refinable),
         custom_ply_nn_radius_scale_coef=float(max(custom_ply_nn_radius_scale_coef if custom_ply_nn_radius_scale_coef is not None else 1.0, 1e-4)),
         custom_mesh_enabled=bool(custom_mesh_enabled),
+        custom_mesh_refinable=bool(custom_mesh_refinable),
         custom_mesh_path=None if custom_mesh_path is None else Path(custom_mesh_path).resolve(),
         custom_mesh_point_count=max(int(custom_mesh_point_count if custom_mesh_point_count is not None else diffused_point_count), 1),
         custom_mesh_nn_radius_scale_coef=float(max(custom_mesh_nn_radius_scale_coef if custom_mesh_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
         fibonacci_sphere_enabled=bool(fibonacci_sphere_enabled),
+        fibonacci_sphere_refinable=bool(fibonacci_sphere_refinable),
         fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
         fibonacci_sphere_radius_multiplier=max(float(fibonacci_sphere_radius_multiplier), 0.0),
         fibonacci_sphere_color=tuple(float(v) for v in np.clip(np.asarray(fibonacci_sphere_color, dtype=np.float32).reshape(3), 0.0, 1.0)),
@@ -2807,8 +3060,18 @@ def import_colmap_dataset(
         downscale_mode=image_downscale_mode,
         downscale_max_size=image_downscale_max_size,
         downscale_scale=image_downscale_scale,
+        max_pose_subset=int(max_pose_subset),
     )
-    frame_targets_native = _create_native_dataset_textures(viewer, training_frames)
+    pool_size = _resolve_import_dataset_pool_size(
+        viewer,
+        training_frames,
+        requested_pool_size=pool_size,
+        dataset_residency=dataset_residency,
+        compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
+    )
+    viewer.s.colmap_import.dataset_pool_size = pool_size
+    stream_dataset = _streaming_dataset_enabled(pool_size, training_frames)
+    frame_targets_native = None if stream_dataset else _create_native_dataset_textures(viewer, training_frames)
     photometric_trainer = None
     cached_init_point_positions = None
     cached_init_point_colors = None
@@ -2847,6 +3110,7 @@ def import_colmap_dataset(
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
+        max_pose_subset=max_pose_subset,
         min_track_length=min_track_length,
         init_neighbor_count=init_neighbor_count,
         init_anisotropy_strength=init_anisotropy_strength,
@@ -2860,23 +3124,31 @@ def import_colmap_dataset(
         target_alpha_threshold=target_alpha_threshold,
         use_target_alpha_mask=use_target_alpha_mask,
         pointcloud_enabled=pointcloud_enabled,
+        pointcloud_refinable=pointcloud_refinable,
         pointcloud_nn_radius_scale_coef=pointcloud_nn_radius_scale_coef,
         diffused_enabled=diffused_enabled,
+        diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
+        diffused_visibility_strength=diffused_visibility_strength,
         diffused_nn_radius_scale_coef=diffused_nn_radius_scale_coef,
         custom_ply_enabled=custom_ply_enabled,
+        custom_ply_refinable=custom_ply_refinable,
         custom_ply_nn_radius_scale_coef=custom_ply_nn_radius_scale_coef,
         custom_mesh_enabled=custom_mesh_enabled,
+        custom_mesh_refinable=custom_mesh_refinable,
         custom_mesh_path=custom_mesh_path,
         custom_mesh_point_count=custom_mesh_point_count,
         custom_mesh_nn_radius_scale_coef=custom_mesh_nn_radius_scale_coef,
         fibonacci_sphere_enabled=fibonacci_sphere_enabled,
+        fibonacci_sphere_refinable=fibonacci_sphere_refinable,
         fibonacci_sphere_nn_radius_scale_coef=fibonacci_sphere_nn_radius_scale_coef,
         recon=recon,
         training_frames=training_frames,
         frame_targets_native=frame_targets_native,
         cached_init_point_positions=cached_init_point_positions,
         cached_init_point_colors=cached_init_point_colors,
+        dataset_pool_size=pool_size,
+        dataset_residency=dataset_residency,
     )
     if photometric_trainer is not None:
         viewer.s.photometric_trainer = photometric_trainer
@@ -2920,16 +3192,22 @@ def import_colmap_from_ui(viewer: object) -> None:
     fibonacci_sphere_color = tuple(float(v) for v in np.clip(np.asarray(viewer.ui._values.get("colmap_fibonacci_sphere_color", FIBONACCI_SPHERE_COLOR), dtype=np.float32).reshape(3), 0.0, 1.0))
     fibonacci_sphere_upper_hemisphere_only = bool(viewer.ui._values.get("colmap_fibonacci_sphere_upper_hemisphere_only", False))
     pointcloud_enabled = bool(viewer.ui._values.get("colmap_pointcloud_enabled", False))
+    pointcloud_refinable = bool(viewer.ui._values.get("colmap_pointcloud_refinable", True))
     pointcloud_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_pointcloud_nn_radius_scale_coef", nn_radius_scale_coef))
     diffused_enabled = bool(viewer.ui._values.get("colmap_diffused_enabled", False))
+    diffused_refinable = bool(viewer.ui._values.get("colmap_diffused_refinable", True))
     diffused_diffusion_radius = max(float(viewer.ui._values.get("colmap_diffused_diffusion_radius", 1.0)), 0.0)
+    diffused_visibility_strength = float(np.clip(float(viewer.ui._values.get("colmap_diffused_visibility_strength", 0.5)), 0.0, 1.0))
     diffused_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_diffused_nn_radius_scale_coef", nn_radius_scale_coef))
     custom_ply_enabled = bool(viewer.ui._values.get("colmap_custom_ply_enabled", False))
+    custom_ply_refinable = bool(viewer.ui._values.get("colmap_custom_ply_refinable", True))
     custom_ply_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_custom_ply_nn_radius_scale_coef", 1.0))
     custom_mesh_enabled = bool(viewer.ui._values.get("colmap_custom_mesh_enabled", False))
+    custom_mesh_refinable = bool(viewer.ui._values.get("colmap_custom_mesh_refinable", True))
     custom_mesh_point_count = max(int(viewer.ui._values.get("colmap_custom_mesh_point_count", diffused_point_count)), 1)
     custom_mesh_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_custom_mesh_nn_radius_scale_coef", nn_radius_scale_coef))
     fibonacci_sphere_enabled = bool(viewer.ui._values.get("colmap_fibonacci_sphere_enabled", fibonacci_sphere_point_count > 0))
+    fibonacci_sphere_refinable = bool(viewer.ui._values.get("colmap_fibonacci_sphere_refinable", True))
     fibonacci_sphere_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0))
     rotation_mode = min(
         max(
@@ -2951,6 +3229,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     training_image_color_init = bool(viewer.ui._values.get("colmap_training_image_color_init", False))
     photometric_compensation_enabled = bool(viewer.ui._values.get("colmap_photometric_compensation_enabled", False))
+    dataset_residency = _dataset_residency_from_ui(viewer)
     if not colmap_root.exists():
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
     if not _has_colmap_sparse(colmap_root):
@@ -3006,18 +3285,28 @@ def import_colmap_from_ui(viewer: object) -> None:
         target_alpha_mode=target_alpha_mode,
         target_alpha_threshold=target_alpha_threshold,
         pointcloud_enabled=pointcloud_enabled,
+        pointcloud_refinable=pointcloud_refinable,
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef, 1e-4)),
         diffused_enabled=diffused_enabled,
+        diffused_refinable=diffused_refinable,
         diffused_diffusion_radius=diffused_diffusion_radius,
+        diffused_visibility_strength=diffused_visibility_strength,
         diffused_nn_radius_scale_coef=float(max(diffused_nn_radius_scale_coef, 1e-4)),
         custom_ply_enabled=custom_ply_enabled,
+        custom_ply_refinable=custom_ply_refinable,
         custom_ply_nn_radius_scale_coef=float(max(custom_ply_nn_radius_scale_coef, 1e-4)),
         custom_mesh_enabled=custom_mesh_enabled,
         custom_mesh_path=None if custom_mesh_path is None else custom_mesh_path.resolve(),
         custom_mesh_point_count=custom_mesh_point_count,
+        custom_mesh_refinable=custom_mesh_refinable,
         custom_mesh_nn_radius_scale_coef=float(max(custom_mesh_nn_radius_scale_coef, 1e-4)),
         fibonacci_sphere_enabled=fibonacci_sphere_enabled,
+        fibonacci_sphere_refinable=fibonacci_sphere_refinable,
         fibonacci_sphere_nn_radius_scale_coef=float(max(fibonacci_sphere_nn_radius_scale_coef, 1e-4)),
+        dataset_pool_size=_training_dataset_pool_size_from_ui(viewer),
+        dataset_residency=dataset_residency,
+        dataset_compression_threads=_dataset_compression_threads_from_ui(viewer),
+        max_pose_subset=_max_pose_subset_from_ui(viewer),
     )
     viewer.s.last_error = ""
 
@@ -3033,7 +3322,7 @@ def advance_colmap_import(viewer: object) -> None:
                 rotation_mode=progress.rotation_mode,
                 custom_rotation_deg=progress.custom_rotation_deg,
             )
-            progress.image_items = sorted(progress.recon.images.items())
+            progress.image_items = _select_import_image_items(progress)
             progress.image_path_index = build_colmap_image_path_index(progress.images_root)
             progress.alpha_mask_path_index = None if progress.alpha_mask_root is None else build_colmap_image_path_index(progress.alpha_mask_root)
             progress.depth_index = build_depth_path_index(progress.depth_root) if progress.init_mode == _COLMAP_IMPORT_DEPTH and progress.depth_root is not None else None
@@ -3054,6 +3343,13 @@ def advance_colmap_import(viewer: object) -> None:
                 return
             if not progress.frames:
                 raise RuntimeError(f"No training frames were found in {progress.images_root}.")
+            progress.dataset_pool_size = _resolve_import_dataset_pool_size(
+                viewer,
+                progress.frames,
+                requested_pool_size=getattr(progress, "dataset_pool_size", 16),
+                dataset_residency=getattr(progress, "dataset_residency", "auto"),
+                compress_dataset_using_bc7=bool(progress.compress_dataset_using_bc7),
+            )
             _start_colmap_texture_loader(progress)
             progress.phase = "load_textures"
             progress.total = len(progress.frames)
@@ -3061,6 +3357,7 @@ def advance_colmap_import(viewer: object) -> None:
             progress.current_name = ""
             return
         if progress.phase == "load_textures":
+            stream_dataset = _streaming_dataset_enabled(getattr(progress, "dataset_pool_size", 16), progress.frames)
             for _ in range(_COLMAP_IMPORT_IMAGES_PER_TICK):
                 if progress.current >= len(progress.frames):
                     break
@@ -3070,11 +3367,12 @@ def advance_colmap_import(viewer: object) -> None:
                     _start_colmap_texture_loader(progress)
                 load_result = next(progress.native_rgba8_iter)
                 image_source, payload = load_result if progress.init_mode == _COLMAP_IMPORT_DEPTH else (load_result, None)
-                progress.native_textures.append(
-                    _create_native_dataset_texture_from_bc_payload(viewer, image_source)
-                    if isinstance(image_source, _CompressedDatasetTexture)
-                    else _create_native_dataset_texture_from_rgba8(viewer, image_source)
-                )
+                if not stream_dataset:
+                    progress.native_textures.append(
+                        _create_native_dataset_texture_from_bc_payload(viewer, image_source)
+                        if isinstance(image_source, _CompressedDatasetTexture)
+                        else _create_native_dataset_texture_from_rgba8(viewer, image_source)
+                    )
                 if payload is not None:
                     progress.depth_init_payloads.append(payload)
                 progress.current += 1
@@ -3119,6 +3417,7 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_max_size=progress.image_downscale_max_size,
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                max_pose_subset=int(getattr(progress, "max_pose_subset", 0)),
                 min_track_length=progress.min_track_length,
                 init_neighbor_count=getattr(progress, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT),
                 init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH),
@@ -3130,23 +3429,31 @@ def advance_colmap_import(viewer: object) -> None:
                 fibonacci_sphere_upper_hemisphere_only=getattr(progress, "fibonacci_sphere_upper_hemisphere_only", False),
                 target_alpha_mode=progress.target_alpha_mode,
                 pointcloud_enabled=getattr(progress, "pointcloud_enabled", None),
+                pointcloud_refinable=getattr(progress, "pointcloud_refinable", True),
                 pointcloud_nn_radius_scale_coef=getattr(progress, "pointcloud_nn_radius_scale_coef", None),
                 diffused_enabled=getattr(progress, "diffused_enabled", None),
+                diffused_refinable=getattr(progress, "diffused_refinable", True),
                 diffused_diffusion_radius=getattr(progress, "diffused_diffusion_radius", None),
+                diffused_visibility_strength=float(getattr(progress, "diffused_visibility_strength", 0.5)),
                 diffused_nn_radius_scale_coef=getattr(progress, "diffused_nn_radius_scale_coef", None),
                 custom_ply_enabled=getattr(progress, "custom_ply_enabled", None),
+                custom_ply_refinable=getattr(progress, "custom_ply_refinable", True),
                 custom_ply_nn_radius_scale_coef=getattr(progress, "custom_ply_nn_radius_scale_coef", None),
                 custom_mesh_enabled=getattr(progress, "custom_mesh_enabled", None),
+                custom_mesh_refinable=getattr(progress, "custom_mesh_refinable", True),
                 custom_mesh_path=getattr(progress, "custom_mesh_path", None),
                 custom_mesh_point_count=getattr(progress, "custom_mesh_point_count", None),
                 custom_mesh_nn_radius_scale_coef=getattr(progress, "custom_mesh_nn_radius_scale_coef", None),
                 fibonacci_sphere_enabled=getattr(progress, "fibonacci_sphere_enabled", None),
+                fibonacci_sphere_refinable=getattr(progress, "fibonacci_sphere_refinable", True),
                 fibonacci_sphere_nn_radius_scale_coef=getattr(progress, "fibonacci_sphere_nn_radius_scale_coef", None),
                 recon=progress.recon,
                 training_frames=progress.frames,
-                frame_targets_native=progress.native_textures,
+                frame_targets_native=None if _streaming_dataset_enabled(getattr(progress, "dataset_pool_size", 16), progress.frames) else progress.native_textures,
                 cached_init_point_positions=cached_init_point_positions,
                 cached_init_point_colors=cached_init_point_colors,
+                dataset_pool_size=getattr(progress, "dataset_pool_size", 16),
+                dataset_residency=getattr(progress, "dataset_residency", "auto"),
             )
             viewer.toolkit.close_colmap_import_window()
             return
@@ -3205,6 +3512,7 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_max_size=progress.image_downscale_max_size,
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                max_pose_subset=int(getattr(progress, "max_pose_subset", 0)),
                 min_track_length=progress.min_track_length,
                 init_neighbor_count=getattr(progress, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT),
                 init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH),
@@ -3217,23 +3525,31 @@ def advance_colmap_import(viewer: object) -> None:
                 target_alpha_mode=progress.target_alpha_mode,
                 target_alpha_threshold=progress.target_alpha_threshold,
                 pointcloud_enabled=getattr(progress, "pointcloud_enabled", None),
+                pointcloud_refinable=getattr(progress, "pointcloud_refinable", True),
                 pointcloud_nn_radius_scale_coef=getattr(progress, "pointcloud_nn_radius_scale_coef", None),
                 diffused_enabled=getattr(progress, "diffused_enabled", None),
+                diffused_refinable=getattr(progress, "diffused_refinable", True),
                 diffused_diffusion_radius=getattr(progress, "diffused_diffusion_radius", None),
+                diffused_visibility_strength=float(getattr(progress, "diffused_visibility_strength", 0.5)),
                 diffused_nn_radius_scale_coef=getattr(progress, "diffused_nn_radius_scale_coef", None),
                 custom_ply_enabled=getattr(progress, "custom_ply_enabled", None),
+                custom_ply_refinable=getattr(progress, "custom_ply_refinable", True),
                 custom_ply_nn_radius_scale_coef=getattr(progress, "custom_ply_nn_radius_scale_coef", None),
                 custom_mesh_enabled=getattr(progress, "custom_mesh_enabled", None),
+                custom_mesh_refinable=getattr(progress, "custom_mesh_refinable", True),
                 custom_mesh_path=getattr(progress, "custom_mesh_path", None),
                 custom_mesh_point_count=getattr(progress, "custom_mesh_point_count", None),
                 custom_mesh_nn_radius_scale_coef=getattr(progress, "custom_mesh_nn_radius_scale_coef", None),
                 fibonacci_sphere_enabled=getattr(progress, "fibonacci_sphere_enabled", None),
+                fibonacci_sphere_refinable=getattr(progress, "fibonacci_sphere_refinable", True),
                 fibonacci_sphere_nn_radius_scale_coef=getattr(progress, "fibonacci_sphere_nn_radius_scale_coef", None),
                 recon=progress.recon,
                 training_frames=progress.frames,
-                frame_targets_native=progress.native_textures,
+                frame_targets_native=None if _streaming_dataset_enabled(getattr(progress, "dataset_pool_size", 16), progress.frames) else progress.native_textures,
                 cached_init_point_positions=cached_init_point_positions,
                 cached_init_point_colors=cached_init_point_colors,
+                dataset_pool_size=getattr(progress, "dataset_pool_size", 16),
+                dataset_residency=getattr(progress, "dataset_residency", "auto"),
             )
             _attach_colmap_import_photometric_trainer(viewer, progress)
             viewer.toolkit.close_colmap_import_window()
@@ -3251,6 +3567,7 @@ def initialize_training_scene(
     viewer: object,
     frame_targets_native: list[spy.Texture] | None = None,
     *,
+    dataset_pool_size: int | None = None,
     preserve_session_state: bool = False,
 ) -> None:
     if viewer.s.colmap_recon is None and viewer.s.colmap_root is None:
@@ -3277,6 +3594,7 @@ def initialize_training_scene(
     renderer = ensure_renderer(viewer, "training_renderer", width, height, allow_debug_overlays=False)
     scene, scale_reg_reference = _build_initial_training_scene(viewer, init, params, init_hparams)
     apply_live_params(viewer)
+    pool_size = _training_dataset_pool_size(viewer) if dataset_pool_size is None else max(int(dataset_pool_size), 0)
     trainer_kwargs = dict(
         device=viewer.device,
         renderer=renderer,
@@ -3286,13 +3604,28 @@ def initialize_training_scene(
         stability_hparams=params.stability,
         training_hparams=params.training,
         seed=init.seed,
+        pool_size=pool_size,
+        training_steps_per_frame=_training_steps_per_frame_value(viewer),
     )
     if scale_reg_reference is not None:
         trainer_kwargs["scale_reg_reference"] = scale_reg_reference
+    import_cfg = getattr(viewer.s, "colmap_import", None)
     if frame_targets_native is not None:
         trainer_kwargs["frame_targets_native"] = frame_targets_native
-    elif getattr(viewer.s.colmap_import, "images_root", None) is not None and all(hasattr(frame, "image_path") for frame in viewer.s.training_frames):
-        trainer_kwargs["frame_targets_native"] = _create_native_dataset_textures(viewer, viewer.s.training_frames)
+    elif getattr(import_cfg, "images_root", None) is not None and all(hasattr(frame, "image_path") for frame in viewer.s.training_frames):
+        active_alpha_mask_root = getattr(import_cfg, "alpha_mask_root", None) if bool(getattr(import_cfg, "use_alpha_masks", False)) else None
+        alpha_mask_path_index = None if active_alpha_mask_root is None else build_colmap_image_path_index(Path(active_alpha_mask_root).resolve())
+        if _streaming_dataset_enabled(pool_size, viewer.s.training_frames):
+            trainer_kwargs["dataset_payload_provider"] = _make_dataset_payload_provider(
+                viewer.s.training_frames,
+                Path(getattr(import_cfg, "images_root")).resolve(),
+                bool(getattr(import_cfg, "compress_dataset_using_bc7", False)),
+                None if active_alpha_mask_root is None else Path(active_alpha_mask_root).resolve(),
+                alpha_mask_path_index,
+            )
+            trainer_kwargs["dataset_texture_format"] = _dataset_texture_format(bool(getattr(import_cfg, "compress_dataset_using_bc7", False)))
+        else:
+            trainer_kwargs["frame_targets_native"] = _create_native_dataset_textures(viewer, viewer.s.training_frames)
     viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
     sync_photometric_target_provider(viewer)
     capped_main_sh = int(getattr(params.training, "max_sh_band", 3))

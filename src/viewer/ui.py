@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache, partial
 import importlib
 import math
+import os
 from pathlib import Path
 import re
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ except Exception:  # pragma: no cover - imguizmo is part of imgui_bundle but gua
     _IM_GUIZMO = None
 
 from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10
-from ..repo_defaults import json_value
+from ..repo_defaults import json_value, viewer_defaults
 from ..app.training_controls import (
     SH_BAND_LABELS as _SH_BAND_LABELS,
     SCHEDULE_STAGE_CONTROL_DEFS,
@@ -36,7 +37,7 @@ from ..app.training_controls import (
 from ..training.photometric_compensation import PhotometricCompensationHyperParams
 from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
 from ..training.ppisp import PPISP_FIELD_SPECS
-from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
+from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, query_total_device_vram_capacity, write_resource_debug_log
 from .state import (
     COLMAP_ROTATION_MODE_AUTO,
     COLMAP_ROTATION_MODE_CUSTOM,
@@ -82,6 +83,7 @@ from .ui_schema import (
 from .ui_pretty import draw_struct_sections, measure_struct_sections
 from .ui_text import _build_about_text, _build_documentation_text, _draw_disabled_wrapped_text, _draw_markdown_text, _status_suffix
 from ..renderer.render_params import RendererParams
+from .config import RUN_UI_VALUE_FIELDS, exported_run_values
 
 TOOLKIT_WIDTH_FRACTION = 0.1875
 _TOOLKIT_MIN_WIDTH = 280.0
@@ -102,6 +104,10 @@ _COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
 _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
 _COLMAP_IMAGE_DOWNSCALE_LABELS = ("Original", "Max Size", "Scale Factor")
+_COLMAP_CAMERA_TABLE_MIN_HEIGHT = 120.0
+_COLMAP_CAMERA_TABLE_ROW_HEIGHT = 28.0
+_COLMAP_CAMERA_TABLE_PADDING = 8.0
+_COLMAP_CAMERA_TABLE_MAX_HEIGHT = 300.0
 _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT = 2e-4
 _DEBUG_COLORBAR_HEIGHT = 28.0
 _DEBUG_COLORBAR_MIN_WIDTH = 320.0
@@ -177,6 +183,8 @@ _RESOURCE_DEBUG_WINDOW_WIDTH = 1120.0
 _RESOURCE_DEBUG_WINDOW_HEIGHT = 620.0
 _PHOTOMETRIC_UI_DEFAULTS = PhotometricCompensationHyperParams()
 _GRAPHICS_API_MENU_OPTIONS = (("vulkan", "Vulkan"), ("dx12", "DX12"))
+_VIEWER_STATE_DEFAULTS = viewer_defaults()["state"]
+_VIEWER_RUN_DEFAULTS = viewer_defaults().get("run", {})
 
 
 def _normalize_graphics_api_name(value: object) -> str:
@@ -452,7 +460,7 @@ def _theme_color(ui: object, light: tuple[float, float, float, float], dark: tup
 def _debug_colorbar_mode(ui: "ViewerUI") -> str | None:
     index = min(max(int(ui._values.get("debug_mode", 0)), 0), len(_DEBUG_MODE_VALUES) - 1)
     mode = _DEBUG_MODE_VALUES[index]
-    return None if mode in ("normal", PPISP_DEBUG_MODE, "ellipse_outlines", "sh_view_dependent", "sh_coefficient", "black_negative") else mode
+    return None if mode in ("normal", PPISP_DEBUG_MODE, "ellipse_outlines", "sh_view_dependent", "sh_coefficient", "black_negative", "unrefinable") else mode
 
 
 def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
@@ -634,13 +642,18 @@ def _export_fields(values: dict[str, object], fields: tuple[tuple[str, object], 
     return {key: cast(values[key]) for key, cast in fields}
 
 
+def _export_state_fields(values: dict[str, object]) -> dict[str, object]:
+    return {
+        "list_capacity_multiplier": int(values.get("list_capacity_multiplier", _VIEWER_STATE_DEFAULTS["list_capacity_multiplier"])),
+        "max_prepass_memory_mb": int(values.get("max_prepass_memory_mb", _VIEWER_STATE_DEFAULTS["max_prepass_memory_mb"])),
+        "background": tuple(float(v) for v in _VIEWER_STATE_DEFAULTS.get("background", (0.0, 0.0, 0.0))),
+    }
+
+
 def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, dict[str, object]]:
     renderer_params = RendererParams.from_ui_values(values, _RENDERER_DEBUG_MODE_VALUES, _threshold_band_range)
     return {
         "renderer": json_value(renderer_params.renderer_kwargs()),
-        "cli": {
-            "common_render": json_value(renderer_params.cli_common_render_defaults_dict())
-        },
         "viewer": {
             "controls": json_value(_export_fields(values, _VIEWER_CONTROL_EXPORT_FIELDS)),
             "import": json_value(_export_fields(values, _VIEWER_IMPORT_EXPORT_FIELDS)),
@@ -650,6 +663,8 @@ def export_repo_defaults_from_ui_values(values: dict[str, object]) -> dict[str, 
                 "viewport_sh_control_key": str(values["_viewport_sh_control_key"]),
                 "viewport_sh_stage_label": str(values["_viewport_sh_stage_label"]),
             }),
+            "state": json_value(_export_state_fields(values)),
+            "run": json_value(exported_run_values(values)),
         },
     }
 
@@ -1888,9 +1903,11 @@ class ToolkitWindow:
         line_height = float(imgui.get_text_line_height_with_spacing())
         frame_height = float(imgui.get_frame_height())
         spacing_y = float(imgui.get_style().item_spacing.y)
-        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
+        height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
         if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
             height += frame_height + spacing_y
+        if bool(ui._values.get("training_camera_live_output", False)) and str(ui._values.get("_training_camera_live_status", "")).strip():
+            height += line_height + spacing_y
         if bool(ui._values.get("show_training_camera_colmap_points", False)):
             height += line_height + spacing_y
         for key, _suffix_only in _TRAINING_CAMERA_DEBUG_TEXT_FIELDS:
@@ -1921,6 +1938,13 @@ class ToolkitWindow:
         changed, full_res = imgui.checkbox("Full Resolution", bool(ui._values.get("training_camera_full_resolution", False)))
         if changed:
             ui._values["training_camera_full_resolution"] = bool(full_res)
+        changed, live_output = imgui.checkbox("Live Trainer View", bool(ui._values.get("training_camera_live_output", False)))
+        if changed:
+            ui._values["training_camera_live_output"] = bool(live_output)
+        if bool(ui._values.get("training_camera_live_output", False)):
+            live_status = str(ui._values.get("_training_camera_live_status", "")).strip()
+            if live_status:
+                imgui.text_disabled(live_status)
         changed, ppisp_tonemap = imgui.checkbox("PPISP Tonemap", bool(ui._values.get("training_camera_ppisp_tonemap", True)))
         if changed:
             ui._values["training_camera_ppisp_tonemap"] = bool(ppisp_tonemap)
@@ -2229,7 +2253,10 @@ class ToolkitWindow:
             draw_list.add_line(imgui.ImVec2(base_x + float(x0), base_y + float(y0)), imgui.ImVec2(base_x + float(x1), base_y + float(y1)), color, thickness)
 
     def _draw_splat_editor_gizmo(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
+        # Always leave the capturing flag defined and false when the gizmo is not drawn, so a
+        # stale "capturing" from a prior hover cannot keep blocking the camera after it closes.
         if _IM_GUIZMO is None or not bool(ui._values.get("show_splat_editor", False)):
+            ui._values["_splat_editor_gizmo_capturing"] = False
             return
         state = ui._values.get("_splat_editor_state")
         gizmo = ui._values.get("_splat_editor_gizmo")
@@ -2346,6 +2373,11 @@ class ToolkitWindow:
         imgui.separator()
 
         imgui.text("Selection")
+        preview_changed, preview_enabled = imgui.checkbox("Preview candidates", bool(getattr(state, "preview_enabled", True)))
+        if preview_changed:
+            state.preview_enabled = bool(preview_enabled)
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip("Tint splats the current box and ranges would select (blue), before committing.")
         changed, box_enabled = imgui.checkbox("Bounding box selection", bool(state.box_enabled))
         if changed:
             state.box_enabled = bool(box_enabled)
@@ -2397,11 +2429,12 @@ class ToolkitWindow:
         imgui.separator()
 
         imgui.text("Resample selection")
-        imgui.text_disabled("< 100% removes splats, > 100% subdivides to add splats.")
-        pct_changed, pct = imgui.slider_float("Amount", float(state.resample_percent), 1.0, 400.0, "%.0f%%")
+        imgui.text_disabled("0% deletes the selection, < 100% removes splats, > 100% subdivides to add splats.")
+        pct_changed, pct = imgui.slider_float("Amount", float(state.resample_percent), 0.0, 400.0, "%.0f%%")
         if pct_changed:
             state.resample_percent = float(pct)
-        if imgui.button("Resample selection##apply"):
+        resample_label = "Delete selection##apply" if float(state.resample_percent) <= 0.0 else "Resample selection##apply"
+        if imgui.button(resample_label):
             self.callbacks.editor_resample()
         imgui.separator()
 
@@ -2696,7 +2729,11 @@ class ToolkitWindow:
         if imgui.button("All Models"): selected = set(camera_ids)
         imgui.same_line()
         if imgui.button("No Models"): selected.clear()
-        table_height = min(max(88.0, 28.0 * float(len(camera_rows)) + 8.0), 180.0)
+        scale = max(float(getattr(self, "_applied_interface_scale", 1.0)), 0.25)
+        table_height = min(
+            max(_COLMAP_CAMERA_TABLE_MIN_HEIGHT, _COLMAP_CAMERA_TABLE_ROW_HEIGHT * float(len(camera_rows)) + _COLMAP_CAMERA_TABLE_PADDING),
+            _COLMAP_CAMERA_TABLE_MAX_HEIGHT,
+        ) * scale
         child_opened = _imgui_opened(imgui.begin_child("##colmap_cameras", imgui.ImVec2(0.0, table_height), True))
         if child_opened:
             flags = (
@@ -2826,12 +2863,13 @@ class ToolkitWindow:
         )
         imgui.spacing()
         flags = imgui.TableFlags_.row_bg.value | imgui.TableFlags_.borders.value | imgui.TableFlags_.resizable.value | imgui.TableFlags_.sizing_stretch_prop.value
-        if imgui.begin_table("##colmap_init_sources", 5, flags):
+        if imgui.begin_table("##colmap_init_sources", 6, flags):
             for label, column_flags, width in (
                 ("Use", imgui.TableColumnFlags_.width_fixed.value, 38.0),
                 ("Source", imgui.TableColumnFlags_.width_fixed.value, 150.0),
                 ("Points", imgui.TableColumnFlags_.width_fixed.value, 96.0),
                 ("Path / Radius", imgui.TableColumnFlags_.width_stretch.value, 0.0),
+                ("Refinable", imgui.TableColumnFlags_.width_fixed.value, 74.0),
                 ("NN Scale", imgui.TableColumnFlags_.width_fixed.value, 112.0),
             ):
                 imgui.table_setup_column(label, column_flags, width)
@@ -2843,6 +2881,16 @@ class ToolkitWindow:
                 if changed:
                     ui._values[key] = bool(enabled)
                 return bool(ui._values.get(key, False))
+
+            def _row_refinable(key: str, enabled: bool) -> None:
+                imgui.table_next_column()
+                imgui.begin_disabled(not enabled)
+                changed, refinable = imgui.checkbox(f"##{key}", bool(ui._values.get(key, True)))
+                if changed:
+                    ui._values[key] = bool(refinable)
+                if imgui.is_item_hovered():
+                    imgui.set_item_tooltip("Allow this source to be pruned or subdivided by training refinement.")
+                imgui.end_disabled()
 
             def _row_nn_scale(key: str, default: float, enabled: bool) -> None:
                 imgui.table_next_column()
@@ -2869,6 +2917,7 @@ class ToolkitWindow:
             imgui.text_disabled("all")
             imgui.table_next_column()
             imgui.text_disabled("Sparse COLMAP points")
+            _row_refinable("colmap_pointcloud_refinable", pointcloud_enabled)
             _row_nn_scale("colmap_pointcloud_nn_radius_scale_coef", 0.5, pointcloud_enabled)
 
             imgui.table_next_row()
@@ -2902,7 +2951,19 @@ class ToolkitWindow:
                 tooltip="Local diffusion multiplier applied before point synthesis.",
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
+            ToolkitWindow._draw_clamped_float(
+                ui,
+                key="colmap_diffused_visibility_strength",
+                label="##colmap_diffused_visibility_strength",
+                default=0.5,
+                speed=0.005,
+                min_value=0.0,
+                max_value=1.0,
+                fmt="%.3f",
+                tooltip="Importance sampling toward visible image area (1/d^2 to camera poses). 0 keeps the original sparse-point density, 1 makes the diffused density uniform per visible area; 0.5 blends half and half.",
+            )
             imgui.end_disabled()
+            _row_refinable("colmap_diffused_refinable", diffused_enabled)
             _row_nn_scale("colmap_diffused_nn_radius_scale_coef", 0.5, diffused_enabled)
 
             imgui.table_next_row()
@@ -2915,6 +2976,7 @@ class ToolkitWindow:
             imgui.begin_disabled(not custom_ply_enabled)
             self._draw_import_path_selector(ui, label="PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
             imgui.end_disabled()
+            _row_refinable("colmap_custom_ply_refinable", custom_ply_enabled)
             _row_nn_scale("colmap_custom_ply_nn_radius_scale_coef", 1.0, custom_ply_enabled)
 
             imgui.table_next_row()
@@ -2938,6 +3000,7 @@ class ToolkitWindow:
             imgui.begin_disabled(not custom_mesh_enabled)
             self._draw_import_path_selector(ui, label="Mesh", key="colmap_custom_mesh_path", button_label="Browse Mesh...", callback=self.callbacks.browse_colmap_mesh)
             imgui.end_disabled()
+            _row_refinable("colmap_custom_mesh_refinable", custom_mesh_enabled)
             _row_nn_scale("colmap_custom_mesh_nn_radius_scale_coef", 0.5, custom_mesh_enabled)
 
             imgui.table_next_row()
@@ -2972,6 +3035,8 @@ class ToolkitWindow:
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
             imgui.end_disabled()
+            _row_refinable("colmap_fibonacci_sphere_refinable", fibonacci_enabled)
+            _row_nn_scale("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0, fibonacci_enabled)
             imgui.table_next_row()
             imgui.table_next_column()
             imgui.table_next_column()
@@ -2989,6 +3054,7 @@ class ToolkitWindow:
             if imgui.is_item_hovered():
                 imgui.set_item_tooltip("Restrict synthesized Fibonacci sky-sphere points to the upper hemisphere above the mean COLMAP camera center.")
             imgui.end_disabled()
+            imgui.table_next_column()
             imgui.table_next_column()
             imgui.table_next_row()
             imgui.table_next_column()
@@ -3009,9 +3075,123 @@ class ToolkitWindow:
                 imgui.set_item_tooltip("RGB color assigned to synthesized Fibonacci sky-sphere points.")
             imgui.end_disabled()
             imgui.table_next_column()
-            _row_nn_scale("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0, fibonacci_enabled)
+            imgui.table_next_column()
 
             imgui.end_table()
+
+    def _colmap_estimate_frame_sizes(self, ui: ViewerUI) -> list[tuple[int, int]]:
+        """Downscaled (training) frame sizes derived from the COLMAP camera rows."""
+        from ..scene._internal.colmap_ops import resolve_training_frame_image_size
+
+        rows = tuple(ui._values.get("_colmap_camera_rows", ()))
+        if not rows:
+            return []
+        selected_camera_ids = {int(camera_id) for camera_id in ui._values.get("colmap_selected_camera_ids", ())}
+        mode = ("original", "max_size", "scale")[min(max(int(ui._values.get("colmap_image_downscale_mode", 1)), 0), 2)]
+        max_size = int(ui._values.get("colmap_image_max_size", 2048))
+        scale = float(ui._values.get("colmap_image_scale", 1.0))
+        sizes: list[tuple[int, int]] = []
+        for row in rows:
+            if selected_camera_ids and int(row.get("camera_id", -1)) not in selected_camera_ids:
+                continue
+            try:
+                width_text, height_text = str(row.get("resolution_text", "")).lower().split("x")
+                width, height = int(width_text), int(height_text)
+            except (ValueError, AttributeError):
+                continue
+            dw, dh = resolve_training_frame_image_size(width, height, downscale_mode=mode, downscale_max_size=max_size, downscale_scale=scale)
+            sizes.extend([(dw, dh)] * max(int(row.get("frame_count", 0)), 0))
+        # The "Best Pose Subset" cap trains on fewer poses; reflect that in the estimate by
+        # evenly subsampling the resolution multiset down to the requested pose count.
+        pose_cap = int(ui._values.get("colmap_max_pose_subset", 0) or 0)
+        if 0 < pose_cap < len(sizes):
+            step = len(sizes) / pose_cap
+            sizes = [sizes[int(index * step)] for index in range(pose_cap)]
+        return sizes
+
+    def _draw_colmap_memory_controls(self, ui: ViewerUI) -> None:
+        from . import vram_estimate
+
+        imgui.separator()
+        imgui.text_disabled("Training memory & dataset residency")
+        ToolkitWindow._draw_clamped_int(
+            ui,
+            key="max_gaussians",
+            label="Max Gaussians (splat budget)",
+            default=2500000,
+            speed=1000.0,
+            min_value=0,
+            max_value=100000000,
+            tooltip="Target splat count. Caps point-cloud initialization (used as a fraction of the available points) and is the refinement growth target; also drives the VRAM estimate below. 0 keeps all available points.",
+        )
+        sh_band = min(max(int(ui._values.get("max_sh_band", 3)), 0), len(_SH_BAND_LABELS) - 1)
+        ui._values["max_sh_band"] = ToolkitWindow._draw_combo("Max SH Band", _SH_BAND_LABELS, sh_band)
+        ToolkitWindow._set_tooltip("Maximum spherical-harmonics band stored per splat (1/4/9/16 coefficients for band 0/1/2/3). Higher bands store more color and cost more VRAM.")
+        residency_options = ("Auto (fit to VRAM)", "Full (all resident)", "Stream")
+        residency_keys = (vram_estimate.RESIDENCY_AUTO, vram_estimate.RESIDENCY_FULL, vram_estimate.RESIDENCY_STREAM)
+        current = str(ui._values.get("colmap_dataset_residency", "auto")).lower()
+        res_idx = residency_keys.index(current) if current in residency_keys else 0
+        ui._values["colmap_dataset_residency"] = residency_keys[ToolkitWindow._draw_combo("Dataset Residency", residency_options, res_idx)]
+        ToolkitWindow._set_tooltip("Auto keeps the whole dataset resident in VRAM when it fits this GPU and otherwise streams a rotating pool. Full forces all frames resident; Stream forces the pool.")
+        self._draw_colmap_vram_estimate(ui, str(ui._values["colmap_dataset_residency"]))
+
+    def _colmap_gpu_vram_capacity_bytes(self, ui: ViewerUI) -> int | None:
+        capacity = ui._values.get("_gpu_vram_capacity_bytes", None)
+        if capacity is not None:
+            try:
+                return max(int(capacity), 0) or None
+            except (TypeError, ValueError):
+                ui._values["_gpu_vram_capacity_bytes"] = None
+        try:
+            capacity, _ = query_total_device_vram_capacity(self.device)
+        except Exception:
+            capacity = None
+        if capacity:
+            ui._values["_gpu_vram_capacity_bytes"] = int(capacity)
+            return int(capacity)
+        return None
+
+    def _draw_colmap_vram_estimate(self, ui: ViewerUI, residency: str) -> None:
+        from . import vram_estimate
+
+        frame_sizes = self._colmap_estimate_frame_sizes(ui)
+        if not frame_sizes:
+            imgui.text_disabled("VRAM estimate appears after a COLMAP root is loaded.")
+            return
+        splat_count = max(int(ui._values.get("max_gaussians", 0)), 0) or 2_000_000
+        band = min(max(int(ui._values.get("max_sh_band", 3)), 0), 3)
+        compress = bool(ui._values.get("compress_dataset_using_bc7", False))
+        pool = max(int(ui._values.get("training_dataset_pool_size", 16)), 0)
+        capacity_bytes = self._colmap_gpu_vram_capacity_bytes(ui)
+        train_w, train_h = vram_estimate.representative_train_resolution(frame_sizes)
+        resolved_pool, report = vram_estimate.resolve_import_residency(
+            residency=residency,
+            splat_count=splat_count,
+            max_sh_band=band,
+            frame_sizes=frame_sizes,
+            compress_bc7=compress,
+            requested_pool_size=pool,
+            capacity_bytes=capacity_bytes,
+            train_width=train_w,
+            train_height=train_h,
+            refinement_growth_per_step=float(ui._values.get("refinement_max_growth_per_step", 0.30)),
+        )
+        gib = lambda value: float(value) / float(vram_estimate.GIB)
+        warn = imgui.ImVec4(1.0, 0.55, 0.3, 1.0)
+        imgui.text_disabled(f"Est. training: {gib(report.training.total):.1f} GiB  ({len(frame_sizes)} frames)")
+        imgui.text_disabled(f"Dataset  full: {gib(report.dataset.full_bytes):.1f} GiB   stream x{report.dataset.pool_size}: {gib(report.dataset.streaming_bytes):.1f} GiB")
+        chosen = vram_estimate.RESIDENCY_STREAM if 0 < int(resolved_pool) < len(frame_sizes) else vram_estimate.RESIDENCY_FULL
+        chosen_total = report.streaming_total_bytes if chosen == vram_estimate.RESIDENCY_STREAM else report.full_total_bytes
+        if capacity_bytes:
+            line = f"Total ({chosen}): {gib(chosen_total):.1f} / {gib(capacity_bytes):.1f} GiB GPU"
+            if chosen_total > int(capacity_bytes):
+                imgui.text_colored(warn, line + "  - may not fit")
+            else:
+                imgui.text_disabled(line)
+            if chosen == vram_estimate.RESIDENCY_FULL and not report.dataset_fits_full:
+                imgui.text_colored(warn, "Full residency exceeds VRAM; Auto would stream this dataset.")
+        else:
+            imgui.text_disabled(f"Total ({chosen}): {gib(chosen_total):.1f} GiB  (GPU capacity unknown)")
 
     def _draw_colmap_import_window(self, ui: ViewerUI) -> None:
         if not self._show_colmap_import:
@@ -3056,6 +3236,8 @@ class ToolkitWindow:
                 ui._values["colmap_use_alpha_masks"] = bool(use_alpha_masks)
             imgui.end_disabled()
             ToolkitWindow._set_tooltip("Enable or disable importing alpha from the selected Alpha Mask Folder. When disabled, the source image alpha channel is used instead.")
+            imgui.spacing()
+            self._draw_colmap_memory_controls(ui)
             imgui.spacing()
             camera_rows = tuple(ui._values.get("_colmap_camera_rows", ()))
             if len(camera_rows) > 0:
@@ -3102,12 +3284,37 @@ class ToolkitWindow:
             for label, key, tooltip in (
                 ("Compress Dataset using BC7", "compress_dataset_using_bc7", "Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads."),
                 ("Initialize Colors From Images", "colmap_training_image_color_init", "After initialization, project each splat into all imported training images and use the nearest valid sampled color."),
-                ("Photometric Compensation", "colmap_photometric_compensation_enabled", "After image loading, build the photometric dataset and optimize photometric compensation for 1000 iterations before opening the scene. Import progress shows both the dataset build phase and the live loss."),
+                ("Photometric Compensation", "colmap_photometric_compensation_enabled", "After image loading, build the photometric dataset and optimize photometric compensation for 1000 iterations before opening the scene. Import progress shows both the dataset build phase and the live loss. Currently keeps a full native target set resident even when dataset streaming is enabled."),
             ):
                 changed, value = imgui.checkbox(label, bool(ui._values.get(key, False)))
                 if changed:
                     ui._values[key] = bool(value)
                 ToolkitWindow._set_tooltip(tooltip)
+                imgui.spacing()
+            max_compression_cores = max(os.cpu_count() or 1, 1)
+            default_compression_cores = max(max_compression_cores - 1, 1)
+            stored_compression_cores = int(ui._values.get("colmap_dataset_compression_threads", 0) or 0)
+            compression_cores = stored_compression_cores if stored_compression_cores >= 1 else default_compression_cores
+            imgui.begin_disabled(not bool(ui._values.get("compress_dataset_using_bc7", False)))
+            cores_changed, cores_value = imgui.slider_int("Compression Cores", min(compression_cores, max_compression_cores), 1, max_compression_cores)
+            if cores_changed:
+                ui._values["colmap_dataset_compression_threads"] = int(cores_value)
+            ToolkitWindow._set_tooltip(f"Worker threads used to load and BC7-compress the dataset during import (1-{max_compression_cores}). Lower it to leave CPU cores free for other work; defaults to {default_compression_cores}.")
+            imgui.end_disabled()
+            imgui.spacing()
+            selected_camera_ids = {int(camera_id) for camera_id in ui._values.get("colmap_selected_camera_ids", ())}
+            pose_count = sum(
+                int(row.get("frame_count", 0))
+                for row in ui._values.get("_colmap_camera_rows", ())
+                if not selected_camera_ids or int(row.get("camera_id", -1)) in selected_camera_ids
+            )
+            if pose_count > 16:
+                stored_pose_subset = int(ui._values.get("colmap_max_pose_subset", 0) or 0)
+                pose_subset = stored_pose_subset if 16 <= stored_pose_subset < pose_count else pose_count
+                subset_changed, subset_value = imgui.slider_int("Best Pose Subset", pose_subset, 16, pose_count)
+                if subset_changed:
+                    ui._values["colmap_max_pose_subset"] = 0 if int(subset_value) >= pose_count else int(subset_value)
+                ToolkitWindow._set_tooltip(f"Train on only the N camera poses that cover the scene most widely (16-{pose_count}), instead of all {pose_count}. Fewer poses -> less VRAM; the subset is chosen from tracked-point covisibility (or pose spread when tracks are absent). Full = keep every pose.")
                 imgui.spacing()
             alpha_mode = min(max(int(ui._values.get("target_alpha_mode", 0)), 0), len(TARGET_ALPHA_MODE_LABELS) - 1)
             if imgui.begin_combo("Target Alpha", TARGET_ALPHA_MODE_LABELS[alpha_mode]):
@@ -4379,6 +4586,16 @@ def build_ui(renderer) -> ViewerUI:
     for key in ("colmap_root_path", "colmap_database_path", "colmap_images_root", "colmap_alpha_mask_root", "colmap_depth_root", "colmap_custom_ply_path", "colmap_custom_mesh_path"):
         values[key] = ""
     values["colmap_selected_camera_ids"] = ()
+    for key in RUN_UI_VALUE_FIELDS:
+        if key in values:
+            continue
+        default = _VIEWER_RUN_DEFAULTS.get(key, "")
+        if key == "colmap_selected_camera_ids":
+            values[key] = tuple(int(camera_id) for camera_id in default) if isinstance(default, (list, tuple)) else ()
+        elif key in {"seed", "train_iters"}:
+            values[key] = int(default) if default not in (None, "") else 0
+        else:
+            values[key] = "" if default is None else default
     for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:
         default_value = False if cast is bool else 0 if cast is int else () if cast is tuple else 20.0
         values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, default_value))

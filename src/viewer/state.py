@@ -57,11 +57,14 @@ class ColmapImportSettings:
     compress_dataset_using_bc7: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
     training_image_color_init: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_training_image_color_init", False))
     photometric_compensation_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
+    dataset_pool_size: int = 16
+    dataset_residency: str = str(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_residency", "auto"))
     custom_ply_path: Path | None = None
     image_downscale_mode: str = "original"
     image_downscale_max_size: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_image_max_size"])
     image_downscale_scale: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_image_scale"])
     nn_radius_scale_coef: float = 0.5
+    max_pose_subset: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_max_pose_subset", 0))
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH
@@ -75,17 +78,23 @@ class ColmapImportSettings:
     target_alpha_threshold: float = DEFAULT_TARGET_ALPHA_THRESHOLD
     use_target_alpha_mask: bool = False
     pointcloud_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_enabled", False))
+    pointcloud_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_refinable", True))
     pointcloud_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
     diffused_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_enabled", False))
+    diffused_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_refinable", True))
     diffused_diffusion_radius: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_diffusion_radius", 1.0))
+    diffused_visibility_strength: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_visibility_strength", 0.5))
     diffused_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
     custom_ply_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_enabled", False))
+    custom_ply_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_refinable", True))
     custom_ply_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_ply_nn_radius_scale_coef", 1.0))
     custom_mesh_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_enabled", False))
     custom_mesh_path: Path | None = None
     custom_mesh_point_count: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_point_count", _VIEWER_IMPORT_DEFAULTS.get("colmap_diffused_point_count", 500000)))
+    custom_mesh_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_refinable", True))
     custom_mesh_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_custom_mesh_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
     fibonacci_sphere_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_enabled", int(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_point_count", 0)) > 0))
+    fibonacci_sphere_refinable: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_refinable", True))
     fibonacci_sphere_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0))
 
     def __post_init__(self) -> None:
@@ -114,6 +123,9 @@ class ColmapImportProgress:
     training_image_color_init: bool = False
     photometric_compensation_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
     selected_camera_ids: tuple[int, ...] = ()
+    dataset_residency: str = str(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_residency", "auto"))
+    dataset_compression_threads: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_dataset_compression_threads", 0))
+    max_pose_subset: int = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_max_pose_subset", 0))
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
     init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT
     init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH
@@ -129,17 +141,23 @@ class ColmapImportProgress:
     depth_value_mode: str = "z_depth"
     depth_root: Path | None = None
     pointcloud_enabled: bool = False
+    pointcloud_refinable: bool = True
     pointcloud_nn_radius_scale_coef: float = 0.5
     diffused_enabled: bool = False
+    diffused_refinable: bool = True
     diffused_diffusion_radius: float = 1.0
+    diffused_visibility_strength: float = 0.5
     diffused_nn_radius_scale_coef: float = 0.5
     custom_ply_enabled: bool = False
+    custom_ply_refinable: bool = True
     custom_ply_nn_radius_scale_coef: float = 1.0
     custom_mesh_enabled: bool = False
     custom_mesh_path: Path | None = None
     custom_mesh_point_count: int = 500000
+    custom_mesh_refinable: bool = True
     custom_mesh_nn_radius_scale_coef: float = 0.5
     fibonacci_sphere_enabled: bool = False
+    fibonacci_sphere_refinable: bool = True
     fibonacci_sphere_nn_radius_scale_coef: float = 1.0
     phase: str = "prepare"
     current: int = 0
@@ -162,6 +180,7 @@ class ColmapImportProgress:
     native_textures: list[spy.Texture] = field(default_factory=list)
     native_rgba8_loader: object | None = None
     native_rgba8_iter: object | None = None
+    dataset_pool_size: int = 16
     photometric_trainer: PhotometricCompensationTrainer | None = None
 
     @property
@@ -186,6 +205,7 @@ class DatasetMetricsTask:
     requested_frame_count: int
     splat_count: int
     dataset_root: Path | None = None
+    report_output_path: Path | None = None
     previous_force_prepass_count_readback: bool = False
     started_at: float = field(default_factory=time.perf_counter)
     next_frame_index: int = 0
@@ -285,6 +305,7 @@ class ViewerState:
     up: spy.float3 = field(default_factory=_default_up); fov_y: float = 60.0; near: float = 0.1; far: float = 120.0
     move_speed: float = 2.0; look_speed: float = 0.003; background: spy.float3 = field(default_factory=_default_background)
     keys: dict[spy.KeyCode, bool] = field(default_factory=dict); mouse_left: bool = False; mouse_right: bool = False; mouse_delta: spy.float2 = field(default_factory=_default_mouse_delta)
+    drag_owner: str = ""
     scroll_delta: float = 0.0; move_vel: spy.float3 = field(default_factory=_default_move_vel); rot_vel: spy.float2 = field(default_factory=_default_rot_vel)
     mx: float | None = None; my: float | None = None; last_time: float = field(default_factory=time.perf_counter); fps_smooth: float = 60.0
     last_error: str = ""; last_resize_exception: str = ""; last_render_exception: str = ""

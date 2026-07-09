@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -17,9 +17,11 @@ from ..renderer import Camera, GaussianRenderer
 from ..scan.prefix_sum import GPUPrefixSum
 from ..sort.radix_sort import GPURadixSort
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
-from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8
+from ..scene._internal.colmap_types import COLMAP_PINHOLE_MODEL_ID
+from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8, point_nn_scales
 from .alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
+from .dataset_texture_pool import DatasetTexturePool, PreloadedDatasetTextures
 from .defaults import (
     DEFAULT_DEBUG_CONTRIBUTION_RANGE,
     DEFAULT_MAX_OPACITY_STAGE0,
@@ -122,6 +124,56 @@ def _refinement_hash_combine(seed: int, value: int) -> np.uint32:
 
 def _refinement_camera_hash(camera_id: int) -> np.uint32:
     return _refinement_hash_combine(_REFINEMENT_HASH_INIT, int(camera_id))
+
+
+@dataclass(slots=True)
+class _TrainingSamplePlan:
+    """How one training step samples its frame: stratified jitter or a native crop."""
+
+    crop: bool
+    crop_x: int
+    crop_y: int
+
+
+# Must match REFINEMENT_MAX_CLONES_PER_SPLAT in gaussian_training_stage.slang: a single
+# refinement pass caps how many children one parent can spawn, so an editor densify has
+# to respect the same ceiling or the split kernel silently drops the overflow.
+_REFINEMENT_MAX_CLONES_PER_SPLAT = 8
+
+
+def _build_editor_clone_counts(
+    parent_idx: np.ndarray,
+    add_count: int,
+    scene_count: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Spread ``add_count`` clones uniformly over the selected parents.
+
+    Mirrors how refinement hands out clone budget (a random multinomial draw), but with a
+    uniform distribution over the user's selection and capped per parent so the split
+    kernel emits every requested child. Returns a full-scene ``uint32`` clone-count array.
+    """
+    counts = np.zeros((scene_count,), dtype=np.uint32)
+    parents = np.asarray(parent_idx, dtype=np.intp).reshape(-1)
+    n_parents = int(parents.shape[0])
+    remaining = min(int(add_count), n_parents * _REFINEMENT_MAX_CLONES_PER_SPLAT)
+    if n_parents == 0 or remaining <= 0:
+        return counts
+    per_parent = np.zeros((n_parents,), dtype=np.int64)
+    # `per_parent` stays aligned to `parents`; clones that overflow a parent's cap are
+    # redrawn among the parents that still have room, so a few passes converge on the
+    # exact target unless every selected parent saturates.
+    for _ in range(16):
+        available = np.where(per_parent < _REFINEMENT_MAX_CLONES_PER_SPLAT)[0]
+        if available.shape[0] == 0 or remaining <= 0:
+            break
+        draws = available[rng.integers(0, available.shape[0], size=remaining)]
+        added = np.bincount(draws, minlength=n_parents)
+        take = np.minimum(added, _REFINEMENT_MAX_CLONES_PER_SPLAT - per_parent)
+        per_parent += take
+        remaining = int((added - take).sum())
+    counts[parents] = per_parent.astype(np.uint32)
+    return counts
 
 
 def _u32_bits_to_f32(value: int) -> np.float32:
@@ -282,7 +334,9 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]; raster_grad_distance_power: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_power"]; raster_grad_distance_bias: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_bias"]
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; target_alpha_mode: int | None = None; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; target_alpha_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0; max_sh_band: int = 3
-    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; max_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["max_opacity"]; max_opacity_stage0: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage0", DEFAULT_MAX_OPACITY_STAGE0)); max_opacity_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage1", DEFAULT_MAX_OPACITY_STAGE1)); max_opacity_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage2", DEFAULT_MAX_OPACITY_STAGE2)); max_opacity_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage3", DEFAULT_MAX_OPACITY_STAGE3)); max_opacity_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage4", DEFAULT_MAX_OPACITY_STAGE4)); opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; opacity_reg_weight_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage1", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage2", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]))); position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
+    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; init_position_reg_weight: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("init_position_reg_weight", 0.001)); sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; max_opacity: float = TRAINING_BUILD_ARG_DEFAULTS["max_opacity"]; max_opacity_stage0: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage0", DEFAULT_MAX_OPACITY_STAGE0)); max_opacity_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage1", DEFAULT_MAX_OPACITY_STAGE1)); max_opacity_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage2", DEFAULT_MAX_OPACITY_STAGE2)); max_opacity_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage3", DEFAULT_MAX_OPACITY_STAGE3)); max_opacity_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("max_opacity_stage4", DEFAULT_MAX_OPACITY_STAGE4)); opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; opacity_reg_weight_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage1", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage2", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]))); position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
+    opacity_binarize_reg_weight: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_binarize_reg_weight", 0.0))
+    train_subsample_crop_probability: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("train_subsample_crop_probability", 0.0))
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]; refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"]
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]; lr_pos_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage4_mul"]
     lr_scale_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"]; lr_scale_stage1_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage1_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage2_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage2_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage3_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage3_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage4_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage4_mul", TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage3_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])))
@@ -513,7 +567,16 @@ class GaussianTrainer:
         return resolve_effective_refinement_interval(self.training, len(self.frames))
 
     def refinement_contribution_ema_decay(self) -> float:
-        return math.pow(self.training.refinement_ema_pose_count_decay, 1.0 / max(len(self.frames), 1))
+        # Crop steps only observe splats inside the crop window (~1/factor^2 of the
+        # image), so under the hybrid sampler a splat is seen at rate
+        # (1 - p_crop) + p_crop / factor^2. Stretch the EMA horizon by the reciprocal so
+        # contribution statistics average over the same number of *observations* as
+        # full-frame sampling (~1.5-1.6x at p=0.5, factor=2).
+        crop_probability = float(np.clip(getattr(self.training, "train_subsample_crop_probability", 0.0), 0.0, 1.0))
+        factor = self.effective_train_subsample_factor(0, self.state.step) if len(self.frames) > 0 else 1
+        observation_rate = 1.0 if factor <= 1 or crop_probability <= 0.0 else (1.0 - crop_probability) + crop_probability / float(factor * factor)
+        effective_frames = float(max(len(self.frames), 1)) / max(observation_rate, 1e-6)
+        return math.pow(self.training.refinement_ema_pose_count_decay, 1.0 / effective_frames)
 
     def refinement_due(self, step: int | None = None) -> bool:
         resolved_step = self.state.step if step is None else int(step)
@@ -549,6 +612,7 @@ class GaussianTrainer:
             self._refresh_train_target(local_encoder, frame_index, step)
             self.device.submit_command_buffer(local_encoder.finish())
             self.device.wait()
+            self.mark_dataset_submitted([frame_index], None)
         else:
             self._refresh_train_target(encoder, frame_index, step)
         return self._require_train_target_texture()
@@ -585,11 +649,37 @@ class GaussianTrainer:
         width, height = self.frame_size(frame_index)
         return self.make_frame_camera(frame_index, width, height)
 
-    def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None) -> dict[str, object]:
+    def training_sample_plan(self, frame_index: int, step: int | None = None) -> _TrainingSamplePlan:
+        """Resolve how this step samples the frame: stratified jitter or a native crop.
+
+        Crop steps render a contiguous native-resolution window through a crop camera
+        (exact native-scale SSIM); stratified steps keep the decorrelated per-block
+        jitter. The decision and the crop origin are deterministic in (seed, step,
+        frame) so every consumer of the plan sees the same sampling.
+        """
+        resolved_step = self.state.step if step is None else int(step)
+        frame = self._frame(frame_index)
+        subsample_factor = self.effective_train_subsample_factor(frame_index, resolved_step)
+        crop_probability = float(np.clip(getattr(self.training, "train_subsample_crop_probability", 0.0), 0.0, 1.0))
+        if subsample_factor <= 1 or crop_probability <= 0.0:
+            return _TrainingSamplePlan(crop=False, crop_x=0, crop_y=0)
+        native_width, native_height = max(int(frame.width), 1), max(int(frame.height), 1)
+        crop_width, crop_height = self.training_resolution(frame_index, resolved_step)
+        seed = _refinement_hash_combine(_refinement_hash_combine(self._seed ^ 0x3C6EF372, resolved_step + 1), int(frame_index) + 1)
+        if (int(seed) & 0xFFFF) / 65536.0 >= crop_probability:
+            return _TrainingSamplePlan(crop=False, crop_x=0, crop_y=0)
+        max_x = max(native_width - int(crop_width), 0)
+        max_y = max(native_height - int(crop_height), 0)
+        crop_x = int(_refinement_hash_combine(seed, 2)) % (max_x + 1)
+        crop_y = int(_refinement_hash_combine(seed, 3)) % (max_y + 1)
+        return _TrainingSamplePlan(crop=True, crop_x=crop_x, crop_y=crop_y)
+
+    def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None, plan: _TrainingSamplePlan | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
         resolved_sample_step = resolved_step if sample_seed_step is None else int(sample_seed_step)
         frame = self._frame(frame_index)
         subsample_factor = self.effective_train_subsample_factor(frame_index, resolved_step)
+        resolved_plan = _TrainingSamplePlan(crop=False, crop_x=0, crop_y=0) if plan is None else plan
         return {
             "g_TrainingSubsample": {
                 "enabled": np.uint32(1 if subsample_factor > 1 else 0),
@@ -598,11 +688,33 @@ class GaussianTrainer:
                 "nativeHeight": np.uint32(max(int(frame.height), 1)),
                 "frameIndex": np.uint32(max(int(frame_index), 0)),
                 "stepIndex": np.uint32(max(resolved_sample_step, 0)),
+                "mode": np.uint32(1 if resolved_plan.crop else 0),
+                "cropX": np.uint32(max(int(resolved_plan.crop_x), 0)),
+                "cropY": np.uint32(max(int(resolved_plan.crop_y), 0)),
             }
         }
 
     def _training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
-        return self.training_sample_vars(frame_index, step)
+        # Plan-aware: every internal consumer (forward, backward, loss, SSIM target
+        # downscale) resolves the same deterministic (seed, step, frame) plan, so crop
+        # steps stay consistent across the whole dispatch chain without threading state.
+        resolved_step = self.state.step if step is None else int(step)
+        return self.training_sample_vars(frame_index, resolved_step, plan=self.training_sample_plan(frame_index, resolved_step))
+
+    def _training_frame_camera(self, frame_index: int, step: int | None = None, plan: _TrainingSamplePlan | None = None) -> Camera:
+        """Camera matching the step's sample plan.
+
+        Crop steps render through a crop camera (native focal, shifted principal point)
+        so the prepass bins splats for exactly the window the raster samples; stratified
+        steps keep the resolution-scaled frame camera.
+        """
+        resolved_plan = self.training_sample_plan(frame_index, step) if plan is None else plan
+        if resolved_plan.crop:
+            frame = self._frame(frame_index)
+            camera = frame.make_camera()
+            camera.min_camera_distance = float(self.training.camera_min_dist)
+            return camera.cropped(resolved_plan.crop_x, resolved_plan.crop_y, max(int(frame.width), 1), max(int(frame.height), 1))
+        return self.make_frame_camera(frame_index, int(self.renderer.width), int(self.renderer.height))
 
     def _native_training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
@@ -615,6 +727,9 @@ class GaussianTrainer:
                 "nativeHeight": np.uint32(max(int(frame.height), 1)),
                 "frameIndex": np.uint32(max(int(frame_index), 0)),
                 "stepIndex": np.uint32(max(resolved_step, 0)),
+                "mode": np.uint32(0),
+                "cropX": np.uint32(0),
+                "cropY": np.uint32(0),
             }
         }
 
@@ -806,21 +921,25 @@ class GaussianTrainer:
         survivor_count: int = 0,
         refinement_sample_count: int = 0,
         dst_adam_moments: spy.Buffer | None = None,
+        overrides: dict[str, object] | None = None,
     ) -> dict[str, object]:
         self._ensure_gradient_stats_buffer()
         refinement_threshold = resolve_refinement_min_contribution(self.training, max(self.state.step - 1, 0), len(self.frames))
         prune_ratio = self.refinement_prune_ratio(step=self.state.step)
-        return {
+        vars: dict[str, object] = {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
             "g_SrcSplatAge": self._refinement_buffers["splat_age"],
+            "g_SrcSplatInit": self._refinement_buffers["splat_init"],
             "g_SrcAdamMoments": self.adam_optimizer.buffers["adam_moments"],
             "g_DstSplatParams": self._refinement_buffers["dst_splat_params"],
             "g_DstSplatAge": self._refinement_buffers["dst_splat_age"],
+            "g_DstSplatInit": self._refinement_buffers["dst_splat_init"],
             "g_DstAdamMoments": self.adam_optimizer.buffers["adam_moments"] if dst_adam_moments is None else dst_adam_moments,
             "g_DstSplatContributionHistory": self._refinement_buffers["dst_splat_contribution_history"],
             "g_DstSplatViewedFractionHistory": self._refinement_buffers["dst_splat_viewed_fraction_history"],
             "g_AppendParams": self._refinement_buffers["append_params"],
             "g_AppendSplatAge": self._refinement_buffers["append_splat_age"],
+            "g_AppendSplatInit": self._refinement_buffers["append_splat_init"],
             "g_CloneCounts": self._refinement_buffers["clone_counts"],
             "g_SplatContributionInfo": self._refinement_buffers["splat_contribution"],
             "g_SplatVisibleAreaPx": self.renderer.work_buffers["splat_visible_area_px"],
@@ -866,6 +985,9 @@ class GaussianTrainer:
             "g_RefinementPruneLowestContributionRatio": float(prune_ratio),
             "g_RefinementRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
+        if overrides:
+            vars.update(overrides)
+        return vars
 
     def update_hyperparams(self, adam_hparams: AdamHyperParams, stability_hparams: StabilityHyperParams, training_hparams: TrainingHyperParams) -> None:
         self.adam = adam_hparams
@@ -956,6 +1078,10 @@ class GaussianTrainer:
         init_point_count: int = 0,
         scale_reg_reference: float | None = None,
         frame_targets_native: list[spy.Texture] | None = None,
+        dataset_payload_provider: Callable[[int], object] | None = None,
+        dataset_texture_format: spy.Format = spy.Format.rgba8_unorm_srgb,
+        pool_size: int = 16,
+        training_steps_per_frame: int = 8,
         target_tonemap_provider: PPISPTonemapProvider | None = None,
     ) -> None:
         if not frames:
@@ -1007,6 +1133,7 @@ class GaussianTrainer:
         self._refinement_output_capacity = 0
         self._refinement_packed_param_bytes = 0
         self._refinement_splat_age_capacity = 0
+        self._refinement_splat_init_capacity = 0
         self._refinement_camera_capacity = 0
         self._refinement_camera_signature: tuple[int, int, float, float, int] | None = None
         self._scale_reg_reference = float(max(scale_reg_reference, 1e-8)) if scale_reg_reference is not None else self._estimate_scale_reg_reference(scene)
@@ -1014,7 +1141,9 @@ class GaussianTrainer:
         self._init_point_positions_cpu: np.ndarray | None = None
         self._init_point_colors_cpu: np.ndarray | None = None
         self.target_tonemap_provider = target_tonemap_provider
-        self._frame_targets_native: list[spy.Texture] = []
+        self._dataset_targets: DatasetTexturePool | PreloadedDatasetTextures | None = None
+        self._dataset_pool_size = max(int(pool_size), 0)
+        self._training_steps_per_frame = max(int(training_steps_per_frame), 1)
         self._compensated_native_target: spy.Texture | None = None
         self._compensated_native_target_frame_index = -1
         self._compensated_native_target_version = -1
@@ -1024,6 +1153,7 @@ class GaussianTrainer:
         self._psnr_target_key: tuple[int, int, int, int] | None = None
         self._ssim_blur: SeparableGaussianBlur | None = None
         self._ssim_resolution: tuple[int, int] | None = None
+        self._max_native_frame_size_cache: tuple[int, int] | None = None
         self._observed_contribution_pixel_count = 0
         self._resources_released = False
         self._frame_rng = np.random.default_rng(self._seed)
@@ -1036,13 +1166,14 @@ class GaussianTrainer:
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_refinement_buffers(self._scene_count)
         self._reset_splat_ages()
+        self._reset_splat_init(scene)
         self._zero_optimizer_moments()
-        if frame_targets_native is None:
-            self._create_dataset_textures()
-        else:
+        if frame_targets_native is not None:
             if len(frame_targets_native) != len(self.frames):
                 raise ValueError("frame_targets_native must match the number of training frames.")
-            self._frame_targets_native = list(frame_targets_native)
+            self._set_preloaded_dataset_textures(list(frame_targets_native))
+        else:
+            self._create_dataset_textures(dataset_payload_provider, dataset_texture_format, self._dataset_pool_size)
         self._bind_or_upload_init_pointcloud(init_point_positions, init_point_colors, init_point_positions_buffer, init_point_colors_buffer, init_point_count)
         self._clear_clone_counts()
         self._reset_frame_order()
@@ -1050,7 +1181,9 @@ class GaussianTrainer:
     def release_resources(self, *, preserve_frame_targets: bool = False) -> None:
         if self._resources_released:
             if not preserve_frame_targets:
-                self._frame_targets_native = []
+                if self._dataset_targets is not None:
+                    self._dataset_targets.release(preserve_frame_targets=False)
+                    self._dataset_targets = None
             self._compensated_native_target = None
             self._compensated_native_target_frame_index = -1
             self._compensated_native_target_version = -1
@@ -1059,9 +1192,10 @@ class GaussianTrainer:
             return
 
         seen: set[int] = set()
-        if not preserve_frame_targets:
-            _defer_owned_resources(self._frame_targets_native, seen)
-        self._frame_targets_native = []
+        if self._dataset_targets is not None:
+            self._dataset_targets.release(preserve_frame_targets=preserve_frame_targets)
+            if not preserve_frame_targets:
+                self._dataset_targets = None
         _defer_owned_resources(self._compensated_native_target, seen)
         self._compensated_native_target = None
         self._compensated_native_target_frame_index = -1
@@ -1158,10 +1292,10 @@ class GaussianTrainer:
         self._renderer_workspace_packed_param_count = 0
         self._renderer_workspace_raster_param_count = 0
 
-    def _ensure_renderer_workspace(self, splat_count: int | None = None) -> None:
+    def _ensure_renderer_workspace(self, splat_count: int | None = None, min_width: int = 0, min_height: int = 0) -> None:
         required_splats = max(int(self._scene_count if splat_count is None else splat_count), 1)
-        required_width = max(int(self.renderer.width), 1)
-        required_height = max(int(self.renderer.height), 1)
+        required_width = max(int(self.renderer.width), 1, int(min_width))
+        required_height = max(int(self.renderer.height), 1, int(min_height))
         packed_param_count = int(self.renderer.packed_trainable_param_count)
         raster_param_count = int(getattr(self.renderer, "_RASTER_CACHE_PARAM_COUNT", packed_param_count))
         target_splat_capacity = self._renderer_workspace_splat_capacity
@@ -1229,11 +1363,13 @@ class GaussianTrainer:
     def renderer_training_workspace(self) -> Mapping[str, object]:
         return self._renderer_training_workspace(self._scene_count)
 
-    def _ensure_ssim_buffers(self) -> None:
+    def _ensure_ssim_buffers(self, min_width: int = 0, min_height: int = 0) -> None:
         active_width = max(int(self.renderer.width), 1)
         active_height = max(int(self.renderer.height), 1)
-        capacity_width = max(active_width, int(self._ssim_resolution[0]) if self._ssim_resolution is not None else 0)
-        capacity_height = max(active_height, int(self._ssim_resolution[1]) if self._ssim_resolution is not None else 0)
+        prev_width = int(self._ssim_resolution[0]) if self._ssim_resolution is not None else 0
+        prev_height = int(self._ssim_resolution[1]) if self._ssim_resolution is not None else 0
+        capacity_width = max(active_width, int(min_width), prev_width)
+        capacity_height = max(active_height, int(min_height), prev_height)
         resolution = (capacity_width, capacity_height)
         if self._ssim_resolution == resolution and self._ssim_blur is not None and all(name in self._buffers for name in ("ssim_moments", "ssim_blurred_moments", "ssim_blurred_feature_grads", "ssim_feature_grads")):
             self._ssim_blur.set_active_size(active_width, active_height)
@@ -1268,6 +1404,7 @@ class GaussianTrainer:
 
     def _ensure_post_refinement_source_buffer_capacity(self, splat_count: int) -> None:
         required = max(int(splat_count), 1)
+        self._ensure_splat_init_capacity(required)
         if required <= self._refinement_splat_capacity:
             return
         self._refinement_splat_capacity = _grow_trainer_buffer_capacity(required, self._refinement_splat_capacity)
@@ -1304,9 +1441,10 @@ class GaussianTrainer:
         grow_output = required_output > self._refinement_output_capacity or packed_param_bytes != self._refinement_packed_param_bytes
         grow_cameras = required_camera_count > self._refinement_camera_capacity
         age_buffers_ready = all(name in self._refinement_buffers for name in ("splat_age", "dst_splat_age", "append_splat_age")) and required_splats <= self._refinement_splat_age_capacity
+        init_buffers_ready = all(name in self._refinement_buffers for name in ("splat_init", "dst_splat_init", "append_splat_init")) and required_splats <= self._refinement_splat_init_capacity
         prune_buffers_ready = all(name in self._refinement_buffers for name in ("refinement_prune_mask", "refinement_prune_sort_keys", "refinement_prune_sort_values", "refinement_prune_prefix"))
-        if self._refinement_buffers and age_buffers_ready and prune_buffers_ready and not grow_splats and not grow_append and not grow_output and not grow_cameras:
-                return
+        if self._refinement_buffers and age_buffers_ready and init_buffers_ready and prune_buffers_ready and not grow_splats and not grow_append and not grow_output and not grow_cameras:
+            return
         reset_gradient_stats = False
         if "total_clone_counter" not in self._refinement_buffers:
             self._refinement_buffers["total_clone_counter"] = alloc_buffer(self.device, name="trainer.refinement.total_clone_counter", size=self._U32_BYTES, usage=RW_BUFFER_USAGE)
@@ -1354,22 +1492,29 @@ class GaussianTrainer:
             self._refinement_append_capacity = _grow_trainer_buffer_capacity(required_append, self._refinement_append_capacity)
             self._set_refinement_buffer("append_params", alloc_buffer(self.device, name="trainer.refinement.append_params", size=self._refinement_append_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("append_splat_age", alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=self._refinement_append_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("append_splat_init", alloc_buffer(self.device, name="trainer.refinement.append_splat_init", size=self._refinement_append_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
         elif "append_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["append_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.append_splat_age", size=max(self._refinement_append_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        if "append_splat_init" not in self._refinement_buffers:
+            self._refinement_buffers["append_splat_init"] = alloc_buffer(self.device, name="trainer.refinement.append_splat_init", size=max(self._refinement_append_capacity, 1) * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
         if grow_output or "dst_splat_params" not in self._refinement_buffers:
             self._refinement_output_capacity = _grow_trainer_buffer_capacity(required_output, self._refinement_output_capacity)
             self._set_refinement_buffer("dst_splat_params", alloc_buffer(self.device, name="trainer.refinement.dst_splat_params", size=self._refinement_output_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_age", alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("dst_splat_init", alloc_buffer(self.device, name="trainer.refinement.dst_splat_init", size=self._refinement_output_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_contribution_history", alloc_buffer(self.device, name="trainer.refinement.dst_splat_contribution_history", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_viewed_fraction_history", alloc_buffer(self.device, name="trainer.refinement.dst_splat_viewed_fraction_history", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "dst_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        if "dst_splat_init" not in self._refinement_buffers:
+            self._refinement_buffers["dst_splat_init"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_init", size=max(self._refinement_output_capacity, 1) * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
         if "dst_splat_contribution_history" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_contribution_history"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_contribution_history", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "dst_splat_viewed_fraction_history" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_viewed_fraction_history"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_viewed_fraction_history", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         self._refinement_packed_param_bytes = packed_param_bytes
         self._ensure_splat_age_capacity(required_splats)
+        self._ensure_splat_init_capacity(required_splats)
         if grow_cameras or "camera_rows" not in self._refinement_buffers:
             self._refinement_camera_capacity = _grow_trainer_buffer_capacity(required_camera_count, self._refinement_camera_capacity)
             self._set_refinement_buffer("camera_rows", alloc_buffer(
@@ -1413,6 +1558,50 @@ class GaussianTrainer:
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
+    def _build_splat_init_array(self, scene: GaussianScene | None) -> np.ndarray:
+        if scene is None:
+            count = max(int(self._scene_count), 0)
+            positions = np.zeros((count, 3), dtype=np.float32)
+            refinable = np.ones((count,), dtype=bool)
+        else:
+            count = int(scene.count)
+            positions = np.ascontiguousarray(scene.positions[:, :3], dtype=np.float32)
+            refinable = np.ones((count,), dtype=bool) if scene.refinable is None else np.asarray(scene.refinable, dtype=bool).reshape(-1)
+        radii = point_nn_scales(positions)
+        init = np.zeros((count, 4), dtype=np.float32)
+        if count <= 0:
+            return init
+        init[:, :3] = positions
+        init[:, 3] = np.where(refinable, radii, -radii).astype(np.float32, copy=False)
+        return init
+
+    def _ensure_splat_init_capacity(self, splat_count: int, *, reset: bool = False) -> None:
+        required = max(int(splat_count), 1)
+        if not reset and "splat_init" in self._refinement_buffers and required <= self._refinement_splat_init_capacity:
+            return
+        capacity = _grow_trainer_buffer_capacity(required, self._refinement_splat_init_capacity)
+        splat_init = np.zeros((capacity, 4), dtype=np.float32)
+        if not reset and "splat_init" in self._refinement_buffers:
+            old_count = min(self._refinement_splat_init_capacity, capacity)
+            splat_init[:old_count] = buffer_to_numpy(self._refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:old_count]
+        self._set_refinement_buffer("splat_init", alloc_buffer(self.device, name="trainer.refinement.splat_init", size=capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
+        self._refinement_buffers["splat_init"].copy_from_numpy(splat_init)
+        self._refinement_splat_init_capacity = capacity
+
+    def _reset_splat_init(self, scene: GaussianScene | None) -> None:
+        self._ensure_splat_init_capacity(self._scene_count, reset=True)
+        splat_init = np.zeros((self._refinement_splat_init_capacity, 4), dtype=np.float32)
+        source = self._build_splat_init_array(scene)
+        splat_init[: source.shape[0]] = source
+        self._refinement_buffers["splat_init"].copy_from_numpy(splat_init)
+
+    def _copy_refinement_splat_init_to_source(self, splat_count: int) -> None:
+        self._ensure_splat_init_capacity(splat_count)
+        enc = self.device.create_command_encoder()
+        enc.copy_buffer(self._refinement_buffers["splat_init"], 0, self._refinement_buffers["dst_splat_init"], 0, max(int(splat_count), 1) * self._FLOAT4_BYTES)
+        self.device.submit_command_buffer(enc.finish())
+        self.device.wait()
+
     def _refinement_camera_rows(self) -> np.ndarray:
         rows = np.zeros((max(len(self.frames), 1) * self._REFINEMENT_CAMERA_ROW_COUNT, 4), dtype=np.float32)
         for frame_index in range(len(self.frames)):
@@ -1433,7 +1622,7 @@ class GaussianTrainer:
             rows[base + 4] = np.array([up[1], up[2], forward[0], forward[1]], dtype=np.float32)
             rows[base + 5] = np.array([forward[2], camera_hash, distortion[0], distortion[1]], dtype=np.float32)
             rows[base + 6] = np.array(distortion[2:6], dtype=np.float32)
-            rows[base + 7] = np.array([distortion[6], distortion[7], 0.0, 0.0], dtype=np.float32)
+            rows[base + 7] = np.array([distortion[6], distortion[7], float(camera.projection_model), 0.0], dtype=np.float32)
         return rows
 
     def _refinement_camera_signature_value(self) -> tuple[object, ...]:
@@ -1461,6 +1650,7 @@ class GaussianTrainer:
                     round(float(frame.k4), 8),
                     round(float(frame.k5), 8),
                     round(float(frame.k6), 8),
+                    int(getattr(frame, "model_id", COLMAP_PINHOLE_MODEL_ID)),
                     *(round(float(v), 8) for v in np.asarray(frame.q_wxyz, dtype=np.float32).reshape(4)),
                     *(round(float(v), 8) for v in np.asarray(frame.t_xyz, dtype=np.float32).reshape(3)),
                 )
@@ -1501,20 +1691,56 @@ class GaussianTrainer:
         self.device.wait()
         self._observed_contribution_pixel_count = 0
 
-    def _run_refinement(self, clone_counts_override: np.ndarray | None = None) -> None:
+    def _run_refinement(
+        self,
+        clone_counts_override: np.ndarray | None = None,
+        *,
+        editor_mode: bool = False,
+        seed_override: int | None = None,
+        prune_mask_override: np.ndarray | None = None,
+    ) -> None:
+        """Run one refinement iteration (clone/split + prune).
+
+        When ``editor_mode`` is set the pass is scoped to the explicit overrides supplied
+        by the splat editor: ``clone_counts_override`` names the splats to split and
+        ``prune_mask_override`` the splats to delete. No threshold-based culling, ratio
+        pruning, opacity scaling, or min-screen-size clamping runs, so every splat not
+        named by an override is copied through unchanged.
+        """
         self._refresh_refinement_camera_buffer()
+        overrides: dict[str, object] | None = None
+        if editor_mode:
+            overrides = {
+                "g_RefinementAlphaCullThreshold": 0.0,
+                "g_RefinementMinContributionThreshold": -3.0e38,
+                "g_RefinementPruneLowestContributionRatio": 0.0,
+                "g_RefinementOpacityMul": 1.0,
+            }
+            if seed_override is not None:
+                overrides["g_RefinementSeed"] = np.uint32(int(seed_override) & 0xFFFFFFFF)
         if clone_counts_override is None:
             self._dispatch_refinement_clone_sampling()
         else:
-            self._update_refinement_prune_mask()
+            if editor_mode:
+                self._ensure_refinement_buffers(self._scene_count)
+                prune_mask = np.zeros((max(self._refinement_splat_capacity, 1),), dtype=np.uint32)
+                if prune_mask_override is not None:
+                    editor_prune = np.ascontiguousarray(prune_mask_override, dtype=np.uint32).reshape(-1)
+                    if editor_prune.shape[0] != self._scene_count:
+                        raise ValueError("prune_mask_override must match the current scene count.")
+                    prune_mask[: editor_prune.shape[0]] = editor_prune
+                self._refinement_buffers["refinement_prune_mask"].copy_from_numpy(prune_mask)
+            else:
+                self._update_refinement_prune_mask()
             sampled_clone_counts = np.ascontiguousarray(clone_counts_override, dtype=np.uint32).reshape(-1)
             if sampled_clone_counts.shape[0] != self._scene_count:
                 raise ValueError("clone_counts_override must match the current scene count.")
             self._refinement_buffers["clone_counts"].copy_from_numpy(np.pad(sampled_clone_counts, (0, max(self._refinement_splat_capacity - sampled_clone_counts.shape[0], 0))))
         enc = self.device.create_command_encoder()
-        self._dispatch("clamp_refinement_min_screen_size", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars())
-        self._dispatch("clear_refinement_counters", enc, spy.uint3(1, 1, 1), self._refinement_vars())
-        self._dispatch("prepare_refinement_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars())
+        if not editor_mode:
+            self._dispatch("clamp_refinement_min_screen_size", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars())
+        self._dispatch("clear_refinement_counters", enc, spy.uint3(1, 1, 1), self._refinement_vars(overrides=overrides))
+        self._dispatch("prepare_refinement_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars(overrides=overrides))
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
 
@@ -1535,6 +1761,7 @@ class GaussianTrainer:
             append_splat_count=capped_clone_total,
             survivor_count=survivor_count,
             dst_adam_moments=dst_adam_moments,
+            overrides=overrides,
         )
         enc = self.device.create_command_encoder()
         self._dispatch("clear_refinement_counters", enc, spy.uint3(1, 1, 1), vars)
@@ -1543,6 +1770,7 @@ class GaussianTrainer:
         self.device.wait()
 
         self._copy_refinement_splat_ages_to_source(next_count)
+        self._copy_refinement_splat_init_to_source(next_count)
         self.renderer.bind_scene_count(next_count)
         self._scene_count = next_count
         self.scene.count = next_count
@@ -1596,6 +1824,18 @@ class GaussianTrainer:
         frame_index = int(self._frame_order[self._frame_cursor])
         self._frame_cursor += 1
         return frame_index
+
+    def _upcoming_frame_indices(self, count: int) -> list[int]:
+        if count <= 0 or len(self.frames) <= 0:
+            return []
+        end = min(int(self._frame_cursor) + int(count), len(self.frames))
+        return [int(index) for index in self._frame_order[int(self._frame_cursor) : end]]
+
+    def _effective_batch_request(self, requested: int) -> int:
+        count = max(int(requested), 0)
+        if self._dataset_targets is not None and self._dataset_targets.is_streaming:
+            count = min(count, max(int(self._dataset_targets.pool_size), 1))
+        return count
 
     def _bind_or_upload_init_pointcloud(
         self,
@@ -1667,11 +1907,65 @@ class GaussianTrainer:
         tex.copy_from_numpy(np.ascontiguousarray(rgba8, dtype=np.uint8))
         return tex
 
-    def _create_dataset_textures(self) -> None:
-        self._frame_targets_native = []
+    def _set_preloaded_dataset_textures(self, textures: list[spy.Texture]) -> None:
+        self._dataset_targets = PreloadedDatasetTextures(textures)
+
+    def _create_preloaded_dataset_textures(self) -> None:
+        textures: list[spy.Texture] = []
         with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="trainer-target") as executor:
             for rgba8 in executor.map(load_training_frame_rgba8, self.frames):
-                self._frame_targets_native.append(self._create_gpu_texture(rgba8))
+                textures.append(self._create_gpu_texture(rgba8))
+        self._set_preloaded_dataset_textures(textures)
+
+    def _create_dataset_textures(
+        self,
+        payload_provider: Callable[[int], object] | None = None,
+        texture_format: spy.Format = spy.Format.rgba8_unorm_srgb,
+        pool_size: int = 16,
+    ) -> None:
+        requested_pool_size = max(int(pool_size), 0)
+        if requested_pool_size <= 0 or requested_pool_size >= len(self.frames):
+            self._create_preloaded_dataset_textures()
+            return
+        frame_sizes = [(int(frame.width), int(frame.height)) for frame in self.frames]
+        max_width = max(width for width, _ in frame_sizes)
+        max_height = max(height for _, height in frame_sizes)
+        provider = payload_provider if payload_provider is not None else lambda frame_index: load_training_frame_rgba8(self.frames[int(frame_index)])
+        clamped_batch = min(max(int(self._training_steps_per_frame), 1), requested_pool_size)
+        self._dataset_targets = DatasetTexturePool(
+            self.device,
+            frame_sizes,
+            provider,
+            texture_format=texture_format,
+            pool_size=requested_pool_size,
+            max_width=max_width,
+            max_height=max_height,
+            prefetch_depth=max(clamped_batch * 2, 1),
+        )
+
+    def _dataset_target(self, frame_index: int, encoder: spy.CommandEncoder | None = None) -> spy.Texture:
+        if self._dataset_targets is None:
+            raise RuntimeError("Dataset targets are not initialized.")
+        if encoder is not None:
+            return self._dataset_targets.acquire(frame_index, encoder)
+        local_encoder = self.device.create_command_encoder()
+        texture = self._dataset_targets.acquire(frame_index, local_encoder)
+        self.device.submit_command_buffer(local_encoder.finish())
+        self.device.wait()
+        self._dataset_targets.mark_submitted([frame_index], None)
+        return texture
+
+    def mark_dataset_submitted(self, frame_indices: list[int] | tuple[int, ...], submission: int | None) -> None:
+        if self._dataset_targets is not None:
+            self._dataset_targets.mark_submitted(frame_indices, submission)
+
+    @property
+    def dataset_targets_streaming(self) -> bool:
+        return self._dataset_targets is not None and self._dataset_targets.is_streaming
+
+    @property
+    def _frame_targets_native(self) -> list[spy.Texture]:
+        return [] if self._dataset_targets is None else self._dataset_targets.frame_targets_native
 
     @property
     def observed_contribution_pixel_count(self) -> int:
@@ -1698,6 +1992,7 @@ class GaussianTrainer:
             self._refinement_buffers["splat_contribution"],
             self._refinement_buffers["splat_viewed_fraction_history"],
             self._refinement_buffers["gradient_stats"],
+            self._refinement_buffers["splat_init"],
             count,
             bin_count=bin_count,
             min_log10=min_log10,
@@ -1717,6 +2012,7 @@ class GaussianTrainer:
             self._refinement_buffers["splat_contribution"],
             self._refinement_buffers["splat_viewed_fraction_history"],
             self._refinement_buffers["gradient_stats"],
+            self._refinement_buffers["splat_init"],
             count,
             grad_variance_exponent=float(self.training.refinement_grad_variance_weight_exponent),
             contribution_exponent=float(self.training.refinement_contribution_weight_exponent),
@@ -1762,13 +2058,16 @@ class GaussianTrainer:
     def target_texture_is_linear(self, target_texture: spy.Texture | None = None) -> bool:
         return self._target_texture_is_linear(target_texture)
 
-    def _ensure_compensated_native_target_texture(self, frame_index: int) -> spy.Texture:
+    def _ensure_compensated_native_target_texture(self, frame_index: int, min_width: int = 0, min_height: int = 0) -> spy.Texture:
         frame = self._frame(frame_index)
         texture = self._compensated_native_target
-        width = max(int(frame.width), 1)
-        height = max(int(frame.height), 1)
-        if texture is not None and int(texture.width) == width and int(texture.height) == height:
+        width = max(int(frame.width), 1, int(min_width))
+        height = max(int(frame.height), 1, int(min_height))
+        if texture is not None and int(texture.width) >= width and int(texture.height) >= height:
             return texture
+        if texture is not None:
+            width = max(width, int(texture.width))
+            height = max(height, int(texture.height))
         defer_resource_release(texture)
         texture = alloc_texture_2d(
             self.device,
@@ -1787,7 +2086,7 @@ class GaussianTrainer:
     def _refresh_compensated_native_target(self, encoder: spy.CommandEncoder, frame_index: int) -> spy.Texture:
         provider = getattr(self, "target_tonemap_provider", None)
         if provider is None:
-            return self._frame_targets_native[frame_index]
+            return self._dataset_target(frame_index, encoder)
         version = self._target_tonemap_version()
         texture = self._ensure_compensated_native_target_texture(frame_index)
         if self._compensated_native_target_frame_index == int(frame_index) and self._compensated_native_target_version == version:
@@ -1798,7 +2097,7 @@ class GaussianTrainer:
             encoder,
             thread_count_2d(int(frame.width), int(frame.height)),
             {
-                "g_PhotometricSourceTarget": self._frame_targets_native[frame_index],
+                "g_PhotometricSourceTarget": self._dataset_target(frame_index, encoder),
                 "g_PhotometricTarget": texture,
                 "g_PhotometricSourceWidth": int(frame.width),
                 "g_PhotometricSourceHeight": int(frame.height),
@@ -1813,18 +2112,19 @@ class GaussianTrainer:
 
     def _native_target_texture(self, frame_index: int, encoder: spy.CommandEncoder | None = None, *, apply_target_tonemap: bool = True) -> spy.Texture:
         if not apply_target_tonemap or getattr(self, "target_tonemap_provider", None) is None:
-            return self._frame_targets_native[frame_index]
+            return self._dataset_target(frame_index, encoder)
         if encoder is None:
             local_encoder = self.device.create_command_encoder()
             texture = self._refresh_compensated_native_target(local_encoder, frame_index)
             self.device.submit_command_buffer(local_encoder.finish())
             self.device.wait()
+            self.mark_dataset_submitted([frame_index], None)
             return texture
         return self._refresh_compensated_native_target(encoder, frame_index)
 
-    def _ensure_train_target_texture(self) -> None:
-        width = max(int(self.renderer.width), 1)
-        height = max(int(self.renderer.height), 1)
+    def _ensure_train_target_texture(self, min_width: int = 0, min_height: int = 0) -> None:
+        width = max(int(self.renderer.width), 1, int(min_width))
+        height = max(int(self.renderer.height), 1, int(min_height))
         texture = self._train_target_texture
         if texture is not None and int(texture.width) >= width and int(texture.height) >= height:
             return
@@ -1847,9 +2147,9 @@ class GaussianTrainer:
             raise RuntimeError("PSNR target texture is not initialized.")
         return self._psnr_target_texture
 
-    def _ensure_psnr_target_texture(self) -> None:
-        width = max(int(self.renderer.width), 1)
-        height = max(int(self.renderer.height), 1)
+    def _ensure_psnr_target_texture(self, min_width: int = 0, min_height: int = 0) -> None:
+        width = max(int(self.renderer.width), 1, int(min_width))
+        height = max(int(self.renderer.height), 1, int(min_height))
         texture = self._psnr_target_texture
         if texture is not None and int(texture.width) >= width and int(texture.height) >= height:
             return
@@ -1878,7 +2178,7 @@ class GaussianTrainer:
             encoder,
             self._pixel_thread_count(),
             {
-                "g_SourceTarget": self._frame_targets_native[frame_index],
+                "g_SourceTarget": self._dataset_target(frame_index, encoder),
                 "g_DownscaledTarget": self._require_psnr_target_texture(),
                 **self._downscale_vars(frame_index, step),
             },
@@ -1890,7 +2190,7 @@ class GaussianTrainer:
         if getattr(self, "target_tonemap_provider", None) is None:
             return target_texture
         if target_texture is self._compensated_native_target:
-            return self._frame_targets_native[frame_index]
+            return self._dataset_target(frame_index, encoder)
         if target_texture is self._train_target_texture:
             return self._refresh_psnr_target(encoder, frame_index, step)
         return target_texture
@@ -2134,6 +2434,7 @@ class GaussianTrainer:
             self.optimizer.dispatch_projection(
                 encoder,
                 scene_buffers=self.renderer.scene_buffers,
+                splat_init_buffer=self._refinement_buffers["splat_init"],
                 splat_count=self._scene_count,
                 training_hparams=self.training,
                 frame_camera=frame_camera,
@@ -2166,6 +2467,7 @@ class GaussianTrainer:
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_refinement_buffers(self._scene_count)
         self._reset_splat_ages()
+        self._reset_splat_init(scene)
         self._refinement_camera_signature = None
         self._scale_reg_reference = float(max(np.median(np.max(np.exp(scales), axis=1)), 1e-8))
         self._zero_optimizer_moments()
@@ -2221,6 +2523,10 @@ class GaussianTrainer:
         sh_coeffs = pad_sh_coeffs(groups["sh_coeffs"], SUPPORTED_SH_COEFF_COUNT)
         colors = sh_coeffs_to_display_colors(sh_coeffs)
         opacities = np.reciprocal(1.0 + np.exp(-color_alpha[:, 3])).astype(np.float32, copy=False)
+        refinable = None
+        if "splat_init" in self._refinement_buffers:
+            splat_init = buffer_to_numpy(self._refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[: self._scene_count]
+            refinable = np.ascontiguousarray(splat_init[:, 3] >= 0.0, dtype=bool)
         return GaussianScene(
             positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
             scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
@@ -2228,6 +2534,7 @@ class GaussianTrainer:
             opacities=np.asarray(opacities, dtype=np.float32),
             colors=np.asarray(colors, dtype=np.float32),
             sh_coeffs=sh_coeffs,
+            refinable=refinable,
         )
 
     def replace_scene(self, scene: GaussianScene) -> None:
@@ -2240,12 +2547,94 @@ class GaussianTrainer:
         count = max(int(scene.count), 0)
         self._scene_count, self.scene = count, _SceneCountProxy(count)
         self.renderer.set_scene(scene)
+        self._reset_edited_scene_state(scene)
+
+    def resample_selection(self, ratio: float, seed: int) -> int:
+        """Resample the live selection through the training refinement pass.
+
+        Densification (``ratio > 1``) hands the refinement split a per-splat clone-count
+        override; sparsification and deletion (``ratio < 1``) hand it an explicit prune
+        mask. Either way the scene rewrite is the exact one training refinement runs, so
+        Adam moments, splat ages, init data, and contribution history carry through for
+        surviving splats instead of being reset.
+        """
+        resample_ratio = max(float(ratio), 0.0)
+        if abs(resample_ratio - 1.0) < 1e-9:
+            return int(self._scene_count)
+        if resample_ratio > 1.0:
+            return self._densify_selection_via_refinement(resample_ratio, seed)
+        return self._sparsify_selection_via_refinement(resample_ratio, seed)
+
+    def _densify_selection_via_refinement(self, ratio: float, seed: int) -> int:
+        """Grow the selection to ``ratio`` of its size using the refinement split."""
+        count = int(self._scene_count)
+        if count <= 0:
+            return count
+        selection = np.asarray(self.renderer.read_selection_mask(), dtype=bool).reshape(-1)
+        if selection.shape[0] != count:
+            return count
+        splat_init = buffer_to_numpy(self._refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[:count]
+        refinable = splat_init[:, 3] >= 0.0
+        selected = int(np.count_nonzero(selection))
+        parent_idx = np.where(selection & refinable)[0]
+        if selected == 0 or parent_idx.shape[0] == 0:
+            return count
+        add_count = int(round(ratio * selected)) - selected
+        if add_count <= 0:
+            return count
+        clone_counts = _build_editor_clone_counts(
+            parent_idx, add_count, count, np.random.default_rng(int(seed) & 0xFFFFFFFF)
+        )
+        if int(clone_counts.sum()) == 0:
+            return count
+        self._run_refinement(clone_counts, editor_mode=True, seed_override=int(seed))
+        self.renderer.edit_select_set_all(self.renderer.SELECT_SET_CLEAR)
+        return int(self._scene_count)
+
+    def _sparsify_selection_via_refinement(self, ratio: float, seed: int) -> int:
+        """Drop ``1 - ratio`` of the selection using the refinement prune path.
+
+        Unlike training pruning this may delete non-refinable splats: the selection is an
+        explicit user action, so the uploaded prune mask wins over the frozen flag.
+        """
+        count = int(self._scene_count)
+        if count <= 0:
+            return count
+        selection = np.asarray(self.renderer.read_selection_mask(), dtype=bool).reshape(-1)
+        if selection.shape[0] != count:
+            return count
+        selected_idx = np.where(selection)[0]
+        n_selected = int(selected_idx.shape[0])
+        if n_selected == 0:
+            return count
+        drop_count = n_selected - int(round(ratio * n_selected))
+        if drop_count <= 0:
+            return count
+        if drop_count >= count:
+            # The refinement rewrite cannot produce an empty scene (and the trainer
+            # cannot run on one); deleting every last splat stays a no-op.
+            return count
+        rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
+        prune_mask = np.zeros((count,), dtype=np.uint32)
+        prune_mask[rng.permutation(selected_idx)[:drop_count]] = 1
+        self._run_refinement(
+            np.zeros((count,), dtype=np.uint32),
+            editor_mode=True,
+            seed_override=int(seed),
+            prune_mask_override=prune_mask,
+        )
+        self.renderer.edit_select_set_all(self.renderer.SELECT_SET_CLEAR)
+        return int(self._scene_count)
+
+    def _reset_edited_scene_state(self, scene: GaussianScene | None) -> None:
         self._ensure_training_buffers(self._scene_count, 1)
         self._ensure_refinement_buffers(self._scene_count)
         self._ensure_renderer_workspace(self._scene_count)
         self._reset_splat_ages()
+        self._reset_splat_init(scene if scene is not None else self.read_live_scene())
         self._refinement_camera_signature = None
-        self._scale_reg_reference = self._estimate_scale_reg_reference(scene)
+        if scene is not None:
+            self._scale_reg_reference = self._estimate_scale_reg_reference(scene)
         self._zero_optimizer_moments()
         self._clear_clone_counts()
         self._invalidate_downscaled_target()
@@ -2256,8 +2645,46 @@ class GaussianTrainer:
             return
         self.renderer.sync_prepass_capacity_for_current_scene(frame_camera)
 
+    def _batch_max_training_resolution(self, start_step: int, batch_steps: int) -> tuple[int, int]:
+        max_width, max_height = 1, 1
+        for offset in range(max(int(batch_steps), 1)):
+            width, height = self._max_training_resolution(int(start_step) + offset)
+            max_width, max_height = max(max_width, int(width)), max(max_height, int(height))
+        return max_width, max_height
+
+    def _max_native_frame_size(self) -> tuple[int, int]:
+        if self._max_native_frame_size_cache is None:
+            max_width, max_height = 1, 1
+            for frame_index in range(len(self.frames)):
+                width, height = self.frame_size(frame_index)
+                max_width, max_height = max(max_width, int(width)), max(max_height, int(height))
+            self._max_native_frame_size_cache = (max_width, max_height)
+        return self._max_native_frame_size_cache
+
+    def _prewarm_batch_render_capacity(self, start_step: int, batch_steps: int) -> None:
+        """Grow frame-sized resources to the batch's largest training resolution up front.
+
+        A batch records several steps into one command buffer that share a single set of
+        frame-sized resources (the renderer work buffers, the SSIM blur, the PSNR target).
+        Each grows to a running capacity max and only reallocates when that max increases.
+        Reallocating mid-batch would orphan resources that already-recorded steps still
+        reference, so we size them for the largest frame before recording; per-frame
+        resolution changes during the batch then never trigger a reallocation.
+        """
+        max_width, max_height = self._batch_max_training_resolution(start_step, batch_steps)
+        ensure_capacity = getattr(self.renderer, "ensure_render_capacity", None)
+        if ensure_capacity is not None:
+            ensure_capacity(int(max_width), int(max_height))
+        self._ensure_renderer_workspace(self._scene_count, min_width=int(max_width), min_height=int(max_height))
+        self._ensure_psnr_target_texture(min_width=int(max_width), min_height=int(max_height))
+        self._ensure_train_target_texture(min_width=int(max_width), min_height=int(max_height))
+        self._ensure_ssim_buffers(min_width=int(max_width), min_height=int(max_height))
+        if getattr(self, "target_tonemap_provider", None) is not None and len(self.frames) > 0:
+            native_width, native_height = self._max_native_frame_size()
+            self._ensure_compensated_native_target_texture(0, min_width=native_width, min_height=native_height)
+
     def step_batch(self, step_count: int) -> int:
-        requested = max(int(step_count), 0)
+        requested = self._effective_batch_request(step_count)
         if requested <= 0:
             return 0
 
@@ -2269,12 +2696,15 @@ class GaussianTrainer:
             batch_steps += 1
         if batch_steps <= 0:
             return 0
-        if batch_steps > 1 and self.training_resolutions_vary(self.state.step):
-            batch_steps = 1
 
         self.training.train_downscale_factor = first_factor
         self._ensure_training_buffers(self._scene_count, batch_steps)
+        if batch_steps > 1:
+            self._prewarm_batch_render_capacity(self.state.step, batch_steps)
         frame_indices: list[int] = []
+        if self._dataset_targets is not None:
+            prefetch_count = self._dataset_targets.prefetch_depth if self._dataset_targets.is_streaming else batch_steps
+            self._dataset_targets.prefetch(self._upcoming_frame_indices(prefetch_count))
         enc = self.device.create_command_encoder()
         with debug_region(enc, "Trainer Batch", 48):
             for batch_index in range(batch_steps):
@@ -2284,7 +2714,8 @@ class GaussianTrainer:
                     frame_index = self._next_frame_index()
                     frame_indices.append(frame_index)
                     self._ensure_frame_render_resolution(frame_index, training_step)
-                    frame_camera = self.make_frame_camera(frame_index, self.renderer.width, self.renderer.height)
+                    self._observed_contribution_pixel_count += max(int(self.renderer.width) * int(self.renderer.height), 0)
+                    frame_camera = self._training_frame_camera(frame_index, training_step)
                     native_camera = self._native_frame_camera(frame_index)
                     self._apply_renderer_training_hparams(training_step)
                     self._maybe_sync_prepass_capacity(frame_camera, training_step)
@@ -2296,8 +2727,8 @@ class GaussianTrainer:
                     self._dispatch_optimizer_step(enc, self.state.step + batch_index + 1, frame_camera)
                     self._dispatch_position_random_steps(enc, self.state.step + batch_index + 1)
                     self._dispatch_cache_step_info(enc, batch_index)
-        self.device.submit_command_buffer(enc.finish())
-        self._observed_contribution_pixel_count += batch_steps * max(int(self.renderer.width) * int(self.renderer.height), 0)
+        submission = self.device.submit_command_buffer(enc.finish())
+        self.mark_dataset_submitted(frame_indices, submission)
 
         step_metrics = self._read_batch_step_metrics(batch_steps)
         had_nonfinite = False
@@ -2346,6 +2777,7 @@ class GaussianTrainer:
             raise RuntimeError("No training frames are available for evaluation.")
         resolved_frame_index = clamp_index(frame_index, len(self.frames))
         resolved_step = self.state.step if step is None else int(step)
+        enc = self.device.create_command_encoder()
         training_sample_vars = None
         if native_resolution:
             width, height = self.frame_size(resolved_frame_index)
@@ -2358,15 +2790,16 @@ class GaussianTrainer:
                 self._refinement_camera_signature = None
             frame_camera = self.make_frame_camera(resolved_frame_index, width, height)
             native_camera = frame_camera
-            target_texture = self.get_frame_target_texture(resolved_frame_index, native_resolution=True, step=resolved_step)
+            target_texture = self.get_frame_target_texture(resolved_frame_index, native_resolution=True, encoder=enc, step=resolved_step)
             training_sample_vars = self._native_training_sample_vars(resolved_frame_index, resolved_step)
         else:
             self._ensure_frame_render_resolution(resolved_frame_index, resolved_step)
-            frame_camera = self.make_frame_camera(resolved_frame_index, int(self.renderer.width), int(self.renderer.height))
+            frame_camera = self._training_frame_camera(resolved_frame_index, resolved_step)
             native_camera = self._native_frame_camera(resolved_frame_index)
             target_texture = self.get_frame_target_texture(
                 resolved_frame_index,
                 native_resolution=self.effective_train_subsample_factor(resolved_frame_index, resolved_step) > 1,
+                encoder=enc,
                 step=resolved_step,
             )
             width, height = int(self.renderer.width), int(self.renderer.height)
@@ -2375,7 +2808,6 @@ class GaussianTrainer:
         self._apply_renderer_training_hparams(resolved_step)
         self._maybe_sync_prepass_capacity(frame_camera, resolved_step)
         sort_dither = self.sorting_dither(resolved_frame_index, resolved_step, frame_camera)
-        enc = self.device.create_command_encoder()
         with debug_region(enc, "Trainer Eval", 53):
             self.renderer.record_prepass_for_current_scene(
                 enc,
@@ -2395,7 +2827,8 @@ class GaussianTrainer:
                 training_sample_vars,
             )
             self._dispatch_cache_step_info(enc, 0)
-        self.device.submit_command_buffer(enc.finish())
+        submission = self.device.submit_command_buffer(enc.finish())
+        self.mark_dataset_submitted([resolved_frame_index], submission)
         step_metrics = self._read_batch_step_metrics(1)
         if step_metrics.size == 0:
             raise RuntimeError("Frame evaluation did not produce any metrics.")

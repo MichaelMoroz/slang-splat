@@ -12,6 +12,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
 _PROJECT_VENV_DIR_NAME = ".venv"
+_WSL_PROJECT_VENV_DIR_NAME = ".venv-wsl"
 _REQUIREMENTS_FILE_NAME = "requirements.txt"
 _BOOTSTRAP_REEXEC_ENV = "SLANGPY_BOOTSTRAP_PROJECT_PYTHON"
 _SLANGPY_VERSION = "0.42.0"
@@ -40,9 +41,28 @@ def _requirements_path(repo_root: Path) -> Path:
     return repo_root / _REQUIREMENTS_FILE_NAME
 
 
+def _running_under_wsl() -> bool:
+    if os.name == "nt":
+        return False
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        return "microsoft" in Path("/proc/sys/kernel/osrelease").read_text(encoding="utf-8").lower()
+    except OSError:
+        return False
+
+
+def _project_venv_dir_name() -> str:
+    return _WSL_PROJECT_VENV_DIR_NAME if _running_under_wsl() else _PROJECT_VENV_DIR_NAME
+
+
+def _project_venv_dir(repo_root: Path) -> Path:
+    return repo_root / _project_venv_dir_name()
+
+
 def _project_python_candidates(repo_root: Path) -> tuple[Path, ...]:
-    venv_root = repo_root / _PROJECT_VENV_DIR_NAME
-    return (venv_root / "Scripts" / "python.exe", venv_root / "bin" / "python")
+    venv_root = _project_venv_dir(repo_root)
+    return (venv_root / "Scripts" / "python.exe",) if os.name == "nt" else (venv_root / "bin" / "python",)
 
 
 def find_project_python(repo_root: Path | None = None) -> Path | None:
@@ -56,6 +76,13 @@ def find_project_python(repo_root: Path | None = None) -> Path | None:
 def _resolved_path(path: Path) -> Path:
     try:
         return path.resolve()
+    except OSError:
+        return path
+
+
+def _absolute_path(path: Path) -> Path:
+    try:
+        return Path(os.path.abspath(os.fspath(path)))
     except OSError:
         return path
 
@@ -111,7 +138,13 @@ def _project_python_environment(project_python: Path) -> dict[str, str]:
 
 
 def _current_interpreter_matches(path: Path) -> bool:
-    return _same_path(_resolved_path(path), Path(sys.executable))
+    try:
+        first = os.path.abspath(os.fspath(path))
+        second = os.path.abspath(sys.executable)
+    except OSError:
+        first = os.fspath(path)
+        second = sys.executable
+    return os.path.normcase(first) == os.path.normcase(second)
 
 
 def _python_supports_slangpy(major: int, minor: int) -> bool:
@@ -173,19 +206,19 @@ def _create_project_venv(repo_root: Path, *, clear: bool = False) -> Path:
     if venv_python is None:
         supported = f"{_SLANGPY_MIN_PYTHON[0]}.{_SLANGPY_MIN_PYTHON[1]}-{_SLANGPY_MAX_PYTHON[0]}.{_SLANGPY_MAX_PYTHON[1]}"
         raise RuntimeError(
-            f"Slangpy {_SLANGPY_VERSION} requires Python {supported}, but no compatible interpreter was found to create {repo_root / _PROJECT_VENV_DIR_NAME}."
+            f"Slangpy {_SLANGPY_VERSION} requires Python {supported}, but no compatible interpreter was found to create {_project_venv_dir(repo_root)}."
         )
     command = [str(venv_python), "-m", "venv"]
     if clear:
         command.append("--clear")
-    command.append(_PROJECT_VENV_DIR_NAME)
+    command.append(_project_venv_dir_name())
     try:
         subprocess.run(command, cwd=repo_root, check=True)
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to create project virtual environment at {repo_root / _PROJECT_VENV_DIR_NAME}.") from exc
+        raise RuntimeError(f"Failed to create project virtual environment at {_project_venv_dir(repo_root)}.") from exc
     project_python = find_project_python(repo_root)
     if project_python is None:
-        raise RuntimeError(f"Project virtual environment was created but no Python executable was found under {repo_root / _PROJECT_VENV_DIR_NAME}.")
+        raise RuntimeError(f"Project virtual environment was created but no Python executable was found under {_project_venv_dir(repo_root)}.")
     return project_python
 
 
@@ -211,13 +244,13 @@ def _maybe_reexec_into_project_python(repo_root: Path) -> None:
     project_python = _ensure_project_python(repo_root)
     if project_python is None:
         return
-    resolved_project_python = _resolved_path(project_python)
-    if _current_interpreter_matches(resolved_project_python):
+    project_python_path = _absolute_path(project_python)
+    if _current_interpreter_matches(project_python_path):
         return
-    if os.environ.get(_BOOTSTRAP_REEXEC_ENV) == str(resolved_project_python):
+    if os.environ.get(_BOOTSTRAP_REEXEC_ENV) == str(project_python_path):
         return
-    env = _project_python_environment(resolved_project_python)
-    raise SystemExit(subprocess.run(_project_python_command(resolved_project_python), env=env, check=False).returncode)
+    env = _project_python_environment(project_python_path)
+    raise SystemExit(subprocess.run(_project_python_command(project_python_path), env=env, check=False).returncode)
 
 
 def _normalized_package_name(name: str) -> str:

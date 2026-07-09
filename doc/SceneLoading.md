@@ -28,6 +28,8 @@
 
 Output is `GaussianScene` with contiguous `float32` arrays.
 
+`GaussianScene.refinable` is an optional boolean splat mask. When absent, loaders and concatenation treat every splat as refinable. Viewer COLMAP imports can set this independently for pointcloud, diffused, custom PLY, custom mesh, and Fibonacci shell initialization sources.
+
 ## COLMAP Loader Notes
 - Supported camera models:
   - `SIMPLE_PINHOLE` (id `0`)
@@ -36,13 +38,15 @@ Output is `GaussianScene` with contiguous `float32` arrays.
   - `RADIAL` (id `3`)
   - `OPENCV` (id `4`)
   - `FULL_OPENCV` (id `6`)
+  - `EQUIRECTANGULAR` (id `17`)
 - With the default sparse layout setting, COLMAP reconstruction files may live under `sparse/0`, directly under `sparse`, directly under the selected root, or in a one-level named child sparse export such as `sparse-cubic-fixed/sparse`.
 - Default training image lookup tries `images_4`, `images`, and then the reconstruction root. If the sparse model was discovered in a named child folder, that folder is searched too.
-- Radial distortion is preserved as per-camera `k1` / `k2` coefficients and is consumed by both screen-space projection and raster ray generation.
+- Radial and OPENCV distortion terms are preserved per camera and consumed by both screen-space projection and raster ray generation.
+- `EQUIRECTANGULAR` cameras use COLMAP's two metadata parameters (`width`, `height`) and do not carry focal, principal point, or distortion values. Imported training frames keep those fields at zero and select spherical camera projection from the stored model id.
 - Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
 - `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using local point-neighborhood covariance eigenframes for gaussian rotation and anisotropy while keeping nearest-neighbor spacing as the overall scale reference before storing 3DGS log-scales.
 - Pointcloud-based COLMAP initialization filters sparse points by the importer-selected minimum camera-observation threshold before direct seeding, diffused resampling, and point-spacing heuristics are computed.
-- `resolve_colmap_init_hparams(...)` derives the default COLMAP init bundle from point-cloud spacing and requested gaussian count, and both the CLI and viewer pass that resolved bundle through unchanged.
+- `resolve_colmap_init_hparams(...)` derives the default COLMAP init bundle from point-cloud spacing and requested gaussian count, and both interactive and headless viewer imports pass that resolved bundle through unchanged.
 - Point XYZ/RGB table extraction is centralized so viewer uploads, init heuristics, and scene initialization all consume the same data path.
 - `sample_colmap_diffused_points(...)` synthesizes viewer-side resampled points by drawing source points with replacement and offsetting each sample with a Gaussian shaped by the local covariance of that point's nearest eight sparse neighbors, scaled by `diffusion_radius`.
 - `sample_colmap_fibonacci_sphere_points(...)` builds optional shell points around the arithmetic mean of the aligned COLMAP camera centers, resolves the shell radius from a UI multiplier times the max aligned COLMAP point distance from that center, and applies deterministic radial jitter up to 10% per point to reduce view-dependent ordering aliasing. The sampler can optionally restrict those synthesized points to the upper hemisphere above the shell center. Those shell points now flow through the same covariance-based point initializer as the other non-PLY point sources.

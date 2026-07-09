@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from dataclasses import replace
 import math
@@ -474,8 +475,7 @@ def _initial_renderer_params(state: object) -> RendererParams:
     )
 
 
-class SplatViewer(_ViewerWindowHost):
-
+class ViewerCore:
     def c(self, key: str):
         return self.ui.control(key)
 
@@ -573,6 +573,37 @@ class SplatViewer(_ViewerWindowHost):
 
     def _training_control_value(self, control: str) -> object:
         return self.c(control).value
+
+    def _export_source_scene(self) -> GaussianScene:
+        if self.s.trainer is not None:
+            return self.s.trainer.read_live_scene()
+        # Read the live GPU buffer so splat-editor edits are exported, not the loaded PLY.
+        renderer = getattr(self.s, "renderer", None)
+        if renderer is not None and int(getattr(renderer, "_scene_count", 0)) > 0 and hasattr(renderer, "read_live_scene"):
+            return renderer.read_live_scene()
+        if isinstance(self.s.scene, GaussianScene):
+            return self.s.scene
+        raise RuntimeError("No gaussian scene is available to export.")
+
+    def _export_should_include_sh(self) -> bool:
+        if self.s.trainer is not None:
+            return resolve_sh_band(self.s.trainer.training, self.s.trainer.state.step) > 0
+        training = self.training_params().training
+        return int(getattr(training, "sh_band", 3 if bool(getattr(training, "use_sh", False)) else 0)) > 0
+
+    def _run_action(self, action, *, close_colmap_import: bool = False) -> None:
+        try:
+            action()
+        except Exception as exc:
+            self.s.last_error = str(exc)
+            traceback.print_exc()
+        else:
+            self.s.last_error = ""
+            if close_colmap_import:
+                self.toolkit.close_colmap_import_window()
+
+
+class SplatViewer(_ViewerWindowHost, ViewerCore):
 
     def _apply_resize(self, width: int, height: int) -> None:
         target_width, target_height = int(width), int(height)
@@ -682,34 +713,10 @@ class SplatViewer(_ViewerWindowHost):
     def _cancel_exit_callback(self) -> None:
         _cancel_exit_confirmation(self)
 
-    def _run_action(self, action, *, close_colmap_import: bool = False) -> None:
-        try:
-            action()
-        except Exception as exc:
-            self.s.last_error = str(exc)
-            traceback.print_exc()
-        else:
-            self.s.last_error = ""
-            if close_colmap_import:
-                self.toolkit.close_colmap_import_window()
-
     def _load_ply_callback(self) -> None:
         path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
         if path:
             self._run_action(lambda: session.load_scene(self, Path(path)))
-
-    def _export_source_scene(self) -> GaussianScene:
-        if self.s.trainer is not None:
-            return self.s.trainer.read_live_scene()
-        if isinstance(self.s.scene, GaussianScene):
-            return self.s.scene
-        raise RuntimeError("No gaussian scene is available to export.")
-
-    def _export_should_include_sh(self) -> bool:
-        if self.s.trainer is not None:
-            return resolve_sh_band(self.s.trainer.training, self.s.trainer.state.step) > 0
-        training = self.training_params().training
-        return int(getattr(training, "sh_band", 3 if bool(getattr(training, "use_sh", False)) else 0)) > 0
 
     def _export_ply_callback(self) -> None:
         path = spy.platform.save_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
@@ -789,6 +796,7 @@ class SplatViewer(_ViewerWindowHost):
                     image_downscale_max_size=import_cfg.image_downscale_max_size,
                     image_downscale_scale=import_cfg.image_downscale_scale,
                     nn_radius_scale_coef=import_cfg.nn_radius_scale_coef,
+                    max_pose_subset=int(getattr(import_cfg, "max_pose_subset", 0)),
                     selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(import_cfg, "selected_camera_ids", ())),
                     min_track_length=int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
                     init_neighbor_count=int(getattr(import_cfg, "init_neighbor_count", DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT)),
@@ -808,6 +816,7 @@ class SplatViewer(_ViewerWindowHost):
                     pointcloud_nn_radius_scale_coef=getattr(import_cfg, "pointcloud_nn_radius_scale_coef", None),
                     diffused_enabled=bool(getattr(import_cfg, "diffused_enabled", False)),
                     diffused_diffusion_radius=getattr(import_cfg, "diffused_diffusion_radius", None),
+                    diffused_visibility_strength=float(getattr(import_cfg, "diffused_visibility_strength", 0.5)),
                     diffused_nn_radius_scale_coef=getattr(import_cfg, "diffused_nn_radius_scale_coef", None),
                     custom_ply_enabled=bool(getattr(import_cfg, "custom_ply_enabled", False)),
                     custom_ply_nn_radius_scale_coef=getattr(import_cfg, "custom_ply_nn_radius_scale_coef", None),
@@ -889,7 +898,6 @@ class SplatViewer(_ViewerWindowHost):
             ui_values = _viewer_ui_values(self)
             defaults = load_defaults()
             training_build_args = defaults.setdefault("training_build_args", {})
-            cli_defaults = defaults.setdefault("cli", {})
             viewer_defaults = defaults.setdefault("viewer", {})
             defaults["training_build_args"] = {
                 **training_build_args,
@@ -901,7 +909,6 @@ class SplatViewer(_ViewerWindowHost):
             }
             exported = export_repo_defaults_from_ui_values(ui_values)
             defaults["renderer"] = exported.get("renderer", {})
-            cli_defaults["common_render"] = exported.get("cli", {}).get("common_render", {})
             viewer_export = exported.get("viewer", {})
             viewer_defaults["controls"] = viewer_export.get("controls", {})
             viewer_defaults["import"] = viewer_export.get("import", {})
@@ -962,9 +969,20 @@ class SplatViewer(_ViewerWindowHost):
             self.s.move_speed = max(self.s.move_speed * (_SCROLL_SPEED_BASE ** self.s.scroll_delta), 0.0)
             self.c("move_speed").value, self.s.scroll_delta = self.s.move_speed, 0.0
         mouse_delta = spy.float2(float(self.s.mouse_delta.x), float(self.s.mouse_delta.y))
-        gizmo_busy = bool(getattr(getattr(self, "toolkit", None), "_values", {}).get("_splat_editor_gizmo_capturing", False))
-        mouse_left = bool(self.s.mouse_left) and not gizmo_busy
-        mouse_right = bool(self.s.mouse_right) and not gizmo_busy
+        gizmo_busy = bool(getattr(getattr(self, "ui", None), "_values", {}).get("_splat_editor_gizmo_capturing", False))
+        # Assign each drag to exactly one consumer (camera vs gizmo/UI) on the first frame the
+        # mouse actually moves, then hold it until release. Deferring to first motion lets the
+        # gizmo register its grab from the press, so a gizmo drag never also moves the camera,
+        # and a camera drag begun in empty space is not stolen when it sweeps over the gizmo.
+        any_mouse_down = bool(self.s.mouse_left) or bool(self.s.mouse_right)
+        mouse_moved = abs(float(mouse_delta.x)) > 0.0 or abs(float(mouse_delta.y)) > 0.0
+        if not any_mouse_down:
+            self.s.drag_owner = ""
+        elif self.s.drag_owner == "" and mouse_moved:
+            self.s.drag_owner = "gizmo" if gizmo_busy else "camera"
+        camera_owns_drag = self.s.drag_owner == "camera"
+        mouse_left = bool(self.s.mouse_left) and camera_owns_drag
+        mouse_right = bool(self.s.mouse_right) and camera_owns_drag
         target_rot = mouse_delta * self.s.look_speed if mouse_left else spy.float2(0.0, 0.0)
         self.s.rot_vel += (target_rot - self.s.rot_vel) * min(1.0, _LOOK_SMOOTH * dt)
         self.s.mouse_delta = spy.float2(0.0, 0.0)
@@ -1001,9 +1019,26 @@ def _compute_view_geometry() -> tuple[int, int]:
         return max(min(int(screen_width * 0.9), 1920), 1280), max(min(int(screen_height * 0.9), 1200), 720)
     return 1600, 900
 
+
+def _build_main_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Slang Splat viewer.", add_help=True)
+    parser.add_argument("--headless", action="store_true", help="Run the viewer automation pipeline without creating a window.")
+    parser.add_argument("--config", type=Path, default=None, help="JSON config overlay. Required with --headless; in GUI mode this is reserved for config preselection.")
+    parser.add_argument("--graphics-api", type=str, default=None, choices=("vulkan", "dx12"), help="Override the graphics API selected from config/defaults.")
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
+    args, _unknown = _build_main_parser().parse_known_args(argv)
+    if bool(args.headless):
+        if args.config is None:
+            print("--headless requires --config")
+            return 2
+        from .headless import run_headless_from_config
+
+        return run_headless_from_config(args.config, graphics_api=args.graphics_api)
     view_w, view_h = _compute_view_geometry()
-    graphics_api = _preferred_graphics_api_name()
+    graphics_api = _preferred_graphics_api_name() if args.graphics_api is None else str(args.graphics_api)
     try:
         frame_capture.prepare_renderdoc_startup()
     except Exception as exc:

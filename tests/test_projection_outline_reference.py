@@ -5,10 +5,23 @@ import math
 import numpy as np
 
 from reference_impls.reference_cpu import _compute_scanline_tile_span_universal, project_splats
-from src.renderer import Camera
+from src.renderer import Camera, PROJECTION_MODEL_EQUIRECTANGULAR
 from src.scene import GaussianScene
 
 _ALPHA_CUTOFF = 1.0 / 255.0
+_PROJECTION_ALPHA_TOL = 5e-4
+_EQUIRECT_DENSE_WIDTH = 384
+_EQUIRECT_DENSE_HEIGHT = 192
+_EQUIRECT_DENSE_LONGITUDES = 48
+_EQUIRECT_DENSE_LATITUDES = 23
+_EQUIRECT_SHELL_RADIUS = np.float32(3.0)
+_EQUIRECT_SHELL_SIGMA = np.float32(0.006)
+_EQUIRECT_SHELL_OPACITY = np.float32(0.8)
+_EQUIRECT_RADIUS_SCALE = 1.6
+_EQUIRECT_LARGE_CENTER_WIDTH = 1536
+_EQUIRECT_LARGE_CENTER_HEIGHT = 768
+_EQUIRECT_LARGE_CENTER_SIGMA = np.float32(0.08)
+_EDGE_SAMPLE_COUNT = 8
 
 
 def make_scene(count: int, seed: int = 123) -> GaussianScene:
@@ -30,6 +43,26 @@ def make_scene(count: int, seed: int = 123) -> GaussianScene:
         opacities=opacities,
         colors=colors,
         sh_coeffs=sh_coeffs,
+    )
+
+
+def _equirectangular_dense_shell_scene() -> GaussianScene:
+    lon_ids, lat_ids = np.meshgrid(
+        np.arange(_EQUIRECT_DENSE_LONGITUDES, dtype=np.float32),
+        np.arange(_EQUIRECT_DENSE_LATITUDES, dtype=np.float32),
+    )
+    theta = np.float32(2.0 * np.pi) * ((lon_ids + np.float32(0.5)) / np.float32(_EQUIRECT_DENSE_LONGITUDES)) - np.float32(np.pi)
+    phi = np.float32(np.pi) * (np.float32(0.5) - (lat_ids + np.float32(0.5)) / np.float32(_EQUIRECT_DENSE_LATITUDES))
+    cos_phi = np.cos(phi)
+    positions = np.stack((cos_phi * np.sin(theta), -np.sin(phi), cos_phi * np.cos(theta)), axis=-1).reshape(-1, 3).astype(np.float32) * _EQUIRECT_SHELL_RADIUS
+    count = int(positions.shape[0])
+    return GaussianScene(
+        positions=positions,
+        scales=np.full((count, 3), np.log(_EQUIRECT_SHELL_SIGMA), dtype=np.float32),
+        rotations=np.repeat(np.array(((1.0, 0.0, 0.0, 0.0),), dtype=np.float32), count, axis=0),
+        opacities=np.full((count,), _EQUIRECT_SHELL_OPACITY, dtype=np.float32),
+        colors=np.repeat(np.array(((0.8, 0.7, 0.6),), dtype=np.float32), count, axis=0),
+        sh_coeffs=np.zeros((count, 1, 3), dtype=np.float32),
     )
 
 
@@ -107,6 +140,10 @@ def _is_fullscreen_fallback_ellipse(center_radius_depth: np.ndarray, conic: np.n
     )
 
 
+def _is_cap_rect_conic(conic: np.ndarray) -> bool:
+    return float(conic[0]) < 0.0 and float(conic[2]) < 0.0
+
+
 def test_projection_outline_reference_is_finite() -> None:
     scene = make_scene(128, seed=7)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
@@ -129,6 +166,58 @@ def test_projection_outline_reference_is_deterministic() -> None:
     np.testing.assert_allclose(p0.center_radius_depth, p1.center_radius_depth)
     np.testing.assert_array_equal(p0.valid, p1.valid)
     np.testing.assert_allclose(p0.ellipse_conic, p1.ellipse_conic)
+
+
+def test_equirectangular_reference_keeps_side_splat_visible() -> None:
+    scene = GaussianScene(
+        positions=np.array(((3.0, 0.0, 0.0),), dtype=np.float32),
+        scales=np.full((1, 3), -4.5, dtype=np.float32),
+        rotations=np.array(((1.0, 0.0, 0.0, 0.0),), dtype=np.float32),
+        opacities=np.array((0.8,), dtype=np.float32),
+        colors=np.array(((0.8, 0.7, 0.6),), dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(
+        position=(0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        near=0.1,
+        far=20.0,
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+
+    projected = project_splats(scene, camera, width=256, height=128, radius_scale=1.6)
+    screen, ok = camera.project_world_to_screen(scene.positions[0], 256, 128)
+
+    assert ok
+    np.testing.assert_allclose(screen, np.array((192.0, 64.0), dtype=np.float32), rtol=0.0, atol=1e-5)
+    assert int(projected.valid[0]) == 1
+
+
+def test_equirectangular_reference_keeps_large_centered_fit_visible() -> None:
+    scene = GaussianScene(
+        positions=np.array(((0.0, 0.0, _EQUIRECT_SHELL_RADIUS),), dtype=np.float32),
+        scales=np.full((1, 3), np.log(_EQUIRECT_LARGE_CENTER_SIGMA), dtype=np.float32),
+        rotations=np.array(((1.0, 0.0, 0.0, 0.0),), dtype=np.float32),
+        opacities=np.array((_EQUIRECT_SHELL_OPACITY,), dtype=np.float32),
+        colors=np.array(((0.8, 0.7, 0.6),), dtype=np.float32),
+        sh_coeffs=np.zeros((1, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(
+        position=(0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        near=0.1,
+        far=20.0,
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+
+    projected = project_splats(scene, camera, width=_EQUIRECT_LARGE_CENTER_WIDTH, height=_EQUIRECT_LARGE_CENTER_HEIGHT, radius_scale=_EQUIRECT_RADIUS_SCALE)
+    conic = projected.ellipse_conic[0]
+    det = float(conic[0] * conic[2] - conic[1] * conic[1])
+
+    assert int(projected.valid[0]) == 1
+    assert float(projected.center_radius_depth[0, 2]) > 32.0
+    assert 0.0 < det < 1e-6
+    assert not _is_fullscreen_fallback_ellipse(projected.center_radius_depth[0], conic, _EQUIRECT_LARGE_CENTER_WIDTH, _EQUIRECT_LARGE_CENTER_HEIGHT)
 
 
 def test_projection_outline_hits_alpha_cutoff() -> None:
@@ -155,7 +244,45 @@ def test_projection_outline_hits_alpha_cutoff() -> None:
         outline_point = _outline_screen_point(projected.center_radius_depth[splat_index, :2], projected.ellipse_conic[splat_index], float(rng.uniform(0.0, 2.0 * math.pi)))
         ray_direction = camera.screen_to_world_ray(outline_point, 192, 128)
         alpha = _ray_splat_intersection_alpha(camera.position, ray_direction, packed[splat_index], 1.6)
-        assert abs(alpha - _ALPHA_CUTOFF) <= 5e-4
+        assert abs(alpha - _ALPHA_CUTOFF) <= _PROJECTION_ALPHA_TOL
+
+
+def test_equirectangular_dense_shell_outline_hits_alpha_cutoff() -> None:
+    scene = _equirectangular_dense_shell_scene()
+    camera = Camera.look_at(
+        position=(0.0, 0.0, 0.0),
+        target=(0.0, 0.0, 1.0),
+        near=0.1,
+        far=20.0,
+        projection_model=PROJECTION_MODEL_EQUIRECTANGULAR,
+    )
+    projected = project_splats(scene, camera, width=_EQUIRECT_DENSE_WIDTH, height=_EQUIRECT_DENSE_HEIGHT, radius_scale=_EQUIRECT_RADIUS_SCALE)
+    packed = np.concatenate(
+        [scene.positions, scene.scales, scene.rotations, scene.colors, scene.opacities[:, None]],
+        axis=1,
+    ).astype(np.float32)
+    non_fallback_count = 0
+    cap_rect_count = 0
+    edge_angles = np.linspace(0.0, 2.0 * np.pi, num=_EDGE_SAMPLE_COUNT, endpoint=False)
+
+    assert int(np.count_nonzero(projected.valid)) == scene.count
+    for splat_index in np.flatnonzero(projected.valid != 0).tolist():
+        assert not _is_fullscreen_fallback_ellipse(projected.center_radius_depth[splat_index], projected.ellipse_conic[splat_index], _EQUIRECT_DENSE_WIDTH, _EQUIRECT_DENSE_HEIGHT)
+        if _is_cap_rect_conic(projected.ellipse_conic[splat_index]):
+            cap_rect_count += 1
+            continue
+        non_fallback_count += 1
+        for theta in edge_angles:
+            outline_point = _outline_screen_point(projected.center_radius_depth[splat_index, :2], projected.ellipse_conic[splat_index], float(theta))
+            ray_direction = camera.screen_to_world_ray(outline_point, _EQUIRECT_DENSE_WIDTH, _EQUIRECT_DENSE_HEIGHT)
+            alpha = _ray_splat_intersection_alpha(camera.position, ray_direction, packed[splat_index], _EQUIRECT_RADIUS_SCALE)
+            # The centered fit is scaled to enclose the sampled outline, so its edge
+            # sits at or slightly outside the cutoff isosurface, never inside it.
+            assert alpha <= _ALPHA_CUTOFF + _PROJECTION_ALPHA_TOL
+            assert alpha >= 0.25 * _ALPHA_CUTOFF
+
+    assert non_fallback_count > scene.count - 16
+    assert 0 < cap_rect_count <= 16
 
 
 def test_scanline_span_analytic_solver_matches_bruteforce() -> None:

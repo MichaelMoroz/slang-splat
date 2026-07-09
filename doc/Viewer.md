@@ -120,6 +120,8 @@ Camera controls:
 - `WASDQE`: move
 - mouse wheel: adjust move speed
 
+Drag ownership is latched at the mouse-down edge: a drag that begins on an Edit Splat gizmo (or any ImGui widget) manipulates only that gizmo, and a look/pan drag begun in empty viewport is not stolen when the cursor later crosses the gizmo. Only one of the camera and the gizmo moves per drag.
+
 When a training scene is initialized, the viewer prefers a real training-camera position when one is available. That startup path only copies the camera position and keeps the viewer orientation controls intact; if no usable training pose is available, the viewer falls back to a scene-bounds fit.
 
 The viewport `View Mode` menu includes a viewer-only `PPISP Tonemap` debug view for the free-fly camera. Selecting it uses a PPISP rasterizer resolve that applies the shared exposure, vignetting, chroma, and CRF shader to linear radiance before writing display RGB. Its debug-view parameters are still edited in the viewport overlay, while learned per-frame PPISP compensation now lives in the separate `Photometric Compensation` window.
@@ -138,6 +140,25 @@ The window provides:
 - a selected-frame control to inspect the currently learned PPISP parameters for an individual training image.
 
 The learned provider is versioned. When it is bound into the gaussian trainer, downscaled targets and native-subsample targets automatically refresh against the latest photometric parameters without rebuilding unrelated viewer state.
+
+## Edit Splat Window
+
+`View -> Edit Splat` opens the splat editor for the active scene (a loaded PLY or the live training state). All operations run as GPU compute kernels on the renderer's param buffer, so no scene data round-trips through the CPU: selection, property edits, and resampling never read back or re-upload the full splat set.
+
+Selection is a per-splat GPU mask that doubles as the render highlight, so selected splats are highlighted with no extra upload. Selections combine in `replace` / `add` / `subtract` / `intersect` modes:
+
+- an oriented bounding box (translate/rotate/scale via the viewport gizmo or the numeric fields),
+- histogram-range selection over per-splat scale, opacity, or color luminance,
+- invert and clear.
+
+`Preview candidates` (on by default) tints the splats the current box intersected with the histogram ranges *would* select in a toned-down blue, live as you drag the gizmo or range handles, before you commit. It is visualization only — the tint is computed inline in the projection prepass (no extra dispatch, buffer, or readback), applied under the committed-selection highlight so an already selected splat still reads as selected, and it costs nothing when the panel is closed.
+
+Edits apply only to the selection:
+
+- `Resample` at `0%` deletes the selection, `< 100%` randomly sparsifies it, and `> 100%` subdivides it by cloning children from random selected parents (offset within each parent's covariance and shrunk by the 3DGS split factor). The button reads `Delete selection` at `0%`.
+- `Edit properties` overrides color (DC term, higher-order SH preserved), opacity, and/or geometric-mean scale (anisotropy preserved).
+
+Property edits are in place, so they preserve optimizer momentum during live training. Resampling changes the splat count, so — like an external scene swap — it renumbers survivors, appends children, and resets Adam moments, splat ages, and refinement bookkeeping while preserving the training step/schedule. Edits live in the GPU buffer and survive viewport resizes (the scene is copied GPU-to-GPU on renderer recreation), and PLY export reads the edited buffer.
 
 ## Frame Flow
 
@@ -199,6 +220,8 @@ The import window exposes four key toggles:
 - `Compress Dataset using BC7`: compress imported training images into reusable BC7 DDS cache files under the image-folder cache.
 - `Photometric Compensation`: after images are loaded, build the photometric observation dataset and run 1000 photometric optimization steps before the scene opens. The import progress bar switches to dataset-preparation and optimization progress, and the import status line shows the live loss.
 - `Use Alpha Mask`: treat transparent target pixels as masked-out training pixels.
+- `Compression Cores`: worker threads used to load and BC7-compress the dataset during import (1..logical CPUs), so the load can be dialed back to leave cores free.
+- `Best Pose Subset`: shown once cameras are detected and there are more than 16 poses. Trains on only the N camera poses that cover the scene most widely instead of all of them — fewer poses means less VRAM. The subset is chosen greedily to maximize the union of tracked 3D points seen (the scene-capture fraction), dropping redundant, heavily-overlapping views; when a reconstruction has no tracked points it falls back to spreading the selection across camera positions and viewing directions. The slider's Full setting keeps every pose.
 
 ### Image Downscale Modes
 
@@ -397,7 +420,7 @@ It reports:
 - optional camera labels,
 - active-frame highlighting.
 
-Camera overlays and labels are independently gated so expensive per-frame label/metric generation is only done when needed.
+Camera overlays and labels are independently gated so expensive per-frame label/metric generation is only done when needed. Pinhole and distorted training cameras draw frustum outlines; equirectangular training cameras draw oriented cube pose markers because they have no finite image-plane frustum.
 
 ## Dataset Metrics Window
 

@@ -1,6 +1,6 @@
 # COLMAP Training Pipeline
 
-`cli.py train-colmap` and the viewer both feed the same core trainer in `src/training/gaussian_trainer.py`.
+The interactive viewer and `viewer.py --headless --config ...` both feed the same core trainer in `src/training/gaussian_trainer.py`.
 
 The main training modules are:
 
@@ -28,6 +28,7 @@ Supported camera models:
 - `RADIAL`
 - `OPENCV`
 - `FULL_OPENCV`
+- `EQUIRECTANGULAR`
 
 The default sparse lookup accepts `sparse/0`, `sparse`, direct sparse files at the selected root, and one-level named sparse exports. The default image lookup tries `images_4`, `images`, and root-level images, including the named sparse-export parent when one was discovered.
 
@@ -36,7 +37,8 @@ Each training frame stores:
 - resolved image path,
 - COLMAP extrinsics (`q_wxyz`, `t_xyz`),
 - resized intrinsics (`fx`, `fy`, `cx`, `cy`),
-- radial distortion (`k1`, `k2`) when available.
+- distortion terms (`k1`, `k2`, `p1`, `p2`, `k3`, `k4`, `k5`, `k6`) when available,
+- camera model id for projection dispatch. Equirectangular frames keep focal/principal/distortion fields at zero and use spherical projection from the model id.
 
 Training targets are handled in two layers:
 
@@ -47,7 +49,7 @@ Import and training can optionally honor the image alpha channel as a per-pixel 
 
 ## Initialization
 
-The trainer consumes a prepared `GaussianScene`, but the viewer import path and CLI share the same initialization parameter model.
+The trainer consumes a prepared `GaussianScene`, but interactive and headless imports share the same initialization parameter model.
 
 Current scene-seeding paths include:
 
@@ -66,7 +68,11 @@ For point-based COLMAP initialization:
 - opacity starts from the configured constant,
 - the stored runtime scene keeps scale as 3DGS log-scale.
 
-Viewer and CLI both use the same resolved initialization hyperparameters, so count caps, scale coefficients, and opacity overrides stay aligned between the two entry points.
+Interactive and headless runs both use the same resolved initialization hyperparameters, so count caps, scale coefficients, and opacity overrides stay aligned between entry points.
+
+Each initialized source can also carry a refinable mask. COLMAP pointcloud, diffused pointcloud, custom PLY, custom mesh, and Fibonacci shell sources expose separate `*_refinable` import settings. Missing masks are treated as fully refinable.
+
+The trainer stores a per-splat initialization record as `float4(init_xyz, signed_nn_radius)`. Positive `w` means refinement may prune or split that splat; negative `w` freezes the splat topology while still allowing normal optimizer updates. The absolute radius is used by the init-position regularizer, so non-refinable splats are still gently pulled toward their source anchor.
 
 ## Training Schedule
 
@@ -172,7 +178,7 @@ Each trainer `step()` performs the following high-level sequence.
 7. Run the optimizer path.
    - optional packed per-splat grad-norm reduction,
    - one fused packed per-parameter update that applies scalar gradient clipping, ADAM, and generic regularization in a single dispatch,
-   - one fused per-gaussian post step that applies gaussian-specific regularization and the post-step safety/projection rules (quaternion normalization, anisotropy clamp, screen-size clamp, SH projection).
+   - one fused per-gaussian post step that applies gaussian-specific regularization and the post-step safety/projection rules (init-position pullback, quaternion normalization, anisotropy clamp, screen-size clamp, SH projection).
 
 8. When the current refinement boundary is reached, run the refinement pass.
 
@@ -184,6 +190,17 @@ The blended image term is:
 
 DSSIM is evaluated from blurred BT.601 luminance moments rather than from hue directly.
 The tracked SSIM summary is averaged over the pixels that participate in RGB training, so alpha-thresholded transparent regions no longer dilute the reported score.
+
+## Init Position Regularization
+
+`init_position_reg_weight` applies a direct post-step displacement:
+
+- `position -= saturate(weight * abs(init_nn_radius)) * (position - init_position)`
+- the default weight is `0.001`,
+- the regularizer is not scaled by the optimizer learning rate,
+- editor GPU resampling rebuilds the init anchors from the new live scene and marks the resampled topology refinable.
+
+The intent is to reduce long-term drift from imported initialization geometry without preventing splats from optimizing photometrically.
 
 ## Position Random Step Noise
 
@@ -226,11 +243,13 @@ Current behavior:
 - contribution thresholds use the raw fixed-unit visible-average contribution,
 - contribution values use a bidirectional leave-one-out RGB estimate: prefix transmittance times alpha times the distance between the splat color and the color composited behind it, averaged only across views where the current-frame contribution was nonzero,
 - completed refinement passes decay the contribution threshold,
+- non-refinable splats are excluded from prune candidates and clone sampling, and forced clone counts are ignored for them,
 - each refinement pass can additionally prune the exact lowest contribution fraction of otherwise surviving splats by building a GPU candidate mask, radix-sorting contribution/id pairs, and marking the lowest-ranked survivors before the topology rewrite,
 - clone-budget growth stays off until `refinement_growth_start_step`, then ramps on by `refinement_growth_ratio`,
 - clone resampling weights combine gradient variance and viewed-fraction EMA, with the viewed-fraction term zeroed below the configured viewed-fraction threshold,
 - split-family samples are generated from centered Fibonacci samples on the dominant local plane,
 - child scales shrink by the family-size rule before `refinement_clone_scale_mul` is applied,
+- split children inherit the parent's init position and radius as refinable metadata,
 - packed ADAM moments are migrated with the rewritten topology so unrelated splats keep optimizer history.
 
 ## Metrics
@@ -271,13 +290,13 @@ Packed runtime facts:
 - ADAM moments are stored as packed `float2` buffers (`m`, `v`),
 - raster backward uses cached raster-field intermediates before writing final float parameter gradients.
 
-## CLI And Viewer Integration
+## Viewer And Headless Integration
 
-The CLI and viewer share the same training/init abstractions.
+Interactive and headless viewer runs share the same training/init abstractions.
 
-- `src/app/cli.py` resolves the active training profile and initialization path before trainer construction.
 - `src/app/shared.py` applies training-profile overrides to the `AdamHyperParams`, `StabilityHyperParams`, and `TrainingHyperParams` dataclasses.
-- the viewer creates `GaussianTrainer` through the same core parameter objects and can reinitialize a training scene without rebuilding the dataset textures.
+- `src/viewer/session.py` creates `GaussianTrainer` through the same core parameter objects and can reinitialize a training scene without rebuilding the dataset textures.
+- `src/viewer/headless.py` drives the same session/import actions without creating a window.
 
 The default training profile interface remains:
 
@@ -291,8 +310,7 @@ The default training profile interface remains:
 The training path is covered primarily by:
 
 - `tests/test_training_kernels.py`
-- `tests/test_training_cli_smoke.py`
 - `tests/test_optimizer_module.py`
 - viewer/session integration tests covering import and training setup
 
-These tests cover the fixed-count trainer kernels, YCbCr SSIM feature path, blur integration, optimizer behavior, and the current CLI/viewer orchestration.
+These tests cover the fixed-count trainer kernels, YCbCr SSIM feature path, blur integration, optimizer behavior, and the current viewer/headless orchestration.

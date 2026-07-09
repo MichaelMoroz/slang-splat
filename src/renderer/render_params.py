@@ -3,11 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
-from ..repo_defaults import cli_defaults, renderer_defaults
+from ..repo_defaults import renderer_defaults
 
 
 _RENDERER_DEFAULTS = renderer_defaults()
-_CLI_COMMON_RENDER_DEFAULTS = cli_defaults()["common_render"]
 CACHED_RASTER_GRAD_ATOMIC_MODE_FLOAT = "float"
 CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED = "fixed"
 CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES = (
@@ -31,8 +30,6 @@ class ControlDef:
     label: str
     kwargs: dict[str, object]
     tooltip: str
-    cli_flags: tuple[str, ...] | None = None
-    cli_kwargs: dict[str, object] | None = None
 
 
 def cached_raster_grad_key(field_name: str) -> str:
@@ -76,14 +73,12 @@ def _control_def(
     tooltip: str,
     *,
     value: object | None = None,
-    cli_flags: tuple[str, ...] | None = None,
-    cli_kwargs: dict[str, object] | None = None,
     **kwargs: object,
-) -> RendererControlDef:
+) -> ControlDef:
     control_kwargs = dict(kwargs)
     if value is not None:
         control_kwargs["value"] = value
-    return ControlDef(key, kind, label, control_kwargs, tooltip, cli_flags=cli_flags, cli_kwargs=cli_kwargs)
+    return ControlDef(key, kind, label, control_kwargs, tooltip)
 
 
 def _range_control_defs(
@@ -128,16 +123,6 @@ _RENDERER_UI_RANGE_FIELDS = (
     ("debug_depth_std_range", "debug_depth_std_min", "debug_depth_std_max"),
     ("debug_depth_local_mismatch_range", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max"),
 )
-_RENDERER_ARG_FIELD_KEYS = (
-    ("radius_scale", "radius_scale"),
-    ("alpha_cutoff", "alpha_cutoff"),
-    ("max_anisotropy", "max_anisotropy"),
-    ("transmittance_threshold", "trans_threshold"),
-    ("list_capacity_multiplier", "list_capacity_multiplier"),
-    ("max_prepass_memory_mb", "prepass_memory_mb"),
-)
-
-
 @dataclass(frozen=True, slots=True)
 class CachedRasterGradParams:
     atomic_mode: str = str(_RENDERER_DEFAULTS["cached_raster_grad_atomic_mode"])
@@ -175,22 +160,6 @@ class CachedRasterGradParams:
             if field_name == "atomic_mode":
                 mode_index = min(max(int(raw_value), 0), len(CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES) - 1)
                 field_values[field_name] = CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES[mode_index]
-            elif field_name == "include_depth":
-                field_values[field_name] = bool(raw_value)
-            else:
-                field_values[field_name] = float(raw_value)
-        return cls(**field_values)
-
-    @classmethod
-    def from_args(cls, args: object, defaults: Mapping[str, object] | None = None) -> CachedRasterGradParams:
-        resolved_defaults = _CLI_COMMON_RENDER_DEFAULTS if defaults is None else defaults
-        base_defaults = cls()
-        field_values: dict[str, object] = {}
-        for field_name in cls.field_names():
-            key = cached_raster_grad_key(field_name)
-            raw_value = getattr(args, key, resolved_defaults.get(key, getattr(base_defaults, field_name)))
-            if field_name == "atomic_mode":
-                field_values[field_name] = str(raw_value)
             elif field_name == "include_depth":
                 field_values[field_name] = bool(raw_value)
             else:
@@ -278,19 +247,6 @@ class RendererParams:
         field_values["debug_show_grad_norm"] = bool(values.get("debug_show_grad_norm", defaults.debug_show_grad_norm))
         return cls(cached_raster_grad=CachedRasterGradParams.from_ui_values(values), **field_values)
 
-    @classmethod
-    def from_args(cls, args: object, defaults: Mapping[str, object] | None = None) -> RendererParams:
-        resolved_defaults = _CLI_COMMON_RENDER_DEFAULTS if defaults is None else defaults
-        base_defaults = cls()
-        field_values = {
-            field_name: getattr(base_defaults, field_name)
-            for field_name in cls.__dataclass_fields__
-            if field_name != "cached_raster_grad"
-        }
-        for field_name, key in _RENDERER_ARG_FIELD_KEYS:
-            field_values[field_name] = _coerce_renderer_value(getattr(args, key, resolved_defaults.get(key, getattr(base_defaults, field_name))), getattr(base_defaults, field_name))
-        return cls(cached_raster_grad=CachedRasterGradParams.from_args(args, resolved_defaults), **field_values)
-
     def renderer_kwargs(self) -> dict[str, object]:
         kwargs = {
             field_name: _serialize_renderer_value(getattr(self, field_name))
@@ -299,17 +255,6 @@ class RendererParams:
         }
         kwargs.update(self.cached_raster_grad.renderer_kwargs())
         return kwargs
-
-    def cli_common_render_defaults_dict(self) -> dict[str, object]:
-        return {
-            "prepass_memory_mb": int(self.max_prepass_memory_mb),
-            "radius_scale": float(self.radius_scale),
-            "alpha_cutoff": float(self.alpha_cutoff),
-            "trans_threshold": float(self.transmittance_threshold),
-            **self.cached_raster_grad.renderer_kwargs(),
-            "debug_layers": False,
-            "list_capacity_multiplier": int(self.list_capacity_multiplier),
-        }
 
     def apply_ui_values(self, values: dict[str, object], atomic_mode_index, debug_mode_index, threshold_from_band_range) -> None:
         for field_name, key in _RENDERER_UI_FIELD_KEYS:
@@ -341,8 +286,6 @@ _CACHED_RASTER_GRAD_CONTROL_DEFS = (
         "Cached Grad Atomics",
         {"options": CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS},
         "Choose float atomics or fixed-point atomics for cached raster gradient accumulation during raster backward",
-        cli_flags=("--cached-raster-grad-atomic-mode",),
-        cli_kwargs={"type": str, "choices": CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES},
     ),
     ControlDef(
         cached_raster_grad_key("include_depth"),
@@ -357,8 +300,6 @@ _CACHED_RASTER_GRAD_CONTROL_DEFS = (
         "Cached Grad Local Range",
         {"min": 1e-4, "max": 1024.0, "format": "%.4g", "logarithmic": True},
         "Symmetric [-X, X] range for avgInvScale-normalized cached local-origin gradients",
-        cli_flags=("--cached-raster-grad-fixed-ro-local-range",),
-        cli_kwargs={"type": float},
     ),
     ControlDef(
         cached_raster_grad_key("fixed_scale_range"),
@@ -366,8 +307,6 @@ _CACHED_RASTER_GRAD_CONTROL_DEFS = (
         "Cached Grad Scale Range",
         {"min": 1e-4, "max": 4096.0, "format": "%.4g", "logarithmic": True},
         "Symmetric [-X, X] range for avgInvScale-normalized cached scale gradients",
-        cli_flags=("--cached-raster-grad-fixed-scale-range",),
-        cli_kwargs={"type": float},
     ),
     ControlDef(
         cached_raster_grad_key("fixed_quat_range"),
@@ -375,8 +314,6 @@ _CACHED_RASTER_GRAD_CONTROL_DEFS = (
         "Cached Grad OffDiag Range",
         {"min": 1e-6, "max": 16.0, "format": "%.4g", "logarithmic": True},
         "Symmetric [-X, X] range for avgInvScale-normalized cached off-diagonal sigma gradients",
-        cli_flags=("--cached-raster-grad-fixed-quat-range",),
-        cli_kwargs={"type": float},
     ),
     ControlDef(
         cached_raster_grad_key("fixed_color_range"),
@@ -384,8 +321,6 @@ _CACHED_RASTER_GRAD_CONTROL_DEFS = (
         "Cached Grad Color Range",
         {"min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True},
         "Symmetric [-X, X] range for cached color gradients",
-        cli_flags=("--cached-raster-grad-fixed-color-range",),
-        cli_kwargs={"type": float},
     ),
     ControlDef(
         cached_raster_grad_key("fixed_opacity_range"),
@@ -393,8 +328,6 @@ _CACHED_RASTER_GRAD_CONTROL_DEFS = (
         "Cached Grad Opacity Range",
         {"min": 1e-4, "max": 2048.0, "format": "%.4g", "logarithmic": True},
         "Symmetric [-X, X] range for cached opacity gradients",
-        cli_flags=("--cached-raster-grad-fixed-opacity-range",),
-        cli_kwargs={"type": float},
     ),
 )
 
@@ -412,21 +345,11 @@ def build_cached_raster_grad_control_specs(control_spec_factory, atomic_mode_ind
     )
 
 
-def build_cached_raster_grad_cli_args(arg_factory) -> tuple[object, ...]:
-    defaults = CachedRasterGradParams.from_args(object())
-    default_values = defaults.renderer_kwargs()
-    return tuple(
-        arg_factory(*defn.cli_flags, **dict(defn.cli_kwargs or {}, default=default_values[defn.key]))
-        for defn in _CACHED_RASTER_GRAD_CONTROL_DEFS
-        if defn.cli_flags is not None
-    )
-
-
 _RENDER_CONTROL_DEFS = (
-    _control_def("radius_scale", "slider_float", "Radius Scale", "Multiplier on top of true 3DGS gaussian size for rendering", value=float(_RENDERER_DEFAULTS["radius_scale"]), min=0.25, max=4.0, format="%.3g", cli_flags=("--radius-scale",), cli_kwargs={"type": float}),
-    _control_def("alpha_cutoff", "slider_float", "Alpha Cutoff", "Minimum alpha threshold; splats below this are skipped", value=float(_RENDERER_DEFAULTS["alpha_cutoff"]), min=0.0001, max=0.1, format="%.2e", cli_flags=("--alpha-cutoff",), cli_kwargs={"type": float}),
+    _control_def("radius_scale", "slider_float", "Radius Scale", "Multiplier on top of true 3DGS gaussian size for rendering", value=float(_RENDERER_DEFAULTS["radius_scale"]), min=0.25, max=4.0, format="%.3g"),
+    _control_def("alpha_cutoff", "slider_float", "Alpha Cutoff", "Minimum alpha threshold; splats below this are skipped", value=float(_RENDERER_DEFAULTS["alpha_cutoff"]), min=0.0001, max=0.1, format="%.2e"),
     _control_def("sort_splats_by", "combo", "Sort Splats By", "Choose whether prepass ordering uses Euclidean camera distance or camera z-depth", value=SORT_SPLATS_BY_VALUES.index(str(_RENDERER_DEFAULTS.get("sort_splats_by", SORT_SPLATS_BY_DISTANCE_TO_CAMERA))), options=SORT_SPLATS_BY_LABELS),
-    _control_def("trans_threshold", "slider_float", "Trans Threshold", "Transmittance threshold for early ray termination", value=float(_RENDERER_DEFAULTS["transmittance_threshold"]), min=0.001, max=0.2, format="%.2e", cli_flags=("--trans-threshold",), cli_kwargs={"type": float}),
+    _control_def("trans_threshold", "slider_float", "Trans Threshold", "Transmittance threshold for early ray termination", value=float(_RENDERER_DEFAULTS["transmittance_threshold"]), min=0.001, max=0.2, format="%.2e"),
 )
 
 _DEBUG_RENDER_CONTROL_DEFS = (
@@ -475,16 +398,3 @@ def renderer_param_tooltips() -> dict[str, str]:
         **{defn.key: defn.tooltip for defn in _CACHED_RASTER_GRAD_CONTROL_DEFS},
         **{defn.key: defn.tooltip for defn in _DEBUG_RENDER_CONTROL_DEFS},
     }
-
-
-def build_renderer_cli_args(arg_factory) -> tuple[object, ...]:
-    args = [
-        arg_factory("--prepass-memory-mb", type=int, default=int(_CLI_COMMON_RENDER_DEFAULTS["prepass_memory_mb"])),
-        *[
-            arg_factory(*defn.cli_flags, **dict(defn.cli_kwargs or {}, default=defn.kwargs["value"]))
-            for defn in _RENDER_CONTROL_DEFS
-            if defn.cli_flags is not None
-        ],
-        *build_cached_raster_grad_cli_args(arg_factory),
-    ]
-    return tuple(args)

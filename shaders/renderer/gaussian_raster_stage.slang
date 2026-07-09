@@ -328,6 +328,7 @@ float raster_eval_outline_alpha(uint splatId, float opacity, float2 samplePoint)
 {
     float4 centerRadiusDepth = g_ScreenCenterRadiusDepth[splatId];
     float4 conicAndOpacity = g_ScreenEllipseConic[splatId];
+    if (conicAndOpacity.x <= 0.0 || conicAndOpacity.z <= 0.0) return 0.0;
     float ellipseScale = max(g_Raster.debugGaussianScaleMultiplier * g_Raster.debugEllipseScaleMultiplier, SMALL_VALUE);
     float conicScale = 1.0 / (ellipseScale * ellipseScale);
     float3 conic = conicAndOpacity.xyz * conicScale;
@@ -520,6 +521,11 @@ float3 raster_viewed_fraction_ema_color(uint splatId)
     return jet_colormap(debug_normalize_range(splat_viewed_fraction_ema(splatId), g_Raster.debugContributionRange));
 }
 
+float3 raster_unrefinable_color(uint splatId, float3 splatColor)
+{
+    return g_DebugSplatInit[splatId].w < 0.0 ? float3(1.0, 0.05, 0.02) : 0.04 * saturate(splatColor);
+}
+
 uint raster_adam_moment_index(uint splatCount, uint paramId, uint splatId)
 {
     return paramId * splatCount + splatId;
@@ -566,6 +572,7 @@ float raster_grad_variance(uint splatId)
 
 float raster_refinement_distribution(uint splatId)
 {
+    if (g_DebugSplatInit[splatId].w < 0.0) return 0.0;
     float varianceWeight = pow(raster_grad_variance(splatId), g_Raster.debugRefinementGradientVarianceWeightExponent);
     float contribution = raster_refinement_distribution_viewed_fraction(splatId);
     float contributionWeight = pow(max(contribution, 0.0), g_Raster.debugRefinementContributionWeightExponent);
@@ -731,6 +738,7 @@ float3 raster_debug_color(RasterPixelInfo info, RasterReplayState replayState, u
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(splatId);
     if (debugMode == DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION) return raster_current_frame_splat_contribution_color(splatId);
     if (debugMode == DEBUG_MODE_VIEWED_FRACTION_EMA) return raster_viewed_fraction_ema_color(splatId);
+    if (debugMode == DEBUG_MODE_UNREFINABLE) return raster_unrefinable_color(splatId, splatColor);
     if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_ADAM_SECOND_MOMENT) return jet_colormap(raster_normalize_threshold_band(raster_adam_second_moment_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)
@@ -765,17 +773,17 @@ RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
     uint localY = lane / RASTER_THREAD_TILE_DIM;
     info.pixelCoord = uint2(tileX * g_Prepass.tileSize + localX, tileY * g_Prepass.tileSize + localY);
     info.pixelActive = info.pixelCoord.x < g_Raster.width && info.pixelCoord.y < g_Raster.height;
-    info.samplePoint = float2(info.pixelCoord);
+    info.samplePoint = float2(info.pixelCoord) + 0.5;
 
     if (g_TrainingSubsample.enabled != 0u)
     {
         PinholeCamera camera = PinholeCamera.from_params(g_TrainingNativeCamera);
         uint2 samplePixel = training_sample_native_pixel(info.pixelCoord, g_TrainingSubsample);
-        info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(float2(samplePixel)));
+        info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(float2(samplePixel) + 0.5));
     } else
     {
         PinholeCamera camera = PinholeCamera.from_params(g_Camera);
-        info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(float2(min(info.pixelCoord.x, g_Raster.width - 1u), min(info.pixelCoord.y, g_Raster.height - 1u))));
+        info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(info.samplePoint));
     }
 
     uint2 range = g_TileRanges[info.tileId];

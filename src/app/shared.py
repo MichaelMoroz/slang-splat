@@ -160,7 +160,9 @@ def build_training_params(
     raster_grad_distance_bias: float = TRAINING_BUILD_ARG_DEFAULTS["raster_grad_distance_bias"],
     scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"],
     scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"],
+    init_position_reg_weight: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("init_position_reg_weight", 0.001)),
     opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"],
+    opacity_binarize_reg_weight: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_binarize_reg_weight", 0.0)),
     opacity_reg_weight_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage1", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])),
     opacity_reg_weight_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage2", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])),
     opacity_reg_weight_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])),
@@ -281,6 +283,7 @@ def build_training_params(
     train_downscale_max_iters: int = 30_000,
     train_downscale_factor: int = 1,
     train_subsample_factor: int = 0,
+    train_subsample_crop_probability: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("train_subsample_crop_probability", 0.0)),
 ) -> AppTrainingParams:
     resolved_sh_band = 3 if sh_band is None and bool(use_sh) else (0 if sh_band is None else int(sh_band))
     resolved_max_sh_band = 3 if max_sh_band is None else int(max_sh_band)
@@ -333,6 +336,8 @@ def build_training_params(
         max_sh_band=resolved_max_sh_band,
         scale_l2_weight=float(scale_l2_weight),
         scale_abs_reg_weight=float(scale_abs_reg_weight),
+        init_position_reg_weight=float(init_position_reg_weight),
+        opacity_binarize_reg_weight=float(opacity_binarize_reg_weight),
         sh1_reg_weight=float(sh1_reg_weight),
         max_opacity=float(max_opacity),
         max_opacity_stage0=float(max_opacity_stage0),
@@ -473,6 +478,7 @@ def build_training_params(
         train_downscale_max_iters=int(train_downscale_max_iters),
         train_downscale_factor=int(train_downscale_factor),
         train_subsample_factor=int(train_subsample_factor),
+        train_subsample_crop_probability=float(np.clip(float(train_subsample_crop_probability), 0.0, 1.0)),
     )
     return AppTrainingParams(adam=adam, stability=stability, training=training)
 

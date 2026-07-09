@@ -16,6 +16,7 @@ from src.viewer.state import (
     COLMAP_ROTATION_MODE_NONE,
     ColmapImportProgress,
     ColmapImportSettings,
+    DEFAULT_COLMAP_ROTATION_MODE,
 )
 from tests.viewer_test_harness import (
     _DebugTrainingRenderer,
@@ -48,6 +49,16 @@ def _viewer() -> SimpleNamespace:
             training_resume_time=None,
         )
     )
+
+
+def test_training_dataset_pool_size_prefers_finalized_import_settings() -> None:
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(colmap_import=SimpleNamespace(dataset_pool_size=3)),
+        ui=SimpleNamespace(_values={"training_dataset_pool_size": 9}),
+    )
+
+    assert session._training_dataset_pool_size(viewer) == 3
+    assert session._training_dataset_pool_size_from_ui(viewer) == 9
 
 
 def test_resolve_viewer_image_io_threads_uses_all_but_one_thread() -> None:
@@ -231,7 +242,7 @@ def test_create_native_dataset_textures_ignores_mask_root_when_disabled(tmp_path
     assert np.all(captured[0][:, :, 3] == 32)
 
 
-def test_create_native_dataset_textures_uses_viewer_image_io_threads(tmp_path: Path, monkeypatch) -> None:
+def test_create_native_dataset_textures_uses_configured_compression_threads(tmp_path: Path, monkeypatch) -> None:
     images_root = (tmp_path / "images").resolve()
     images_root.mkdir()
     image_path = images_root / "frame.png"
@@ -248,7 +259,10 @@ def test_create_native_dataset_textures_uses_viewer_image_io_threads(tmp_path: P
         width=2,
         height=2,
     )
-    viewer = SimpleNamespace(s=SimpleNamespace(colmap_import=SimpleNamespace(images_root=images_root, alpha_mask_root=None, use_alpha_masks=False, compress_dataset_using_bc7=False)))
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"colmap_dataset_compression_threads": 5}),
+        s=SimpleNamespace(colmap_import=SimpleNamespace(images_root=images_root, alpha_mask_root=None, use_alpha_masks=False, compress_dataset_using_bc7=False)),
+    )
     calls: list[tuple[int, str]] = []
 
     class _Executor:
@@ -265,13 +279,90 @@ def test_create_native_dataset_textures_uses_viewer_image_io_threads(tmp_path: P
             return map(fn, items)
 
     monkeypatch.setattr(session, "ThreadPoolExecutor", _Executor)
-    monkeypatch.setattr(session, "_VIEWER_IMAGE_IO_THREADS", 5)
+    monkeypatch.setattr(session, "_MAX_DATASET_COMPRESSION_THREADS", 64)
     monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda _viewer, rgba8: "tex")
 
     textures = session._create_native_dataset_textures(viewer, [frame], compress_dataset_using_bc7=False)
 
     assert textures == ["tex"]
     assert calls == [(5, "viewer-target")]
+
+
+def test_resolve_dataset_compression_threads_clamps_and_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(session, "_MAX_DATASET_COMPRESSION_THREADS", 8)
+    monkeypatch.setattr(session, "DEFAULT_DATASET_COMPRESSION_THREADS", 7)
+    resolve = session._resolve_dataset_compression_threads
+    assert resolve(None) == 7  # unset -> machine default
+    assert resolve(0) == 7  # 0 sentinel -> machine default
+    assert resolve(-4) == 7  # negatives -> machine default
+    assert resolve(3) == 3  # in range -> as-is
+    assert resolve(9999) == 8  # clamped to logical CPU count
+
+
+def test_start_colmap_texture_loader_uses_progress_compression_threads(tmp_path: Path, monkeypatch) -> None:
+    progress = ColmapImportProgress(
+        dataset_root=tmp_path,
+        colmap_root=tmp_path,
+        database_path=None,
+        images_root=tmp_path,
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=2048,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.5,
+        dataset_compression_threads=3,
+    )
+    progress.frames = []
+    calls: list[int] = []
+
+    class _Executor:
+        def __init__(self, *, max_workers: int, thread_name_prefix: str) -> None:
+            calls.append(int(max_workers))
+
+        def map(self, fn, items):
+            return iter(())
+
+    monkeypatch.setattr(session, "ThreadPoolExecutor", _Executor)
+    monkeypatch.setattr(session, "_MAX_DATASET_COMPRESSION_THREADS", 64)
+    session._start_colmap_texture_loader(progress)
+    assert calls == [3]
+
+
+def test_advance_colmap_import_streaming_load_textures_skips_gpu_upload(tmp_path: Path, monkeypatch) -> None:
+    frames = [
+        ColmapFrame(1, tmp_path / "a.png", _identity_q(), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.5, 0.5, 2, 2),
+        ColmapFrame(2, tmp_path / "b.png", _identity_q(), np.zeros((3,), dtype=np.float32), 1.0, 1.0, 0.5, 0.5, 2, 2),
+    ]
+    progress = ColmapImportProgress(
+        dataset_root=tmp_path,
+        colmap_root=tmp_path,
+        database_path=None,
+        images_root=tmp_path,
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=2048,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.5,
+        frames=frames,
+        phase="load_textures",
+        current=0,
+        total=len(frames),
+        native_rgba8_iter=iter([np.zeros((2, 2, 4), dtype=np.uint8), np.ones((2, 2, 4), dtype=np.uint8)]),
+        dataset_pool_size=1,
+    )
+    viewer = SimpleNamespace(s=SimpleNamespace(colmap_import_progress=progress))
+    uploads: list[object] = []
+    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda _viewer, rgba8: uploads.append(rgba8) or "tex")
+    monkeypatch.setattr(session, "_close_colmap_texture_loader", lambda _progress: None)
+
+    while progress.phase == "load_textures":
+        session.advance_colmap_import(viewer)
+
+    assert progress.phase == "finalize"
+    assert progress.native_textures == []
+    assert uploads == []
 
 
 def test_load_dataset_texture_bakes_masked_alpha_into_bc7_cache(tmp_path: Path, monkeypatch) -> None:
@@ -1705,8 +1796,8 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.s.last_error == ""
 
 
-@pytest.mark.parametrize(("model_id", "model_name"), ((4, "OPENCV"), (6, "FULL_OPENCV")))
-def test_choose_colmap_root_supports_opencv_camera_models(tmp_path: Path, model_id: int, model_name: str) -> None:
+@pytest.mark.parametrize(("model_id", "model_name"), ((4, "OPENCV"), (6, "FULL_OPENCV"), (17, "EQUIRECTANGULAR")))
+def test_choose_colmap_root_supports_extended_camera_models(tmp_path: Path, model_id: int, model_name: str) -> None:
     database_path, images_root = _build_colmap_tree(
         tmp_path,
         image_names=["frame_000.png"],
@@ -1725,7 +1816,12 @@ def test_choose_colmap_root_supports_opencv_camera_models(tmp_path: Path, model_
     assert viewer.ui._values["colmap_images_root"] == str(images_root)
     assert viewer.ui._values["colmap_selected_camera_ids"] == (7,)
     assert viewer.ui._values["_colmap_point_stats"] == {"total_points": 1, "tracked_points_min2": 1}
-    assert viewer.ui._values["_colmap_camera_rows"][0]["model_name"] == model_name
+    camera_row = viewer.ui._values["_colmap_camera_rows"][0]
+    assert camera_row["model_name"] == model_name
+    if model_id == 17:
+        assert camera_row["focal_text"] == "n/a"
+        assert camera_row["principal_text"] == "n/a"
+        assert camera_row["distortion_text"] == "n/a"
     assert viewer.s.last_error == ""
 
 
@@ -1746,7 +1842,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
         monkeypatch,
         recon="recon",
         load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): calls.append(("load_recon", Path(root), rotation_mode, tuple(custom_rotation_deg))) or "recon",
-        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("build_frames", recon_obj, tuple(selected_camera_ids))) or ["frame"],
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0, max_pose_subset=0: calls.append(("build_frames", recon_obj, tuple(selected_camera_ids))) or ["frame"],
         create_textures=lambda viewer_obj, frames: calls.append(("create_textures", list(frames))) or ["tex"],
         finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"])),
     )
@@ -1916,19 +2012,24 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
             "colmap_images_root": str(images_root),
             "colmap_depth_value_mode": 1,
             "colmap_pointcloud_enabled": True,
+            "colmap_pointcloud_refinable": False,
             "colmap_pointcloud_nn_radius_scale_coef": 0.4,
             "colmap_diffused_enabled": True,
+            "colmap_diffused_refinable": True,
             "colmap_diffused_point_count": 4096,
             "colmap_diffused_diffusion_radius": 0.75,
             "colmap_diffused_nn_radius_scale_coef": 0.45,
             "colmap_custom_ply_enabled": True,
+            "colmap_custom_ply_refinable": False,
             "colmap_custom_ply_path": str(ply_path),
             "colmap_custom_ply_nn_radius_scale_coef": 1.1,
             "colmap_custom_mesh_enabled": True,
+            "colmap_custom_mesh_refinable": True,
             "colmap_custom_mesh_path": str(mesh_path),
             "colmap_custom_mesh_point_count": 2048,
             "colmap_custom_mesh_nn_radius_scale_coef": 0.55,
             "colmap_fibonacci_sphere_enabled": True,
+            "colmap_fibonacci_sphere_refinable": False,
             "colmap_fibonacci_sphere_point_count": 512,
             "colmap_fibonacci_sphere_radius_multiplier": 2.5,
             "colmap_fibonacci_sphere_color": (0.2, 0.4, 0.6),
@@ -1957,16 +2058,21 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
     assert progress is not None
     assert progress.init_mode == "pointcloud"
     assert progress.pointcloud_enabled is True
+    assert progress.pointcloud_refinable is False
     assert progress.pointcloud_nn_radius_scale_coef == pytest.approx(0.4)
     assert progress.diffused_enabled is True
+    assert progress.diffused_refinable is True
     assert progress.diffused_point_count == 4096
     assert progress.diffused_diffusion_radius == pytest.approx(0.75)
     assert progress.custom_ply_enabled is True
+    assert progress.custom_ply_refinable is False
     assert progress.custom_ply_path == ply_path.resolve()
     assert progress.custom_mesh_enabled is True
+    assert progress.custom_mesh_refinable is True
     assert progress.custom_mesh_path == mesh_path.resolve()
     assert progress.custom_mesh_point_count == 2048
     assert progress.fibonacci_sphere_enabled is True
+    assert progress.fibonacci_sphere_refinable is False
     assert progress.fibonacci_sphere_point_count == 512
     assert progress.fibonacci_sphere_radius_multiplier == pytest.approx(2.5)
     assert progress.fibonacci_sphere_color == pytest.approx((0.2, 0.4, 0.6))
@@ -2308,7 +2414,7 @@ def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
     monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: xyz)
-    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None, **kwargs: None)
     calls: list[str] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
@@ -2345,7 +2451,7 @@ def test_finish_import_colmap_dataset_uses_training_camera_position_only(monkeyp
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
     monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: SimpleNamespace(center=np.zeros((3,), dtype=np.float32), radius=2.0))
-    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None, **kwargs: None)
     calls: list[object] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
@@ -2387,7 +2493,7 @@ def test_finish_import_colmap_dataset_falls_back_to_bounds_fit_without_training_
     monkeypatch.setattr(session, "_update_import_settings", lambda viewer_obj, **kwargs: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
     monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: ("bounds", xyz.shape[0]))
-    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: None)
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None, **kwargs: None)
     calls: list[object] = []
     viewer = SimpleNamespace(
         toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset")),
@@ -2441,7 +2547,7 @@ def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkey
     monkeypatch.setattr(session, "_set_colmap_camera_preview", lambda viewer_obj, recon_obj, camera_ids: None)
     monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: calls.append("apply_live"))
     monkeypatch.setattr(session, "estimate_point_bounds", lambda xyz: ("bounds", xyz.shape[0]))
-    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None: calls.append(("initialize", frame_targets_native)))
+    monkeypatch.setattr(session, "initialize_training_scene", lambda viewer_obj, frame_targets_native=None, **kwargs: calls.append(("initialize", frame_targets_native)))
 
     def _ensure_cached(viewer_obj, init) -> None:
         calls.append(("ensure_cached", init.seed, viewer_obj.s.colmap_import.init_mode, viewer_obj.s.colmap_import.fibonacci_sphere_point_count, viewer_obj.s.colmap_import.fibonacci_sphere_upper_hemisphere_only))
@@ -2496,7 +2602,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         monkeypatch,
         recon=recon,
         load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon if rotation_mode == COLMAP_ROTATION_MODE_AUTO else (_ for _ in ()).throw(AssertionError("expected aligned reconstruction")),
-        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0, max_pose_subset=0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
         create_textures=lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")),
         finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"], kwargs["training_image_color_init"], kwargs["target_alpha_threshold"])),
     )
@@ -2541,7 +2647,7 @@ def test_import_colmap_dataset_can_skip_aligned_reconstruction(monkeypatch) -> N
         monkeypatch,
         recon=raw_recon,
         load_reconstruction=lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): raw_recon if rotation_mode == COLMAP_ROTATION_MODE_NONE else (_ for _ in ()).throw(AssertionError("expected raw reconstruction")),
-        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
+        build_training_frames=lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0, max_pose_subset=0: calls.append(("frames", recon_obj, Path(images_root), tuple(selected_camera_ids), downscale_mode, downscale_max_size, downscale_scale)) or frames,
         create_textures=lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")),
         finish=lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"])),
     )
@@ -2607,7 +2713,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     defaults = ColmapImportSettings()
 
     assert defaults.init_mode == "pointcloud"
-    assert defaults.rotation_mode == COLMAP_ROTATION_MODE_AUTO
+    assert defaults.rotation_mode == DEFAULT_COLMAP_ROTATION_MODE
     assert defaults.custom_rotation_deg == (0.0, 0.0, 0.0)
     assert isinstance(defaults.training_image_color_init, bool)
     assert defaults.nn_radius_scale_coef == 0.5
@@ -2616,7 +2722,12 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.selected_camera_ids == ()
     assert defaults.depth_value_mode == "z_depth"
     assert defaults.depth_point_count == 100000
+    assert defaults.pointcloud_refinable is True
+    assert defaults.diffused_refinable is True
+    assert defaults.custom_ply_refinable is True
+    assert defaults.custom_mesh_refinable is True
     assert defaults.fibonacci_sphere_point_count == 0
+    assert defaults.fibonacci_sphere_refinable is True
     assert defaults.fibonacci_sphere_radius_multiplier == 2.0
     assert defaults.fibonacci_sphere_color == pytest.approx((0.8, 0.8, 0.8))
     assert isinstance(defaults.fibonacci_sphere_upper_hemisphere_only, bool)
@@ -3067,6 +3178,41 @@ def test_training_image_color_init_runs_only_when_enabled_with_native_targets(mo
     ]
 
 
+def test_training_image_color_init_uses_streaming_path(monkeypatch) -> None:
+    calls: list[object] = []
+
+    class _Initializer:
+        def __init__(self, device) -> None:
+            calls.append(("create", device))
+
+        def apply_streaming(self, renderer, frames, texture_provider, mark_submitted, splat_count) -> None:
+            calls.append(("stream", renderer, tuple(frames), splat_count))
+            texture = texture_provider(1, "frame-encoder")
+            mark_submitted(1, 42)
+            calls.append(("texture", texture))
+
+    viewer = SimpleNamespace(device="device", s=SimpleNamespace(colmap_import=SimpleNamespace(training_image_color_init=True)))
+    trainer = SimpleNamespace(
+        dataset_targets_streaming=True,
+        renderer="renderer",
+        frames=["frame0", "frame1"],
+        scene=SimpleNamespace(count=4),
+        get_frame_target_texture=lambda frame_index, native_resolution=True, encoder=None: calls.append(("get", frame_index, native_resolution, encoder)) or "tex1",
+        mark_dataset_submitted=lambda frame_indices, submission: calls.append(("mark", tuple(frame_indices), submission)),
+    )
+    monkeypatch.setattr(session, "TrainingImageColorInitializer", _Initializer)
+
+    session._apply_training_image_color_init(viewer, trainer, "unused-encoder")
+
+    assert calls == [
+        ("create", "device"),
+        ("stream", "renderer", ("frame0", "frame1"), 4),
+        ("get", 1, True, "frame-encoder"),
+        ("mark", (1,), 42),
+        ("texture", "tex1"),
+    ]
+
+
 def test_refresh_training_frames_uses_cached_reconstruction(monkeypatch) -> None:
     recon = object()
     frame = SimpleNamespace(width=24, height=12, image_id=3)
@@ -3088,7 +3234,7 @@ def test_refresh_training_frames_uses_cached_reconstruction(monkeypatch) -> None
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
-        lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0: [frame] if recon_obj is recon and tuple(selected_camera_ids) == () else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")),
+        lambda recon_obj, images_root, selected_camera_ids=(), downscale_mode="original", downscale_max_size=None, downscale_scale=1.0, max_pose_subset=0: [frame] if recon_obj is recon and tuple(selected_camera_ids) == () else (_ for _ in ()).throw(AssertionError("unexpected reconstruction instance")),
     )
 
     session._refresh_training_frames(viewer)
@@ -3248,8 +3394,10 @@ def test_build_initial_training_scene_combines_fibonacci_as_separate_source(monk
             colmap_import=SimpleNamespace(
                 init_mode="pointcloud",
                 pointcloud_enabled=True,
+                pointcloud_refinable=False,
                 pointcloud_nn_radius_scale_coef=0.5,
                 fibonacci_sphere_enabled=True,
+                fibonacci_sphere_refinable=True,
                 fibonacci_sphere_nn_radius_scale_coef=1.0,
                 min_track_length=3,
             ),
@@ -3307,6 +3455,7 @@ def test_build_initial_training_scene_combines_fibonacci_as_separate_source(monk
 
     assert scene.count == 4
     assert np.array_equal(scene.positions, np.concatenate((point_positions, fibonacci_positions), axis=0))
+    np.testing.assert_array_equal(scene.refinable, np.array([False, False, True, True], dtype=bool))
     assert scale_reg_reference is None
 
 

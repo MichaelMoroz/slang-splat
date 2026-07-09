@@ -549,7 +549,7 @@ def test_format_struct_sections_text_uses_stable_float_layout() -> None:
     )
 
 
-def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults() -> None:
+def test_export_repo_defaults_writes_cached_raster_grad_render_defaults() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 
     viewer_ui._values["cached_raster_grad_atomic_mode"] = 0
@@ -574,13 +574,7 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     assert exported["renderer"]["cached_raster_grad_fixed_quat_range"] == 0.125
     assert exported["renderer"]["cached_raster_grad_fixed_color_range"] == 9.0
     assert exported["renderer"]["cached_raster_grad_fixed_opacity_range"] == 10.0
-    assert exported["cli"]["common_render"]["cached_raster_grad_atomic_mode"] == "float"
-    assert exported["cli"]["common_render"]["cached_raster_grad_include_depth"] is True
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_ro_local_range"] == 3.0
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_scale_range"] == 512.0
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_quat_range"] == 0.125
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_color_range"] == 9.0
-    assert exported["cli"]["common_render"]["cached_raster_grad_fixed_opacity_range"] == 10.0
+    assert "cli" not in exported
     assert exported["renderer"]["debug_mode"] is None
     assert "ppisp_enabled" not in exported["viewer"]["controls"]
     assert exported["viewer"]["controls"]["ppisp_exposure_ev"] == 0.75
@@ -776,6 +770,35 @@ def test_colmap_camera_selection_table_shows_point_stats(monkeypatch) -> None:
     ui.ToolkitWindow._draw_colmap_camera_selection_table(SimpleNamespace(), viewer_ui, camera_rows)
 
     assert "Points: 12 total | 9 tracked (>=2 obs)" in disabled_texts
+
+
+def test_colmap_camera_selection_table_height_scales_with_interface(monkeypatch) -> None:
+    child_sizes: list[tuple[float, float]] = []
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(ui.imgui, "same_line", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_child", lambda _name, size, *_args: child_sizes.append((float(size.x), float(size.y))) or False)
+    monkeypatch.setattr(ui.imgui, "end_child", lambda: None)
+    viewer_ui = SimpleNamespace(_values={"colmap_selected_camera_ids": (1,)}, _texts={})
+    camera_rows = ({"camera_id": 1, "frame_count": 4},)
+    toolkit = SimpleNamespace(_applied_interface_scale=2.0)
+
+    ui.ToolkitWindow._draw_colmap_camera_selection_table(toolkit, viewer_ui, camera_rows)
+
+    assert child_sizes == [(0.0, 240.0)]
+
+
+def test_colmap_vram_capacity_queries_toolkit_device_when_uncached(monkeypatch) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(ui, "query_total_device_vram_capacity", lambda device: calls.append(device) or (12_884_901_888, "test"))
+    viewer_ui = SimpleNamespace(_values={}, _texts={})
+    toolkit = SimpleNamespace(device="gpu0")
+
+    capacity = ui.ToolkitWindow._colmap_gpu_vram_capacity_bytes(toolkit, viewer_ui)
+
+    assert capacity == 12_884_901_888
+    assert calls == ["gpu0"]
+    assert viewer_ui._values["_gpu_vram_capacity_bytes"] == 12_884_901_888
 
 
 def test_help_windows_dock_into_toolkit_tabs(monkeypatch) -> None:
@@ -1804,7 +1827,7 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     assert capture_rects == [(12.0, 34.0, child_sizes[0][0], child_sizes[0][1])]
     assert combo_labels == [("##training_camera_view", "Rendered")]
     assert slider_calls == [("##training_camera_frame", 3, 0, 12)]
-    assert checkbox_calls == [("Full Resolution", False), ("PPISP Tonemap", True), ("COLMAP Point Matches", False)]
+    assert checkbox_calls == [("Full Resolution", False), ("Live Trainer View", False), ("PPISP Tonemap", True), ("COLMAP Point Matches", False)]
     assert button_labels == ["Move Main View Here"]
     assert disabled_text == [
         "frame.png",
@@ -2420,6 +2443,8 @@ def test_debug_mode_labels_include_contribution_amount() -> None:
     assert "Grad Variance" in ui._DEBUG_MODE_LABELS
     assert "refinement_distribution" in ui._DEBUG_MODE_VALUES
     assert "Refinement Distribution" in ui._DEBUG_MODE_LABELS
+    assert "unrefinable" in ui._DEBUG_MODE_VALUES
+    assert "Unrefinable Splats" in ui._DEBUG_MODE_LABELS
     assert "sh_view_dependent" in ui._DEBUG_MODE_VALUES
     assert "SH View-Dependent" in ui._DEBUG_MODE_LABELS
     assert "sh_coefficient" in ui._DEBUG_MODE_VALUES
@@ -2439,6 +2464,7 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._renderer_debug_control_keys("current_frame_splat_contribution") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("viewed_fraction_ema") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("refinement_distribution") == ("debug_mode", "debug_refinement_distribution_min", "debug_refinement_distribution_max")
+    assert ui._renderer_debug_control_keys("unrefinable") == ("debug_mode",)
     assert ui._renderer_debug_control_keys("adam_momentum") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("adam_second_moment") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("grad_variance") == ("debug_mode", "debug_grad_norm_threshold")
@@ -2448,6 +2474,8 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._renderer_debug_control_keys("splat_density") == ("debug_mode", "debug_density_min", "debug_density_max")
     assert ui._renderer_debug_control_keys("depth_local_mismatch") == ("debug_mode", "debug_depth_local_mismatch_min", "debug_depth_local_mismatch_max", "debug_depth_local_mismatch_smooth_radius", "debug_depth_local_mismatch_reject_radius")
     assert ui._renderer_debug_control_keys(ui.PPISP_DEBUG_MODE) == tuple(spec.key for spec in PPISP_FIELD_SPECS)
+    viewer_ui._values["debug_mode"] = ui._DEBUG_MODE_VALUES.index("unrefinable")
+    assert ui._debug_colorbar_mode(viewer_ui) is None
 
 
 def test_contribution_amount_colorbar_ticks_use_linear_values() -> None:

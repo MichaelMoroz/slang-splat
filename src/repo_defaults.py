@@ -1,24 +1,68 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any
 
 DEFAULTS_PATH = Path(__file__).resolve().parents[1] / "config" / "defaults.json"
+CONFIGS_PATH = Path(__file__).resolve().parents[1] / "configs"
 
 
 def defaults_path() -> Path:
     return DEFAULTS_PATH
 
 
+def configs_path() -> Path:
+    return CONFIGS_PATH
+
+
+def list_configs() -> tuple[Path, ...]:
+    if not CONFIGS_PATH.exists():
+        return ()
+    return tuple(sorted(path for path in CONFIGS_PATH.glob("*.json") if path.is_file()))
+
+
+def load_json(path: str | Path) -> dict[str, Any]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"Config root must be a JSON object: {path}")
+    return data
+
+
+def deep_merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge_config(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
 def load_defaults() -> dict[str, Any]:
-    with DEFAULTS_PATH.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    return load_json(DEFAULTS_PATH)
 
 
 def write_defaults(data: dict[str, Any]) -> None:
     DEFAULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with DEFAULTS_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, sort_keys=False)
+        handle.write("\n")
+
+
+def load_config(path: str | Path | None = None) -> dict[str, Any]:
+    base = load_defaults()
+    if path is None:
+        return base
+    return deep_merge_config(base, load_json(path))
+
+
+def write_config(path: str | Path, data: dict[str, Any]) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, sort_keys=False)
         handle.write("\n")
 
@@ -34,11 +78,6 @@ def renderer_defaults() -> dict[str, object]:
 def viewer_defaults() -> dict[str, dict[str, object]]:
     viewer = load_defaults()["viewer"]
     return {key: dict(value) for key, value in viewer.items()}
-
-
-def cli_defaults() -> dict[str, dict[str, object]]:
-    cli = load_defaults()["cli"]
-    return {key: dict(value) for key, value in cli.items()}
 
 
 def json_value(value: object) -> object:

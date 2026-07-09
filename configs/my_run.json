@@ -1,0 +1,12 @@
+{
+  "viewer": {
+    "run": {
+      "source": "colmap",
+      "colmap_root_path": "dataset/garden",
+      "colmap_images_root": "dataset/garden/images_4",
+      "seed": 1234,
+      "train_iters": 30000,
+      "output_ply": "outputs/my_run/scene.ply"
+    }
+  }
+}

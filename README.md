@@ -21,7 +21,7 @@ The repository includes:
 - Periodic densification/refinement with contribution culling, alpha culling, and split-family rewrites.
 - Stage-controlled training schedule for learning rates, SH band, DSSIM weight, visible angle, sorting dithering, and position-random-step noise.
 - Viewer tooling for live training, histogram inspection, GPU buffer inspection, camera overlays, debug views, and defaults export.
-- Shared initialization logic between the viewer and CLI so import-time controls map to the same scene-building behavior.
+- Shared initialization logic between interactive and headless viewer runs so import-time controls map to the same scene-building behavior.
 
 ## Setup
 
@@ -34,11 +34,11 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-`viewer.py`, `cli.py`, and `render.py` install `slangpy==0.42.0` from pip automatically on first launch when it is missing or the wrong version is installed. SlangPy 0.42.0 currently needs Python 3.9-3.13, so prefer a Python 3.13 repo venv.
+`viewer.py` installs `slangpy==0.42.0` from pip automatically on first launch when it is missing or the wrong version is installed. SlangPy 0.42.0 currently needs Python 3.9-3.13, so prefer a Python 3.13 repo venv.
 
-`viewer.py`, `cli.py`, and `render.py` also auto-install the Python packages declared in `requirements.txt` when they are missing from the active environment.
+`viewer.py` also auto-installs the Python packages declared in `requirements.txt` when they are missing from the active environment.
 
-If you need `slangpy` before launching those entrypoints, install `slangpy==0.42.0` manually or replace it with an editable install from your local Slangpy checkout.
+If you need `slangpy` before launching the viewer, install `slangpy==0.42.0` manually or replace it with an editable install from your local Slangpy checkout.
 
 Optional PyTorch support:
 
@@ -46,7 +46,7 @@ Optional PyTorch support:
 python -m pip install <cuda-enabled-pytorch-build>
 ```
 
-Repo-wide CLI, renderer, training, and viewer defaults live in `config/defaults.json`.
+Repo-wide renderer, training, and viewer defaults live in `config/defaults.json`.
 
 ## Main Entry Points
 
@@ -75,29 +75,19 @@ Basic camera controls:
 - `WASDQE`: move
 - mouse wheel: adjust move speed
 
-### Render One Frame
+### Headless Automation
 
 ```powershell
-python render.py --ply C:\path\to\scene.ply --output render.png --width 1280 --height 720
+python viewer.py --headless --config configs\my_run.json
 ```
 
-### CLI Training
+Headless configs use the same defaults tree as the GUI. Set `viewer.run.source` to `colmap` or `ply`, configure run paths and actions under `viewer.run`, and use `viewer.run.render` for snapshots, `viewer.run.metrics` for dataset reports, `viewer.run.stats` for CSV metrics, and `viewer.run.output_ply` for export.
 
 ```powershell
-python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_4 --iters 100 --max-gaussians 50000
+python viewer.py --headless --config configs\garden_train.json
 ```
 
-Quick smoke configuration:
-
-```powershell
-python cli.py train-colmap --colmap-root dataset/garden --images-subdir images_8 --iters 10 --max-gaussians 1024 --width 64 --height 64
-```
-
-### PLY View Sweep
-
-```powershell
-python cli.py render-ply --ply D:\Datasets\3DGS\flowers.ply --output-dir outputs\flowers_views --views 24
-```
+See `doc/Headless.md` for the full `viewer.run` schema and scheduled actions.
 
 ## COLMAP Import And Initialization
 
@@ -131,7 +121,7 @@ Important current behavior:
 - training can optionally use target alpha as a per-pixel mask,
 - refinement includes contribution culling, alpha culling, growth scheduling, and split-family cloning.
 
-The viewer and CLI share the same training/init parameter model, so import and initialization controls do not diverge between entry points.
+The viewer and headless automation share the same training/init parameter model, so import and initialization controls do not diverge between interactive and automated runs.
 
 ## Debugging And Inspection
 
@@ -161,8 +151,9 @@ The test suite covers renderer kernels, optimizer behavior, COLMAP loading/init 
 ## Documentation Map
 
 - `doc/Viewer.md`: viewer lifecycle, import flow, debug windows, and training controls.
+- `doc/Headless.md`: headless automation entry point, `viewer.run` config schema, and scheduled actions.
 - `doc/PhotometricCompensation.md`: per-frame PPISP photometric trainer, pair-loss kernel, and viewer integration.
-- `doc/Training.md`: trainer architecture, optimization loop, schedules, refinement, and CLI notes.
+- `doc/Training.md`: trainer architecture, optimization loop, schedules, and refinement notes.
 - `doc/Rendering.md`: renderer passes, debug paths, and raster behavior.
 - `doc/SceneLoading.md`: scene and COLMAP loading behavior.
 - `doc/ProjectionMath.md`: projection and ellipse math derivations.

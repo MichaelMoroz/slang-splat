@@ -11,7 +11,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from ..gaussian_scene import GaussianScene
 from ..sh_utils import SUPPORTED_SH_COEFF_COUNT, rgb_to_sh0
-from .colmap_types import ColmapCamera, ColmapFrame, ColmapImage, ColmapReconstruction, GaussianInitHyperParams, point_tables
+from .colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID, COLMAP_PINHOLE_MODEL_ID, ColmapCamera, ColmapFrame, ColmapImage, ColmapReconstruction, GaussianInitHyperParams, point_tables
 
 INIT_BASE_SCALE_SPACING_RATIO = 0.25
 INIT_JITTER_SPACING_RATIO = 1.0 / np.sqrt(12.0)
@@ -487,15 +487,16 @@ def _build_training_frame(task: tuple[int, object, object, Path, str, int | None
         downscale_scale=downscale_scale,
     )
     sx, sy = float(width) / float(camera.width), float(height) / float(camera.height)
+    is_equirectangular = int(getattr(camera, "model_id", -1)) == COLMAP_EQUIRECTANGULAR_MODEL_ID
     return ColmapFrame(
         image_id,
         image_path,
         image.q_wxyz.astype(np.float32),
         image.t_xyz.astype(np.float32),
-        float(camera.fx) * sx,
-        float(camera.fy) * sy,
-        float(camera.cx) * sx,
-        float(camera.cy) * sy,
+        0.0 if is_equirectangular else float(camera.fx) * sx,
+        0.0 if is_equirectangular else float(camera.fy) * sy,
+        0.0 if is_equirectangular else float(camera.cx) * sx,
+        0.0 if is_equirectangular else float(camera.cy) * sy,
         int(width),
         int(height),
         float(getattr(camera, "k1", 0.0)),
@@ -507,6 +508,7 @@ def _build_training_frame(task: tuple[int, object, object, Path, str, int | None
         float(getattr(camera, "k5", 0.0)),
         float(getattr(camera, "k6", 0.0)),
         camera_id=int(getattr(image, "camera_id", 0)),
+        model_id=int(getattr(camera, "model_id", COLMAP_PINHOLE_MODEL_ID)),
     )
 
 
@@ -518,6 +520,7 @@ def build_training_frames_from_root(
     downscale_mode: str = "original",
     downscale_max_size: int | None = None,
     downscale_scale: float = 1.0,
+    max_pose_subset: int = 0,
 ) -> list[ColmapFrame]:
     images_root = Path(images_root).resolve()
     if not images_root.exists():
@@ -531,6 +534,9 @@ def build_training_frames_from_root(
         image_path, camera = resolve_colmap_image_path(images_root, image.name, image_path_index=image_path_index), recon.cameras.get(image.camera_id)
         if camera is None or image_path is None: continue
         tasks.append((image_id, image, camera, image_path, downscale_mode, downscale_max_size, downscale_scale))
+    if 0 < int(max_pose_subset) < len(tasks):
+        keep = set(select_wide_coverage_image_ids(recon, [task[0] for task in tasks], int(max_pose_subset)))
+        tasks = [task for task in tasks if int(task[0]) in keep]
     frames: list[ColmapFrame] = []
     if tasks:
         with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="colmap-frame") as executor:
@@ -538,6 +544,106 @@ def build_training_frames_from_root(
     if not frames:
         raise RuntimeError(f"No training frames were found in {images_root}.")
     return frames
+
+
+def _image_point_columns(recon: ColmapReconstruction, image_ids: list[int]) -> tuple[list[np.ndarray], np.ndarray]:
+    """Per-image arrays of distinct tracked-point column indices, plus the point count."""
+    images = getattr(recon, "images", {})
+    per_image_points = []
+    for image_id in image_ids:
+        image = images.get(int(image_id))
+        raw = np.asarray(getattr(image, "points2d_point3d_ids", ()), dtype=np.int64).reshape(-1) if image is not None else np.zeros((0,), dtype=np.int64)
+        per_image_points.append(np.unique(raw[raw > 0]))
+    all_points = np.unique(np.concatenate(per_image_points)) if any(points.size for points in per_image_points) else np.zeros((0,), dtype=np.int64)
+    remap = {int(point_id): column for column, point_id in enumerate(all_points.tolist())}
+    columns = [np.array([remap[int(point_id)] for point_id in points.tolist()], dtype=np.int64) for points in per_image_points]
+    return columns, all_points
+
+
+def _select_max_coverage_subset(recon: ColmapReconstruction, image_ids: list[int], target_count: int) -> list[int]:
+    """Greedily grow the subset that covers the most distinct tracked 3D points.
+
+    Each step adds the view contributing the most not-yet-covered points, so the
+    selection maximizes the union of scene points seen (the "scene capture fraction")
+    while implicitly avoiding redundant, heavily-overlapping views.
+    """
+    from scipy.sparse import csr_matrix
+
+    columns, all_points = _image_point_columns(recon, image_ids)
+    observation_counts = np.array([column.size for column in columns], dtype=np.int64)
+    count, point_count = len(image_ids), int(all_points.size)
+    rows = np.concatenate([np.full(column.size, index, dtype=np.int64) for index, column in enumerate(columns)]) if point_count else np.zeros((0,), dtype=np.int64)
+    cols = np.concatenate(columns) if point_count else np.zeros((0,), dtype=np.int64)
+    incidence_by_point = csr_matrix((np.ones(rows.size, dtype=np.float32), (cols, rows)), shape=(point_count, count), dtype=np.float32)
+
+    new_point_counts = observation_counts.astype(np.float64).copy()
+    covered = np.zeros(point_count, dtype=bool)
+    chosen = np.zeros(count, dtype=bool)
+    selected: list[int] = []
+
+    def _take(index: int) -> None:
+        selected.append(index)
+        chosen[index] = True
+        fresh = columns[index][~covered[columns[index]]] if columns[index].size else columns[index]
+        if fresh.size:
+            covered[fresh] = True
+            np.subtract(new_point_counts, np.asarray(incidence_by_point[fresh].sum(axis=0), dtype=np.float64).ravel(), out=new_point_counts)
+        new_point_counts[index] = -np.inf
+
+    _take(int(np.argmax(observation_counts)))
+    while len(selected) < target_count:
+        best = int(np.argmax(new_point_counts))
+        if not (new_point_counts[best] > 0.0):
+            # Remaining views add no new coverage; fill deterministically by observation count.
+            remaining = [index for index in np.argsort(-observation_counts, kind="stable").tolist() if not chosen[index]]
+            selected.extend(remaining[: target_count - len(selected)])
+            break
+        _take(best)
+    return [int(image_ids[index]) for index in selected]
+
+
+def _select_pose_spread_subset(recon: ColmapReconstruction, image_ids: list[int], target_count: int) -> list[int]:
+    """Farthest-first camera selection by position + viewing-direction spread (fallback)."""
+    images = getattr(recon, "images", {})
+    centers, directions = np.zeros((len(image_ids), 3)), np.zeros((len(image_ids), 3))
+    for index, image_id in enumerate(image_ids):
+        image = images.get(int(image_id))
+        rotation = Rotation.from_quat(np.asarray(image.q_wxyz, dtype=np.float64)[[1, 2, 3, 0]]).as_matrix()
+        centers[index] = -rotation.T @ np.asarray(image.t_xyz, dtype=np.float64).reshape(3)
+        directions[index] = rotation.T @ np.array([0.0, 0.0, 1.0])
+    span = np.linalg.norm(centers - centers.mean(axis=0), axis=1)
+    position_scale = max(float(np.median(span[span > 0.0])) if np.any(span > 0.0) else 1.0, 1e-6)
+    min_distance = np.full(len(image_ids), np.inf)
+    selected: list[int] = []
+
+    def _take(index: int) -> None:
+        selected.append(index)
+        position_distance = np.linalg.norm(centers - centers[index], axis=1) / position_scale
+        orientation_distance = 1.0 - directions @ directions[index]
+        np.minimum(min_distance, position_distance + orientation_distance, out=min_distance)
+        min_distance[index] = -np.inf
+
+    _take(int(np.argmax(span)))
+    while len(selected) < target_count:
+        _take(int(np.argmax(min_distance)))
+    return [int(image_ids[index]) for index in selected]
+
+
+def select_wide_coverage_image_ids(recon: ColmapReconstruction, image_ids, target_count: int) -> list[int]:
+    """Return ``target_count`` image ids that cover the scene most widely.
+
+    Uses the tracked-point covisibility to greedily maximize the union of scene
+    points seen; falls back to camera pose (position + orientation) spread when no
+    tracked points are available. Returns a sorted subset of ``image_ids`` (all of
+    them when ``target_count`` covers everything).
+    """
+    ids = sorted({int(image_id) for image_id in image_ids})
+    target = int(target_count)
+    if target <= 0 or target >= len(ids):
+        return ids
+    _, all_points = _image_point_columns(recon, ids)
+    selected = _select_max_coverage_subset(recon, ids, target) if all_points.size > 0 else _select_pose_spread_subset(recon, ids, target)
+    return sorted(selected)
 
 
 def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "images_4") -> list[ColmapFrame]:
@@ -965,6 +1071,53 @@ def generate_depth_init_points(
     return np.ascontiguousarray(np.stack(positions, axis=0), dtype=np.float32), np.ascontiguousarray(np.stack(colors, axis=0), dtype=np.float32)
 
 
+# Bidirectional neighbor-stat outlier filter: a point is judged against its 2-hop
+# neighborhood, so even a pair of mutually-close floaters is measured against the dense
+# surface their neighbor-of-neighbor sets reach into, not just against each other.
+_OUTLIER_FILTER_NEIGHBOR_COUNT = 8
+_OUTLIER_FILTER_DISTANCE_RATIO = 5.0
+_OUTLIER_FILTER_REFERENCE_FRACTION = 0.25
+_OUTLIER_FILTER_POINT_CHUNK = 65536
+
+
+def point_outlier_keep_mask(
+    points: np.ndarray,
+    neighbor_count: int = _OUTLIER_FILTER_NEIGHBOR_COUNT,
+    distance_ratio: float = _OUTLIER_FILTER_DISTANCE_RATIO,
+    reference_fraction: float = _OUTLIER_FILTER_REFERENCE_FRACTION,
+) -> np.ndarray:
+    """Keep-mask dropping points whose neighbor spacing is far off local consensus.
+
+    Each point's characteristic spacing is the mean distance to its ``neighbor_count``
+    nearest neighbors. It is compared against the superset of itself, its neighbors, and
+    its neighbors' neighbors: if its spacing exceeds ``distance_ratio`` times the mean of
+    the smallest ``reference_fraction`` of spacings in that superset, the point is an
+    outlier and dropped. Returns all-True when the cloud is too small to judge.
+    """
+    pts = np.ascontiguousarray(points, dtype=np.float32).reshape(-1, 3)
+    count = pts.shape[0]
+    k = min(max(int(neighbor_count), 1), max(count - 1, 1))
+    if count <= max(k, 3):
+        return np.ones((count,), dtype=bool)
+    dists, indices = cKDTree(pts).query(pts, k=k + 1, workers=-1)
+    neighbor_idx = np.asarray(indices[:, 1:], dtype=np.int64)  # column 0 is the point itself
+    spacing = np.asarray(dists[:, 1:], dtype=np.float32).mean(axis=1)
+    superset_size = 1 + k + k * k
+    reference_count = max(int(np.ceil(superset_size * float(np.clip(reference_fraction, 0.0, 1.0)))), 1)
+    keep = np.ones((count,), dtype=bool)
+    for start in range(0, count, _OUTLIER_FILTER_POINT_CHUNK):
+        rows = neighbor_idx[start : start + _OUTLIER_FILTER_POINT_CHUNK]
+        two_hop = neighbor_idx[rows.reshape(-1)].reshape(rows.shape[0], k * k)
+        superset = np.concatenate([np.arange(start, start + rows.shape[0], dtype=np.int64)[:, None], rows, two_hop], axis=1)
+        pooled = spacing[superset]
+        pooled.sort(axis=1)
+        reference = pooled[:, :reference_count].mean(axis=1)
+        keep[start : start + rows.shape[0]] = spacing[start : start + rows.shape[0]] <= float(distance_ratio) * np.maximum(reference, 1e-12)
+    if not keep.any():
+        return np.ones((count,), dtype=bool)
+    return keep
+
+
 def point_nn_scales(points: np.ndarray) -> np.ndarray:
     pts = np.ascontiguousarray(points, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[0] == 0:
@@ -1069,20 +1222,91 @@ def _build_scene_from_positions_colors(
     )
 
 
+# Camera-pose cap and chunk size for the visible-area weighting: sum(1/d^2) over more
+# than this many poses adds nothing to the density target but scales the distance matrix.
+_DIFFUSED_VISIBILITY_CAMERA_CAP = 256
+_DIFFUSED_VISIBILITY_POINT_CHUNK = 16384
+# Points sitting almost on top of a camera would otherwise absorb the whole sampling
+# budget through the 1/d^2 singularity.
+_DIFFUSED_WEIGHT_CLIP_PERCENTILE = 99.9
+
+
+def diffused_visible_area_weights(xyz: np.ndarray, camera_centers: np.ndarray) -> np.ndarray | None:
+    """Sampling weights that make the resampled density uniform per visible image area.
+
+    A surface patch at distance ``d`` from a camera covers image area proportional to
+    ``1/d^2``, so the target world-space density at a point is ``sum_j 1/d_j^2`` over the
+    camera poses. Uniform sampling over the sparse points reproduces the *sparse* density
+    instead, so each point is weighted by target density / local sparse density, with the
+    local density estimated from the nearest-neighbor radius (``density ~ 1/r_nn^3``).
+    Returns normalized weights, or ``None`` when there is nothing to weight by (no
+    cameras / degenerate weights) and uniform sampling should be used.
+    """
+    points = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
+    centers = np.asarray(camera_centers, dtype=np.float64).reshape(-1, 3)
+    centers = centers[np.isfinite(centers).all(axis=1)]
+    if points.shape[0] == 0 or centers.shape[0] == 0:
+        return None
+    if centers.shape[0] > _DIFFUSED_VISIBILITY_CAMERA_CAP:
+        stride = np.linspace(0, centers.shape[0] - 1, _DIFFUSED_VISIBILITY_CAMERA_CAP).astype(np.int64)
+        centers = centers[stride]
+
+    inverse_density = np.asarray(point_nn_scales(points.astype(np.float32)), dtype=np.float64) ** 3
+    visible_area = np.zeros((points.shape[0],), dtype=np.float64)
+    centers_sq = np.einsum("ij,ij->i", centers, centers)
+    for start in range(0, points.shape[0], _DIFFUSED_VISIBILITY_POINT_CHUNK):
+        chunk = points[start : start + _DIFFUSED_VISIBILITY_POINT_CHUNK]
+        # Squared distances via |p|^2 + |c|^2 - 2 p.c to avoid a (chunk, cams, 3) temp.
+        d_sq = np.einsum("ij,ij->i", chunk, chunk)[:, None] + centers_sq[None, :] - 2.0 * (chunk @ centers.T)
+        visible_area[start : start + chunk.shape[0]] = np.sum(1.0 / np.maximum(d_sq, 1e-12), axis=1)
+
+    weights = inverse_density * visible_area
+    weights[~np.isfinite(weights)] = 0.0
+    positive = weights[weights > 0.0]
+    if positive.size == 0:
+        return None
+    weights = np.minimum(weights, np.percentile(positive, _DIFFUSED_WEIGHT_CLIP_PERCENTILE))
+    total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return None
+    return weights / total
+
+
 def sample_colmap_diffused_points(
     recon: ColmapReconstruction,
     point_count: int,
     diffusion_radius: float,
     seed: int,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    visibility_strength: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Sample diffused init points from the sparse cloud.
+
+    ``visibility_strength`` blends the base-point distribution between the original
+    sparse-point density (0.0) and the visible-area importance weights (1.0, density
+    uniform per image area via nn_radius^3 * sum(1/d^2)); the default 0.5 draws half the
+    samples from each.
+    """
     xyz, rgb = point_tables(recon, min_track_length=min_track_length)
     if xyz.shape[0] == 0:
         raise RuntimeError(_min_track_length_error(min_track_length))
+    # Drop floaters before density weighting: an isolated point has a huge NN radius, so
+    # the inverse-density term would otherwise hand it a disproportionate share of the
+    # sampling budget and diffuse children into empty space around it.
+    keep = point_outlier_keep_mask(xyz)
+    if not keep.all():
+        xyz, rgb = xyz[keep], rgb[keep]
     count = max(int(point_count), 1)
     radius = max(float(diffusion_radius), 0.0)
+    strength = float(np.clip(visibility_strength, 0.0, 1.0))
     rng = np.random.default_rng(int(seed))
-    base_indices = rng.integers(0, xyz.shape[0], size=count, dtype=np.int64)
+    weights = diffused_visible_area_weights(xyz, colmap_camera_centers(recon)) if strength > 0.0 else None
+    if weights is None:
+        base_indices = rng.integers(0, xyz.shape[0], size=count, dtype=np.int64)
+    else:
+        blended = (1.0 - strength) / float(xyz.shape[0]) + strength * weights
+        blended /= blended.sum()
+        base_indices = rng.choice(xyz.shape[0], size=count, replace=True, p=blended)
     positions = np.ascontiguousarray(xyz[base_indices], dtype=np.float32)
     colors = np.ascontiguousarray(rgb[base_indices], dtype=np.float32)
     if radius <= 0.0:
@@ -1134,6 +1358,7 @@ def initialize_scene_from_colmap_diffused_points(
     seed: int,
     init_hparams: GaussianInitHyperParams | None = None,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    visibility_strength: float = 0.5,
 ) -> GaussianScene:
-    positions, colors = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed, min_track_length=min_track_length)
+    positions, colors = sample_colmap_diffused_points(recon, point_count, diffusion_radius, seed, min_track_length=min_track_length, visibility_strength=visibility_strength)
     return _build_scene_from_positions_colors(positions, colors, seed, init_hparams)
