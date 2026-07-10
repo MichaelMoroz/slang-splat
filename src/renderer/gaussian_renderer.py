@@ -52,6 +52,7 @@ class _RasterGradShaderSet:
     training_forward: spy.ComputeKernel
     clear: spy.ComputeKernel
     backward: spy.ComputeKernel
+    backward_no_depth: spy.ComputeKernel
     resolve_stats: spy.ComputeKernel
     backprop: spy.ComputeKernel
 
@@ -521,6 +522,10 @@ class GaussianRenderer:
     def _raster_thread_count(self) -> spy.uint3:
         return thread_count_1d(self.tile_count * self._raster_config.thread_tile_dim * self._raster_config.thread_tile_dim)
 
+    def _backward_raster_kernel(self) -> spy.ComputeKernel:
+        shader_set = self._raster_grad_shader_set()
+        return shader_set.backward if self.cached_raster_grad_include_depth else shader_set.backward_no_depth
+
     def _read_image(self) -> np.ndarray:
         return np.asarray(self.output_texture.to_numpy(), dtype=np.float32)[: self.height, : self.width].copy()
 
@@ -560,6 +565,7 @@ class GaussianRenderer:
                 "training_forward": f"csRasterizeTrainingForward{entry_suffix}",
                 "clear": f"csClearRasterGrads{entry_suffix}",
                 "backward": f"csRasterizeBackward{entry_suffix}",
+                "backward_no_depth": "csRasterizeBackwardFloatNoDepth" if entry_suffix == "Float" else f"csRasterizeBackward{entry_suffix}",
                 "resolve_stats": f"csResolveGradientStats{entry_suffix}",
                 "backprop": f"csBackpropCachedRasterGrads{entry_suffix}",
             },
@@ -568,6 +574,7 @@ class GaussianRenderer:
             training_forward=kernels["training_forward"],
             clear=kernels["clear"],
             backward=kernels["backward"],
+            backward_no_depth=kernels["backward_no_depth"],
             resolve_stats=kernels["resolve_stats"],
             backprop=kernels["backprop"],
         )
@@ -2021,7 +2028,7 @@ class GaussianRenderer:
         if regularizer_grad is None:
             self._clear_float_buffer(encoder, resolved_regularizer_grad, max(self.width * self.height, 1) * 2)
         vars = {**self._scene_vars(), **self._raster_cache_vars(), "g_SortedValues": self._sorted_values(), "g_TileRanges": self._work_buffers["tile_ranges"], "g_OutputGrad": output_grad, "g_Target": self.output_texture if target_texture is None else target_texture, "g_UseTargetAlphaMask": int(bool(use_target_alpha_mask)), "g_TargetAlphaThreshold": resolved_target_alpha_threshold, "g_TrainingForwardState": self._resolve_training_workspace_buffer("training_forward_state", training_workspace), "g_TrainingDepthStats": self._resolve_training_workspace_texture("training_depth_stats_texture", training_workspace), "g_TrainingRegularizerGrad": resolved_regularizer_grad, "g_TrainingProcessedEnd": self._resolve_training_workspace_buffer("training_processed_end", training_workspace), "g_TrainingBatchEnd": self._resolve_training_workspace_buffer("training_batch_end", training_workspace), "g_CloneCounts": self._work_buffers["fallback_clone_counts"] if clone_counts_buffer is None else clone_counts_buffer, "g_SplatContributionInfo": resolved_splat_contribution, "g_GradientStats": resolved_gradient_stats, **self._raster_grad_vars(training_workspace), **self._raster_grad_decode_scale_var(1.0), **self._raster_grad_fixed_range_vars(), **self._prepass_uniforms(self._scene_count), **self._raster_uniforms(background, training_background_mode, training_background_seed), **self._anisotropy_uniforms(), **self._camera_uniforms(camera), **self._training_native_camera_uniforms(resolved_native_camera, resolved_sample_vars), **resolved_sample_vars}
-        self._dispatch(self._raster_grad_shader_set().backward, encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
+        self._dispatch(self._backward_raster_kernel(), encoder, self._raster_thread_count(), vars, "Rasterize Backward", 27)
         self._dispatch(
             self._raster_grad_shader_set().resolve_stats,
             encoder,

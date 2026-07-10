@@ -530,7 +530,7 @@ void merge_interval(float2 candidate, inout bool found, inout float2 interval)
     interval.y = max(interval.y, candidate.y);
 }
 
-bool analytic_scanline_minor_interval(Ellipse ellipse, ScanlineLoopConfig cfg, float tileSize, uint lineCoord, out float2 interval)
+bool analytic_scanline_minor_interval(Ellipse ellipse, ScanlineLoopConfig cfg, float tileSize, uint lineCoord, float centerTightenPx, out float2 interval)
 {
     interval = 0.0;
     if (!ellipse.hasAnalyticConic())
@@ -549,8 +549,8 @@ bool analytic_scanline_minor_interval(Ellipse ellipse, ScanlineLoopConfig cfg, f
 
     float centerMinor = cfg.scanAlongX ? ellipse.centerPx.x : ellipse.centerPx.y;
     float centerLine = cfg.scanAlongX ? ellipse.centerPx.y : ellipse.centerPx.x;
-    float lineStart = float(lineCoord) * tileSize - centerLine;
-    float lineEnd = (float(lineCoord) + 1.0) * tileSize - centerLine;
+    float lineStart = float(lineCoord) * tileSize + centerTightenPx - centerLine;
+    float lineEnd = (float(lineCoord) + 1.0) * tileSize - centerTightenPx - centerLine;
     float level = 1.0 + CONIC_INTERSECTION_SLACK;
 
     bool found = false;
@@ -578,22 +578,26 @@ bool analytic_scanline_minor_interval(Ellipse ellipse, ScanlineLoopConfig cfg, f
     }
     if (!found) return false;
 
-    int firstHit = int(ceil((interval.x + centerMinor) / tileSize)) - 1;
-    int lastHit = int(floor((interval.y + centerMinor) / tileSize));
+    int firstHit = int(ceil((interval.x + centerMinor + centerTightenPx) / tileSize)) - 1;
+    int lastHit = int(floor((interval.y + centerMinor - centerTightenPx) / tileSize));
     firstHit = max(firstHit, max(cfg.minorMin, 0));
     lastHit = min(lastHit, min(cfg.minorMax, int(cfg.minorLimit) - 1));
     interval = float2(float(firstHit), float(lastHit));
     return firstHit <= lastHit;
 }
 
-bool compute_scanline_tile_span_universal(Ellipse ellipse, ScanlineLoopConfig cfg, float tileSize, uint lineCoord, out ScanlineSpan span)
+// centerTightenPx shrinks each tile box toward its pixel centers (0.5 px per side) so a
+// splat whose exact conic region misses every pixel center of a tile is not binned into
+// it. Only valid when the conic is exact - undistorted pinhole - since fitted conics
+// (equirect, distorted) need the conservative full tile box; those pass 0.
+bool compute_scanline_tile_span_universal(Ellipse ellipse, ScanlineLoopConfig cfg, float tileSize, uint lineCoord, float centerTightenPx, out ScanlineSpan span)
 {
     span.lineStartMinor = 0;
     span.lineCount = 0;
     if (!cfg.isLineCoordValid(lineCoord) || cfg.minorMin > cfg.minorMax) return false;
 
     float2 minorInterval;
-    if (!analytic_scanline_minor_interval(ellipse, cfg, tileSize, lineCoord, minorInterval)) return false;
+    if (!analytic_scanline_minor_interval(ellipse, cfg, tileSize, lineCoord, centerTightenPx, minorInterval)) return false;
 
     uint firstHit = uint(int(minorInterval.x));
     uint lastHit = uint(int(minorInterval.y));

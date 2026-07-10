@@ -303,25 +303,77 @@ void flush_cached_raster_grad_fixed(uint splatId, RasterGaussian gaussian, Raste
     add_cached_raster_grad_components(splatCount, uint4(RASTER_CACHE_COLOR_R, RASTER_CACHE_COLOR_G, RASTER_CACHE_COLOR_B, RASTER_CACHE_FUSED_OPACITY), splatId, int4(qColorR, qColorG, qColorB, qOpacity), includeDepth);
 }
 
-void flush_cached_raster_grad_float(uint splatId, RasterGaussian.Differential dGaussian)
+// Staged flush: wave-reduced gradient vectors (plus the grad-norm statistic and the
+// quantized contribution) are parked in groupshared per batch splat, cross-wave summed,
+// and flushed with one set of global atomics per splat per group at batch end. This
+// halves the global float-atomic traffic of the per-hit wave flush and removes
+// same-address contention (each flushing thread owns a distinct splat).
+uint staged_splat_contribution(RasterState prefixState, RasterState suffixState, float3 color, float alpha, float3 background)
 {
-    uint splatCount = g_Prepass.splatCount;
-    accumulate_gradient_stats(splatId, raster_grad_contribution_norm_sq(dGaussian));
-    bool includeDepth = raster_grad_include_depth();
-    float2 roCamera = WaveActiveSum(dGaussian.roCamera.xy);
-    float roCameraZ = WaveActiveSum(dGaussian.roCamera.z);
-    float2 sigmaDiag = WaveActiveSum(dGaussian.sigmaDiag.xy);
-    float sigmaZZ = WaveActiveSum(dGaussian.sigmaDiag.z);
-    float sigmaXY = WaveActiveSum(dGaussian.sigmaOffDiag.x);
-    float sigmaXZ = WaveActiveSum(dGaussian.sigmaOffDiag.y);
-    float sigmaYZ = WaveActiveSum(dGaussian.sigmaOffDiag.z);
-    float4 colorAlpha = WaveActiveSum(dGaussian.colorAlpha);
-    if (!WaveIsFirstLane()) return;
+    if (!(alpha > 0.0) || !(prefixState.trans > SMALL_VALUE)) return 0u;
+    float3 behindColor = suffixState.accum + suffixState.trans * background;
+    float contributionDelta = prefixState.trans * alpha * length(color - behindColor);
+    if (!isfinite(contributionDelta) || !(contributionDelta > 0.0)) return 0u;
+    return splat_contribution_fixed_quantize(contributionDelta);
+}
 
-    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_RO_CAMERA_X, RASTER_CACHE_RO_CAMERA_Y, RASTER_CACHE_RO_CAMERA_Z), splatId, float3(roCamera.x, roCamera.y, roCameraZ), includeDepth);
-    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XX, RASTER_CACHE_SIGMA_YY, RASTER_CACHE_SIGMA_ZZ), splatId, float3(sigmaDiag.x, sigmaDiag.y, sigmaZZ), includeDepth);
-    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XY, RASTER_CACHE_SIGMA_XZ, RASTER_CACHE_SIGMA_YZ), splatId, float3(sigmaXY, sigmaXZ, sigmaYZ), includeDepth);
-    add_cached_raster_grad_components(splatCount, uint4(RASTER_CACHE_COLOR_R, RASTER_CACHE_COLOR_G, RASTER_CACHE_COLOR_B, RASTER_CACHE_FUSED_OPACITY), splatId, colorAlpha, includeDepth);
+void clear_grad_stage(uint lane)
+{
+    [unroll] for (uint slot = 0u; slot < RASTER_GRAD_STAGE_SLOTS; slot++)
+    {
+        [unroll] for (uint c = 0u; c < RASTER_GRAD_STAGE_COMPONENTS; c++) gsGradStage[slot][lane][c] = 0.0;
+        gsContribStage[slot][lane] = 0u;
+    }
+}
+
+void stage_cached_raster_grad_float<let IncludeDepth : int>(uint localIdx, uint lane, RasterGaussian.Differential dGaussian, uint contribution)
+{
+    float contributionNormSq = raster_grad_contribution_norm_sq(dGaussian);
+    float stat = WaveActiveSum((isfinite(contributionNormSq) && contributionNormSq > 0.0) ? contributionNormSq : 0.0);
+    float3 roCamera = float3(WaveActiveSum(dGaussian.roCamera.xy), IncludeDepth != 0 ? WaveActiveSum(dGaussian.roCamera.z) : 0.0);
+    float3 sigmaDiag = float3(WaveActiveSum(dGaussian.sigmaDiag.xy), IncludeDepth != 0 ? WaveActiveSum(dGaussian.sigmaDiag.z) : 0.0);
+    float3 sigmaOffDiag = float3(WaveActiveSum(dGaussian.sigmaOffDiag.x), IncludeDepth != 0 ? WaveActiveSum(dGaussian.sigmaOffDiag.yz) : float2(0.0));
+    float4 colorAlpha = WaveActiveSum(dGaussian.colorAlpha);
+    uint contributionSum = WaveActiveSum(contribution);
+    if (!WaveIsFirstLane()) return;
+    uint slot = min(lane / RASTER_WAVE_SIZE, RASTER_GRAD_STAGE_SLOTS - 1u);
+    gsGradStage[slot][localIdx][0] = roCamera.x;
+    gsGradStage[slot][localIdx][1] = roCamera.y;
+    gsGradStage[slot][localIdx][2] = roCamera.z;
+    gsGradStage[slot][localIdx][3] = sigmaDiag.x;
+    gsGradStage[slot][localIdx][4] = sigmaDiag.y;
+    gsGradStage[slot][localIdx][5] = sigmaDiag.z;
+    gsGradStage[slot][localIdx][6] = sigmaOffDiag.x;
+    gsGradStage[slot][localIdx][7] = sigmaOffDiag.y;
+    gsGradStage[slot][localIdx][8] = sigmaOffDiag.z;
+    gsGradStage[slot][localIdx][9] = colorAlpha.x;
+    gsGradStage[slot][localIdx][10] = colorAlpha.y;
+    gsGradStage[slot][localIdx][11] = colorAlpha.z;
+    gsGradStage[slot][localIdx][12] = colorAlpha.w;
+    gsGradStage[slot][localIdx][13] = stat;
+    gsContribStage[slot][localIdx] = contributionSum;
+}
+
+void flush_staged_raster_grads(uint batchCount, uint lane)
+{
+    if (lane >= batchCount) return;
+    uint splatId = gsBatchSplatId[lane];
+    float components[RASTER_GRAD_STAGE_COMPONENTS];
+    uint contribution = 0u;
+    [unroll] for (uint c = 0u; c < RASTER_GRAD_STAGE_COMPONENTS; c++) components[c] = 0.0;
+    [unroll] for (uint slot = 0u; slot < RASTER_GRAD_STAGE_SLOTS; slot++)
+    {
+        [unroll] for (uint c = 0u; c < RASTER_GRAD_STAGE_COMPONENTS; c++) components[c] += gsGradStage[slot][lane][c];
+        contribution += gsContribStage[slot][lane];
+    }
+    if (components[13] > 0.0) atomic_add_gradient_stat(splatId, 1u, components[13]);
+    if (contribution > 0u) InterlockedAdd(g_SplatContributionInfo[splatId].x, contribution);
+    uint splatCount = g_Prepass.splatCount;
+    bool includeDepth = raster_grad_include_depth();
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_RO_CAMERA_X, RASTER_CACHE_RO_CAMERA_Y, RASTER_CACHE_RO_CAMERA_Z), splatId, float3(components[0], components[1], components[2]), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XX, RASTER_CACHE_SIGMA_YY, RASTER_CACHE_SIGMA_ZZ), splatId, float3(components[3], components[4], components[5]), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XY, RASTER_CACHE_SIGMA_XZ, RASTER_CACHE_SIGMA_YZ), splatId, float3(components[6], components[7], components[8]), includeDepth);
+    add_cached_raster_grad_components(splatCount, uint4(RASTER_CACHE_COLOR_R, RASTER_CACHE_COLOR_G, RASTER_CACHE_COLOR_B, RASTER_CACHE_FUSED_OPACITY), splatId, float4(components[9], components[10], components[11], components[12]), includeDepth);
 }
 
 float raster_eval_outline_alpha(uint splatId, float opacity, float2 samplePoint)
@@ -1059,12 +1111,6 @@ RasterGaussian load_cached_raster_grad<let FixedPointMode : int>(uint splatId)
     return load_cached_raster_grad_float(splatId);
 }
 
-void flush_cached_raster_grad<let FixedPointMode : int>(uint splatId, RasterGaussian gaussian, RasterGaussian.Differential dGaussian)
-{
-    if (FixedPointMode != 0) flush_cached_raster_grad_fixed(splatId, gaussian, dGaussian);
-    else flush_cached_raster_grad_float(splatId, dGaussian);
-}
-
 void resolve_gradient_stats<let FixedPointMode : int>(uint3 dispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
@@ -1078,7 +1124,12 @@ void resolve_gradient_stats<let FixedPointMode : int>(uint3 dispatchThreadID)
     store_gradient_stat(splatId, 1u, 0.0);
 }
 
-void raster_backward_replay<let FixedPointMode : int>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterReplayStepState.Differential backwardState, uint lane)
+// FixedPointMode != 0 flushes quantized gradients per hit with per-thread int atomics
+// (hardware-aggregated). Float mode stages wave-reduced gradients in groupshared and
+// flushes one atomic set per splat per group at batch end, with the wave ops hoisted
+// into uniform control flow; StageDepth == 0 additionally drops the depth-gated
+// components at compile time (include-depth=false configs discard them at flush time).
+void raster_backward_replay<let FixedPointMode : int, let StageDepth : int>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterReplayStepState.Differential backwardState, uint lane)
 {
     if (!info.hasTileRange)
     {
@@ -1086,6 +1137,7 @@ void raster_backward_replay<let FixedPointMode : int>(RasterPixelInfo info, inou
         return;
     }
 
+    bool stagedFlush = FixedPointMode == 0;
     float3 background = raster_resolved_background(info.pixelCoord);
     bool contributionEnabled = raster_target_allows_contribution(info);
     RasterState suffixState = { 0.0, 1.0 };
@@ -1094,43 +1146,57 @@ void raster_backward_replay<let FixedPointMode : int>(RasterPixelInfo info, inou
         uint batchStart = batchBase > info.start + RASTER_BATCH ? (batchBase - RASTER_BATCH) : info.start;
         uint batchCount = batchBase - batchStart;
         prefetch_batch_from_global(batchStart, batchBase, lane);
+        if (stagedFlush) clear_grad_stage(lane);
         GroupMemoryBarrierWithGroupSync();
 
         for (uint rev = 0u; rev < batchCount; rev++)
         {
             uint localIdx = batchCount - 1u - rev;
             uint globalIdx = batchStart + localIdx;
-            if (!info.pixelActive) continue;
+            if (!stagedFlush && !info.pixelActive) continue;
 
             uint splatId = gsBatchSplatId[localIdx];
             RasterGaussian gaussian = gsGaussian[localIdx];
             float2 eval = raster_eval_alpha_depth_gaussian(gaussian, info.rayDir);
             float alpha = eval.x;
             float rayDepth = eval.y;
-            if (alpha <= 0.0) continue;
+            bool lit = alpha > 0.0 && info.pixelActive;
+            if (!stagedFlush && alpha <= 0.0) continue;
 
-            bool processedHit = globalIdx < replayState.processedEnd;
+            bool processedHit = lit && globalIdx < replayState.processedEnd;
+            RasterGaussian.Differential dGaussian = { float3(0.0), float3(0.0), float3(0.0), float4(0.0) };
+            uint stagedContribution = 0u;
             if (processedHit)
             {
                 RasterReplayStepState prevState;
                 prevState.pixelState = replayState.pixelState.undo(gaussian.colorAlpha.xyz, alpha);
-                if (contributionEnabled) accumulate_bidirectional_splat_contribution(splatId, prevState.pixelState, suffixState, gaussian.colorAlpha.xyz, alpha, background);
+                if (contributionEnabled)
+                {
+                    if (stagedFlush) stagedContribution = staged_splat_contribution(prevState.pixelState, suffixState, gaussian.colorAlpha.xyz, alpha, background);
+                    else accumulate_bidirectional_splat_contribution(splatId, prevState.pixelState, suffixState, gaussian.colorAlpha.xyz, alpha, background);
+                }
                 prevState.splatDensityState = replayState.splatDensitySum - raster_splat_density_weight(prevState.pixelState.trans, alpha, gaussian.colorAlpha.w);
                 prevState.depthState = depth_state_rewind(replayState.depthState, prevState.pixelState.trans * alpha, rayDepth);
                 var dpPrevState = diffPair(prevState);
                 var dpGaussian = diffPair(gaussian);
                 bwd_diff(raster_replay_step)(dpPrevState, dpGaussian, info.rayDir, backwardState);
-
+                backwardState = dpPrevState.getDifferential();
+                if (stagedFlush) dGaussian = dpGaussian.getDifferential();
+                else flush_cached_raster_grad_fixed(splatId, gaussian, dpGaussian.getDifferential());
                 replayState.pixelState = prevState.pixelState;
                 replayState.splatDensitySum = prevState.splatDensityState;
                 replayState.depthState = prevState.depthState;
-                backwardState = dpPrevState.getDifferential();
-                flush_cached_raster_grad<FixedPointMode>(splatId, gaussian, dpGaussian.getDifferential());
             }
-            suffixState = suffixState.blend(gaussian.colorAlpha.xyz, alpha);
+            if (stagedFlush && WaveActiveAnyTrue(processedHit)) stage_cached_raster_grad_float<StageDepth>(localIdx, lane, dGaussian, stagedContribution);
+            if (lit) suffixState = suffixState.blend(gaussian.colorAlpha.xyz, alpha);
         }
 
         GroupMemoryBarrierWithGroupSync();
+        if (stagedFlush)
+        {
+            flush_staged_raster_grads(batchCount, lane);
+            GroupMemoryBarrierWithGroupSync();
+        }
         batchBase = batchStart;
     }
 }
@@ -1254,7 +1320,7 @@ void csResolveGradientStatsFloat(uint3 dispatchThreadID : SV_DispatchThreadID)
     resolve_gradient_stats<0>(dispatchThreadID);
 }
 
-void rasterize_backward<let FixedPointMode : int>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterReplayStepState.Differential backwardState, uint lane)
+void rasterize_backward<let FixedPointMode : int, let StageDepth : int>(RasterPixelInfo info, inout RasterReplayState replayState, inout RasterReplayStepState.Differential backwardState, uint lane)
 {
     load_training_forward_cache(info, replayState);
     init_raster_backward_state(backwardState);
@@ -1267,7 +1333,7 @@ void rasterize_backward<let FixedPointMode : int>(RasterPixelInfo info, inout Ra
         bwd_diff(raster_depth_output)(dpDepthState, regularizerGrad.y);
         backwardState.depthState = dpDepthState.getDifferential();
     }
-    raster_backward_replay<FixedPointMode>(info, replayState, backwardState, lane);
+    raster_backward_replay<FixedPointMode, StageDepth>(info, replayState, backwardState, lane);
 }
 
 [shader("compute")]
@@ -1303,7 +1369,7 @@ void csRasterizeBackwardFixed(uint3 dispatchThreadID : SV_DispatchThreadID, uint
     RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
     RasterReplayState replayState;
     RasterReplayStepState.Differential backwardState;
-    rasterize_backward<1>(info, replayState, backwardState, lane);
+    rasterize_backward<1, 0>(info, replayState, backwardState, lane);
 }
 
 [shader("compute")]
@@ -1313,5 +1379,15 @@ void csRasterizeBackwardFloat(uint3 dispatchThreadID : SV_DispatchThreadID, uint
     RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
     RasterReplayState replayState;
     RasterReplayStepState.Differential backwardState;
-    rasterize_backward<0>(info, replayState, backwardState, lane);
+    rasterize_backward<0, 1>(info, replayState, backwardState, lane);
+}
+
+[shader("compute")]
+[numthreads(RASTER_GROUP_THREADS, 1, 1)]
+void csRasterizeBackwardFloatNoDepth(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    RasterPixelInfo info = resolve_raster_pixel(groupID, lane);
+    RasterReplayState replayState;
+    RasterReplayStepState.Differential backwardState;
+    rasterize_backward<0, 0>(info, replayState, backwardState, lane);
 }

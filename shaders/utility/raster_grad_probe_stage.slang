@@ -121,7 +121,15 @@ void csFlushCachedRasterGradFloatFromInput(uint3 dispatchThreadID : SV_DispatchT
     uint splatId = dispatchThreadID.x;
     if (splatId >= g_Prepass.splatCount) return;
 
-    flush_cached_raster_grad_float(splatId, raster_differential_from_value(g_InputRasterGrad[splatId]));
+    RasterGaussian.Differential dGaussian = raster_differential_from_value(g_InputRasterGrad[splatId]);
+    float contributionNormSq = raster_grad_contribution_norm_sq(dGaussian);
+    if (isfinite(contributionNormSq) && contributionNormSq > 0.0) atomic_add_gradient_stat(splatId, 1u, contributionNormSq);
+    uint splatCount = g_Prepass.splatCount;
+    bool includeDepth = raster_grad_include_depth();
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_RO_CAMERA_X, RASTER_CACHE_RO_CAMERA_Y, RASTER_CACHE_RO_CAMERA_Z), splatId, dGaussian.roCamera, includeDepth);
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XX, RASTER_CACHE_SIGMA_YY, RASTER_CACHE_SIGMA_ZZ), splatId, dGaussian.sigmaDiag, includeDepth);
+    add_cached_raster_grad_components(splatCount, uint3(RASTER_CACHE_SIGMA_XY, RASTER_CACHE_SIGMA_XZ, RASTER_CACHE_SIGMA_YZ), splatId, dGaussian.sigmaOffDiag, includeDepth);
+    add_cached_raster_grad_components(splatCount, uint4(RASTER_CACHE_COLOR_R, RASTER_CACHE_COLOR_G, RASTER_CACHE_COLOR_B, RASTER_CACHE_FUSED_OPACITY), splatId, dGaussian.colorAlpha, includeDepth);
 }
 
 [shader("compute")]

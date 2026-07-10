@@ -138,9 +138,17 @@ uint scanline_loop_count(ScanlineLoopConfig loopCfg)
     return loopCfg.lineEnd >= loopCfg.lineStart ? uint(loopCfg.lineEnd - loopCfg.lineStart + 1) : 0u;
 }
 
+float binning_center_tighten()
+{
+    bool distorted = any(abs(g_Camera.projDistortionK1K2P1P2) > SMALL_VALUE) || any(abs(g_Camera.projDistortionK3K4K5K6) > SMALL_VALUE);
+    bool equirectangular = g_Camera.projectionModel == CAMERA_PROJECTION_EQUIRECTANGULAR;
+    return (equirectangular || distorted) ? 0.0 : 0.5;
+}
+
 uint emit_projected_ellipse_scanlines(uint splatId, Ellipse preparedEllipse, ScanlineLoopConfig loopCfg, uint writeIndex, uint writeEnd)
 {
     float tileSize = float(g_Prepass.tileSize);
+    float centerTightenPx = binning_center_tighten();
     uint loopCount = scanline_loop_count(loopCfg);
     for (uint i = 0u; i < loopCount && writeIndex < writeEnd; i++)
     {
@@ -149,7 +157,7 @@ uint emit_projected_ellipse_scanlines(uint splatId, Ellipse preparedEllipse, Sca
         ScanlineWorkItem item;
         item.splatId = splatId;
         item.clear(loopCfg.scanAlongX);
-        if (compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, span) && span.lineCount > 0u)
+        if (compute_scanline_tile_span_universal(preparedEllipse, loopCfg, tileSize, lineCoord, centerTightenPx, span) && span.lineCount > 0u)
         {
             uint startTileId = loopCfg.scanAlongX
                 ? (lineCoord * g_Prepass.tileWidth + span.lineStartMinor)

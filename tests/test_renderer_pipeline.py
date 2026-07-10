@@ -620,6 +620,7 @@ def test_distorted_render_matches_cpu_reference(device):
         tile_height=renderer.tile_height,
         tile_size=renderer.tile_size,
         max_list_entries=renderer._max_list_entries,
+        center_tighten_px=0.0,
     )
     sorted_count = min(generated, renderer._max_list_entries)
     ref_keys, ref_values = sort_key_values(keys, values, sorted_count)

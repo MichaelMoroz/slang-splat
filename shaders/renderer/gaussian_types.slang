@@ -10,6 +10,7 @@ static const uint RASTER_THREAD_TILE_DIM = 8u;
 static const uint RASTER_GROUP_THREADS = RASTER_THREAD_TILE_DIM * RASTER_THREAD_TILE_DIM;
 static const uint RASTER_TILE_SIZE = RASTER_THREAD_TILE_DIM;
 static const uint RASTER_BATCH = 64u;
+static const uint RASTER_WAVE_SIZE = 32u;
 static const uint RASTER_GRAD_FIXED_FRAC_BITS = 12u;
 static const uint RASTER_CACHE_RO_CAMERA_X = 0u;
 static const uint RASTER_CACHE_RO_CAMERA_Y = 1u;
@@ -25,9 +26,13 @@ static const uint RASTER_CACHE_COLOR_G = 10u;
 static const uint RASTER_CACHE_COLOR_B = 11u;
 static const uint RASTER_CACHE_FUSED_OPACITY = 12u;
 static const uint RASTER_CACHE_PARAM_COUNT = 13u;
+static const uint RASTER_GRAD_STAGE_SLOTS = RASTER_GROUP_THREADS / RASTER_WAVE_SIZE;
+static const uint RASTER_GRAD_STAGE_COMPONENTS = RASTER_CACHE_PARAM_COUNT + 1u;
 groupshared RasterGaussian gsGaussian[RASTER_BATCH];
 groupshared uint gsBatchSplatId[RASTER_BATCH];
 groupshared uint gsDoneCount;
+groupshared float gsGradStage[RASTER_GRAD_STAGE_SLOTS][RASTER_BATCH][RASTER_GRAD_STAGE_COMPONENTS];
+groupshared uint gsContribStage[RASTER_GRAD_STAGE_SLOTS][RASTER_BATCH];
 
 uniform StructuredBuffer<float> g_SplatParams;
 

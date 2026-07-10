@@ -486,25 +486,25 @@ def _min_conic_over_tile_box(conic: np.ndarray, x0: float, x1: float, y0: float,
     return float(min(values))
 
 
-def _tile_box(center: tuple[float, float], scan_along_x: bool, tile_size: int, line_tile: int, minor_tile: int) -> tuple[float, float, float, float]:
+def _tile_box(center: tuple[float, float], scan_along_x: bool, tile_size: int, line_tile: int, minor_tile: int, center_tighten_px: float) -> tuple[float, float, float, float]:
     major = np.array([minor_tile, line_tile], dtype=np.float32) if scan_along_x else np.array([line_tile, minor_tile], dtype=np.float32)
-    lo = major * float(tile_size) - np.asarray(center, dtype=np.float32)
-    hi = (major + 1.0) * float(tile_size) - np.asarray(center, dtype=np.float32)
+    lo = major * float(tile_size) + float(center_tighten_px) - np.asarray(center, dtype=np.float32)
+    hi = (major + 1.0) * float(tile_size) - float(center_tighten_px) - np.asarray(center, dtype=np.float32)
     return float(lo[0]), float(hi[0]), float(lo[1]), float(hi[1])
 
 
-def _tile_intersects_ellipse(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, line_tile: int, minor_tile: int) -> bool:
-    return _min_conic_over_tile_box(conic, *_tile_box(center, scan_along_x, tile_size, line_tile, minor_tile)) <= 1.0 + ELLIPSE_EPS
+def _tile_intersects_ellipse(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, line_tile: int, minor_tile: int, center_tighten_px: float) -> bool:
+    return _min_conic_over_tile_box(conic, *_tile_box(center, scan_along_x, tile_size, line_tile, minor_tile, center_tighten_px)) <= 1.0 + ELLIPSE_EPS
 
 
-def _compute_scanline_tile_span_universal(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, line_coord_tile: int, min_minor_tile: int, max_minor_tile: int) -> tuple[bool, int, int]:
-    hits = [minor for minor in range(max(min_minor_tile, 0), max_minor_tile + 1) if _tile_intersects_ellipse(center, conic, scan_along_x, tile_size, line_coord_tile, minor)]
+def _compute_scanline_tile_span_universal(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, line_coord_tile: int, min_minor_tile: int, max_minor_tile: int, center_tighten_px: float = 0.0) -> tuple[bool, int, int]:
+    hits = [minor for minor in range(max(min_minor_tile, 0), max_minor_tile + 1) if _tile_intersects_ellipse(center, conic, scan_along_x, tile_size, line_coord_tile, minor, center_tighten_px)]
     return (False, 0, 0) if not hits else (True, hits[0], hits[-1] - hits[0] + 1)
 
 
-def _iter_spans(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, primary_lo: int, primary_hi: int, minor_lo: int, minor_hi: int):
+def _iter_spans(center: tuple[float, float], conic: np.ndarray, scan_along_x: bool, tile_size: int, primary_lo: int, primary_hi: int, minor_lo: int, minor_hi: int, center_tighten_px: float):
     for primary in range(primary_lo, primary_hi + 1):
-        has_span, minor_start, count = _compute_scanline_tile_span_universal(center, conic, scan_along_x, tile_size, primary, minor_lo, minor_hi)
+        has_span, minor_start, count = _compute_scanline_tile_span_universal(center, conic, scan_along_x, tile_size, primary, minor_lo, minor_hi, center_tighten_px)
         if has_span:
             yield primary, minor_start, count
 
@@ -519,7 +519,7 @@ def _write_span(keys: np.ndarray, values: np.ndarray, write_index: int, count: i
     return write_index
 
 
-def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile_height: int, tile_size: int, max_list_entries: int) -> tuple[np.ndarray, np.ndarray, int]:
+def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile_height: int, tile_size: int, max_list_entries: int, center_tighten_px: float = 0.5) -> tuple[np.ndarray, np.ndarray, int]:
     keys, values, counter = np.zeros((max_list_entries,), dtype=np.uint32), np.zeros((max_list_entries,), dtype=np.uint32), 0
     visible_ids = np.flatnonzero(projected.valid != 0)
     if visible_ids.size == 0:
@@ -544,7 +544,7 @@ def build_tile_key_value_pairs(projected: ProjectedSplats, tile_width: int, tile
         primary_lo, primary_hi = (min_y, max_y) if scan_along_x else (min_x, max_x)
         minor_lo, minor_hi = (min_x, max_x) if scan_along_x else (min_y, max_y)
         if use_conic:
-            spans = tuple(_iter_spans((float(cx), float(cy)), projected.ellipse_conic[splat_id], scan_along_x, tile_size, primary_lo, primary_hi, minor_lo, minor_hi))
+            spans = tuple(_iter_spans((float(cx), float(cy)), projected.ellipse_conic[splat_id], scan_along_x, tile_size, primary_lo, primary_hi, minor_lo, minor_hi, float(center_tighten_px)))
         else:
             spans = tuple((primary, minor_lo, minor_hi - minor_lo + 1) for primary in range(primary_lo, primary_hi + 1))
         total_count = sum(count for _, _, count in spans)
