@@ -60,7 +60,7 @@ void csSampleTrainingImageColorInit(uint3 dispatchThreadID : SV_DispatchThreadID
     if (splatId >= g_SplatCount || g_ImageWidth == 0u || g_ImageHeight == 0u) return;
 
     float3 worldPos = load_splat_param_vector<3>(g_SplatParams, g_SplatCount, PARAM_POSITION_X, splatId);
-    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+    Camera camera = Camera.from_params(g_Camera);
     float3 cameraPos = camera.world_point_to_camera(worldPos);
 
     float2 screenPos;

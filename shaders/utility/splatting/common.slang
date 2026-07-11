@@ -102,6 +102,33 @@ uint2 training_sample_native_pixel(uint2 lowResPixel, TrainingSubsampleParams pa
     return uint2(min(basePixel.x + offsetX, params.nativeWidth - 1u), min(basePixel.y + offsetY, params.nativeHeight - 1u));
 }
 
+// Fisheye image-circle mask, evaluated at training time only (the dataset images stay
+// untouched). centerUV/invRadiusUV describe the ellipse the lens FOV maps to through
+// the KB4 polynomial, in normalized native sensor UV. Zero invRadiusUV disables the
+// mask, which is also the unbound-uniform default.
+bool fisheye_mask_uv_allows(float2 sensorUV, float2 centerUV, float2 invRadiusUV)
+{
+    if (!(invRadiusUV.x > 0.0) || !(invRadiusUV.y > 0.0)) return true;
+    float2 offset = (sensorUV - centerUV) * invRadiusUV;
+    return dot(offset, offset) <= 1.0;
+}
+
+// Pixel-space variant: the pixel is first resolved to its native sample position
+// through the same mapping the target fetch uses, so the test stays exact under crop,
+// stratified subsample, and downscale.
+bool training_fisheye_mask_allows(uint2 pixel, TrainingSubsampleParams params, float2 centerUV, float2 invRadiusUV)
+{
+    if (!(invRadiusUV.x > 0.0) || !(invRadiusUV.y > 0.0)) return true;
+    uint nativeWidth = max(params.nativeWidth, 1u);
+    uint nativeHeight = max(params.nativeHeight, 1u);
+    uint2 samplePixel = training_sample_native_pixel(pixel, params);
+    float2 sensorUV = float2(
+        (float(min(samplePixel.x, nativeWidth - 1u)) + 0.5) / float(nativeWidth),
+        (float(min(samplePixel.y, nativeHeight - 1u)) + 0.5) / float(nativeHeight)
+    );
+    return fisheye_mask_uv_allows(sensorUV, centerUV, invRadiusUV);
+}
+
 [Differentiable]
 float3 normalize_vector_safe(float3 value)
 {
@@ -613,7 +640,7 @@ float3 jet_colormap(float value)
 [Differentiable]
 Ellipsoid build_ellipsoid_with_support(no_diff CameraParams cameraParams, no_diff float radiusScale, no_diff float supportSigmaRadius, no_diff float maxAnisotropy, Gaussian3D gaussian)
 {
-    PinholeCamera camera = PinholeCamera.from_params(cameraParams);
+    Camera camera = Camera.from_params(cameraParams);
     float3 sigma = exp(gaussian.logScale);
     float3 rawSupportScale = sigma * (radiusScale * supportSigmaRadius);
     float supportMaxScale = max(rawSupportScale.x, max(rawSupportScale.y, rawSupportScale.z));

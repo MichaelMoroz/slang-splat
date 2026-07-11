@@ -11,7 +11,8 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from ..gaussian_scene import GaussianScene
 from ..sh_utils import SUPPORTED_SH_COEFF_COUNT, rgb_to_sh0
-from .colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID, COLMAP_PINHOLE_MODEL_ID, ColmapCamera, ColmapFrame, ColmapImage, ColmapReconstruction, GaussianInitHyperParams, point_tables
+from ...renderer.camera import Camera
+from .colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID, COLMAP_FISHEYE_MODEL_IDS, COLMAP_PINHOLE_MODEL_ID, ColmapCamera, ColmapFrame, ColmapImage, ColmapReconstruction, GaussianInitHyperParams, point_tables
 
 INIT_BASE_SCALE_SPACING_RATIO = 0.25
 INIT_JITTER_SPACING_RATIO = 1.0 / np.sqrt(12.0)
@@ -671,6 +672,91 @@ def load_rgba8_image(image_path: Path, target_size: tuple[int, int] | None = Non
             if rgba_image.size != resolved_size:
                 rgba_image = rgba_image.resize(resolved_size, Image.Resampling.LANCZOS)
         return np.array(rgba_image, dtype=np.uint8, order="C", copy=True)
+
+
+FISHEYE_CIRCLE_DETECT_MAX_SIDE = 512
+FISHEYE_CIRCLE_DETECT_DARK_LUMA = 16
+FISHEYE_CIRCLE_DETECT_LIT_BIN_FRACTION = 0.05
+FISHEYE_CIRCLE_DETECT_RADIUS_BINS = 256
+FISHEYE_CIRCLE_DETECT_FULL_FRAME_FRACTION = 0.98
+FISHEYE_CIRCLE_DETECT_MIN_RADIUS_FRACTION = 0.3
+FISHEYE_CIRCLE_DETECT_SAMPLE_FRAMES = 3
+
+
+def _detect_fisheye_circle_fov_single(camera: ColmapCamera, image_path: Path) -> float:
+    with Image.open(Path(image_path).resolve()) as pil_image:
+        scale = min(FISHEYE_CIRCLE_DETECT_MAX_SIDE / max(max(pil_image.width, pil_image.height), 1), 1.0)
+        size = (max(int(round(pil_image.width * scale)), 1), max(int(round(pil_image.height * scale)), 1))
+        luma = np.asarray(pil_image.convert("L").resize(size, Image.Resampling.BILINEAR), dtype=np.uint8)
+    height, width = luma.shape
+    sx = width / max(float(camera.width), 1.0)
+    sy = height / max(float(camera.height), 1.0)
+    fx = max(abs(float(camera.fx)) * sx, 1e-8)
+    fy = max(abs(float(camera.fy)) * sy, 1e-8)
+    u = (np.arange(width, dtype=np.float64) + 0.5 - float(camera.cx) * sx) / fx
+    v = (np.arange(height, dtype=np.float64) + 0.5 - float(camera.cy) * sy) / fy
+    radius = np.sqrt(u[None, :] ** 2 + v[:, None] ** 2)
+    radius_max = float(radius.max())
+    if not (radius_max > 0.0):
+        return 0.0
+
+    bin_count = FISHEYE_CIRCLE_DETECT_RADIUS_BINS
+    bin_ids = np.minimum((radius / radius_max * bin_count).astype(np.int32), bin_count - 1).ravel()
+    totals = np.bincount(bin_ids, minlength=bin_count)
+    lit_counts = np.bincount(bin_ids[luma.ravel() > FISHEYE_CIRCLE_DETECT_DARK_LUMA], minlength=bin_count)
+    fractions = lit_counts / np.maximum(totals, 1)
+    lit_bins = np.flatnonzero((totals > 0) & (fractions > FISHEYE_CIRCLE_DETECT_LIT_BIN_FRACTION))
+    if lit_bins.size == 0:
+        return 0.0
+    edge_fraction = (float(lit_bins[-1]) + 1.0) / bin_count
+    # Bright into the corners: full-frame fisheye, no circle to mask. Mostly dark
+    # image: inconclusive; don't guess.
+    if edge_fraction >= FISHEYE_CIRCLE_DETECT_FULL_FRAME_FRACTION or edge_fraction <= FISHEYE_CIRCLE_DETECT_MIN_RADIUS_FRACTION:
+        return 0.0
+    # Bin start (not end) keeps the mask a hair inside the lit/vignette transition.
+    radius_norm = float(lit_bins[-1]) / bin_count * radius_max
+    theta = Camera._fisheye_theta_from_distorted(radius_norm, (float(camera.k1), float(camera.k2), float(camera.k3), float(camera.k4)))
+    fov_degrees = float(np.degrees(2.0 * theta))
+    return fov_degrees if fov_degrees >= 1.0 else 0.0
+
+
+def detect_fisheye_circle_fov_degrees(camera: ColmapCamera, image_paths: list[Path]) -> float:
+    """Median full-FOV estimate of the bright image circle across sample frames, for
+    circular fisheyes with dark corners. 0 when the camera is not fisheye, no dark
+    border is detected (full-frame fisheye), or detection is inconclusive."""
+    if int(getattr(camera, "model_id", -1)) not in COLMAP_FISHEYE_MODEL_IDS:
+        return 0.0
+    estimates = []
+    for image_path in list(image_paths)[:FISHEYE_CIRCLE_DETECT_SAMPLE_FRAMES]:
+        try:
+            estimate = _detect_fisheye_circle_fov_single(camera, image_path)
+        except Exception:
+            continue
+        if estimate > 0.0:
+            estimates.append(estimate)
+    return float(round(float(np.median(estimates)), 1)) if estimates else 0.0
+
+
+def fisheye_mask_active(frame: ColmapFrame) -> bool:
+    return float(getattr(frame, "fisheye_mask_fov_degrees", 0.0) or 0.0) > 0.0 and int(getattr(frame, "model_id", -1)) in COLMAP_FISHEYE_MODEL_IDS
+
+
+def fisheye_mask_uv_params(frame: ColmapFrame) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Fisheye image-circle mask in normalized sensor UV: (centerUV, invRadiusUV).
+
+    The circle is the radius theta = fov/2 maps to through the KB4 polynomial, centered
+    on the principal point. Expressed in UV so the shader-side test stays exact under
+    crop, stratified subsample, and downscale. Zeros (disabled) when no mask is active.
+    The mask is applied at training time only - the dataset images stay untouched.
+    """
+    if not fisheye_mask_active(frame):
+        return (0.0, 0.0), (0.0, 0.0)
+    width, height = max(float(frame.width), 1.0), max(float(frame.height), 1.0)
+    theta_max = 0.5 * float(np.deg2rad(np.clip(float(frame.fisheye_mask_fov_degrees), 1.0, 360.0)))
+    radius_norm, _ = Camera._fisheye_distort_theta(theta_max, (float(frame.k1), float(frame.k2), float(frame.k3), float(frame.k4)))
+    radius_x_px = max(abs(float(frame.fx)), 1e-8) * max(radius_norm, 1e-8)
+    radius_y_px = max(abs(float(frame.fy)), 1e-8) * max(radius_norm, 1e-8)
+    return (float(frame.cx) / width, float(frame.cy) / height), (width / radius_x_px, height / radius_y_px)
 
 
 def load_training_frame_rgba8(frame: ColmapFrame) -> np.ndarray:

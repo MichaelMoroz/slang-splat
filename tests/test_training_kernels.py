@@ -2307,6 +2307,19 @@ def test_refinement_cadence_and_clone_budget_follow_target_budget() -> None:
     assert resolve_refinement_clone_budget(hparams, splat_count=400, step=200) == 140
 
 
+def test_refinement_pass_is_fully_gated_by_start_step() -> None:
+    # "Start Refinement After" must gate the whole pass, not just growth: pre-start the
+    # pass would otherwise prune/cull/clamp every interval and collapse large init clouds.
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_start_step=1000, lr_schedule_enabled=False)
+
+    assert not should_run_refinement_step(hparams, 200)
+    assert not should_run_refinement_step(hparams, 800)
+    assert not should_run_refinement_step(hparams, 999)
+    assert should_run_refinement_step(hparams, 1000)
+    assert not should_run_refinement_step(hparams, 1100)
+    assert should_run_refinement_step(hparams, 1200)
+
+
 def test_refinement_interval_is_floored_by_frame_count() -> None:
     hparams = TrainingHyperParams(refinement_interval=2, refinement_growth_start_step=0, max_gaussians=1000, refinement_target_splat_ratio=0.5, refinement_prune_lowest_contribution_ratio=0.1, refinement_max_growth_per_step=10.0, refinement_max_prune_per_step=1.0, lr_schedule_enabled=False)
 
@@ -5679,3 +5692,155 @@ def test_create_dataset_textures_threads_cpu_image_loading(monkeypatch) -> None:
 
     assert calls == [("workers", 16, "trainer-target")]
     assert trainer._frame_targets_native == ["tex:rgba:a.png", "tex:rgba:b.png"]
+
+
+def test_fisheye_circle_mask_excludes_loss_outside_image_circle(device, tmp_path: Path):
+    from src.scene._internal.colmap_types import COLMAP_OPENCV_FISHEYE_MODEL_ID
+
+    width = height = 64
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=width,
+        height=height,
+        training_hparams=TrainingHyperParams(),
+        image_name="fisheye_mask_target.png",
+        image_id=41,
+    )
+    frame = trainer.frames[0]
+    frame.model_id = COLMAP_OPENCV_FISHEYE_MODEL_ID
+    frame.fx = frame.fy = 32.0
+
+    # Equidistant (zero-k) 90-degree circle: radius 32 * pi/4 = 25.1 px around center.
+    radius_px = 32.0 * np.pi / 4.0
+    yy, xx = np.mgrid[0:height, 0:width].astype(np.float64)
+    pixel_radius_sq = (xx + 0.5 - 32.0) ** 2 + (yy + 0.5 - 32.0) ** 2
+    inside = pixel_radius_sq <= radius_px * radius_px
+    # Interior core beyond the SSIM blur radius: masking outside pixels legitimately
+    # changes DSSIM statistics in the boundary band, but not here.
+    inside_core = pixel_radius_sq <= (radius_px - 8.0) ** 2
+
+    # Inside the circle the render roughly matches the target; outside, the target is
+    # black (the lens vignette), which dominates the loss if the mask leaks.
+    target = np.zeros((height, width, 4), dtype=np.float32)
+    target[..., :3] = np.where(inside[..., None], np.float32(0.5), np.float32(0.0))
+    target[..., 3] = 1.0
+    rendered = np.zeros((height, width, 4), dtype=np.float32)
+    rendered[..., :3] = _training_target_to_linear_np(np.full((height, width, 3), 0.5, dtype=np.float32))
+    rendered[..., 3] = 1.0
+    target_texture = _make_float_texture(trainer.device, target)
+
+    def _rgb_loss_map() -> np.ndarray:
+        return buffer_to_numpy(trainer._renderer_workspace_buffer("training_rgb_loss"), np.float32)[: width * height].reshape(height, width).copy()
+
+    frame.fisheye_mask_fov_degrees = 0.0
+    unmasked_mse = _batch_step_display_mse(trainer, rendered, target_texture)
+    unmasked_loss_map = _rgb_loss_map()
+    frame.fisheye_mask_fov_degrees = 90.0
+    masked_mse = _batch_step_display_mse(trainer, rendered, target_texture)
+    masked_loss_map = _rgb_loss_map()
+
+    # Without the mask the dark vignette contributes loss; with it, every pixel outside
+    # the circle contributes exactly zero while interior pixels keep their loss.
+    assert float(unmasked_loss_map[~inside].sum()) > 1e-3
+    assert float(masked_loss_map[~inside].max(initial=0.0)) == 0.0
+    assert float(masked_loss_map[inside].sum()) > 0.0
+    np.testing.assert_allclose(masked_loss_map[inside_core], unmasked_loss_map[inside_core], rtol=1e-5, atol=1e-8)
+    assert masked_mse < 0.5 * unmasked_mse
+
+
+def test_fisheye_crop_origin_rejects_windows_outside_image_circle(tmp_path: Path):
+    from src.scene._internal.colmap_types import COLMAP_OPENCV_FISHEYE_MODEL_ID
+    from src.training.gaussian_trainer import _refinement_hash_combine, _resolve_crop_origin
+
+    frame = _make_frame(tmp_path, width=256, height=256, image_name="crop_origin.png", image_id=43)
+    crop_width = crop_height = 64
+    max_x = max_y = 256 - crop_width
+
+    # Without a mask the legacy origin is reproduced exactly.
+    for seed in range(50):
+        crop_x, crop_y = _resolve_crop_origin(seed, max_x, max_y, crop_width, crop_height, frame)
+        assert crop_x == int(_refinement_hash_combine(seed, 2)) % (max_x + 1)
+        assert crop_y == int(_refinement_hash_combine(seed, 3)) % (max_y + 1)
+
+    # Small centered circle (fx 64, 90 deg -> radius 50.3 px around 128,128): every
+    # planned window center must land inside it, deterministically per seed.
+    frame.model_id = COLMAP_OPENCV_FISHEYE_MODEL_ID
+    frame.fx = frame.fy = 64.0
+    frame.cx = frame.cy = 128.0
+    frame.fisheye_mask_fov_degrees = 90.0
+    radius_px = 64.0 * np.pi / 4.0
+    for seed in range(200):
+        crop_x, crop_y = _resolve_crop_origin(seed, max_x, max_y, crop_width, crop_height, frame)
+        assert (crop_x, crop_y) == _resolve_crop_origin(seed, max_x, max_y, crop_width, crop_height, frame)
+        center_dx = crop_x + 0.5 * crop_width - 128.0
+        center_dy = crop_y + 0.5 * crop_height - 128.0
+        assert center_dx * center_dx + center_dy * center_dy <= radius_px * radius_px + 1e-6
+
+
+def test_fisheye_circle_mask_aligns_with_crop_steps(device, tmp_path: Path):
+    from src.scene._internal.colmap_types import COLMAP_OPENCV_FISHEYE_MODEL_ID
+
+    render_size, native_size, crop_origin = 64, 128, 32
+    renderer = GaussianRenderer(device, width=render_size, height=render_size, list_capacity_multiplier=4)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=_make_scene(count=1, seed=97),
+        frames=[_make_frame(tmp_path, width=native_size, height=native_size, image_name="fisheye_crop_target.png", image_id=42)],
+        training_hparams=TrainingHyperParams(),
+        seed=123,
+    )
+    frame = trainer.frames[0]
+    frame.model_id = COLMAP_OPENCV_FISHEYE_MODEL_ID
+    frame.fx = frame.fy = 32.0
+    frame.cx = frame.cy = 64.0
+    frame.fisheye_mask_fov_degrees = 90.0
+
+    def _crop_vars() -> dict[str, object]:
+        return {
+            "g_TrainingSubsample": {
+                "enabled": np.uint32(1),
+                "factor": np.uint32(native_size // render_size),
+                "nativeWidth": np.uint32(native_size),
+                "nativeHeight": np.uint32(native_size),
+                "frameIndex": np.uint32(0),
+                "stepIndex": np.uint32(0),
+                "mode": np.uint32(1),
+                "cropX": np.uint32(crop_origin),
+                "cropY": np.uint32(crop_origin),
+            },
+            **trainer._fisheye_mask_vars(frame),
+        }
+
+    # Bright render vs all-black native target: without the mask every pixel carries
+    # loss, so any misalignment of the circle inside the crop window is visible.
+    rendered = np.zeros((render_size, render_size, 4), dtype=np.float32)
+    rendered[..., :3] = _training_target_to_linear_np(np.full((render_size, render_size, 3), 0.5, dtype=np.float32))
+    rendered[..., 3] = 1.0
+    target = np.zeros((native_size, native_size, 4), dtype=np.float32)
+    target[..., 3] = 1.0
+    target_texture = _make_float_texture(trainer.device, target)
+
+    def _crop_loss_map() -> np.ndarray:
+        renderer.output_texture.copy_from_numpy(np.ascontiguousarray(rendered, dtype=np.float32))
+        renderer.work_buffers["training_density"].copy_from_numpy(np.zeros((render_size * render_size,), dtype=np.float32))
+        enc = trainer.device.create_command_encoder()
+        trainer._dispatch_loss_forward(enc, target_texture, training_sample_vars=_crop_vars())
+        trainer.device.submit_command_buffer(enc.finish())
+        trainer.device.wait()
+        return buffer_to_numpy(trainer._renderer_workspace_buffer("training_rgb_loss"), np.float32)[: render_size * render_size].reshape(render_size, render_size).copy()
+
+    masked_map = _crop_loss_map()
+    frame.fisheye_mask_fov_degrees = 0.0
+    unmasked_map = _crop_loss_map()
+
+    # Crop window [32,96) of the 128 native frame: the native circle (radius 25.1 px
+    # around 64,64) maps to window coordinates around (31.5, 31.5).
+    radius_px = 32.0 * np.pi / 4.0
+    yy, xx = np.mgrid[0:render_size, 0:render_size].astype(np.float64)
+    inside_window = ((xx + crop_origin + 0.5 - 64.0) ** 2 + (yy + crop_origin + 0.5 - 64.0) ** 2) <= radius_px * radius_px
+
+    assert float(unmasked_map.min()) > 0.0
+    assert float(masked_map[~inside_window].max(initial=0.0)) == 0.0
+    assert float(masked_map[inside_window].min(initial=1.0)) > 0.0

@@ -9,11 +9,16 @@ from .colmap_types import (
     COLMAP_CAMERA_MODEL_IDS,
     COLMAP_CAMERA_MODEL_PARAM_COUNTS,
     COLMAP_EQUIRECTANGULAR_MODEL_ID,
+    COLMAP_FISHEYE_MODEL_ID,
     COLMAP_FULL_OPENCV_MODEL_ID,
+    COLMAP_OPENCV_FISHEYE_MODEL_ID,
     COLMAP_OPENCV_MODEL_ID,
     COLMAP_PINHOLE_MODEL_ID,
+    COLMAP_RADIAL_FISHEYE_MODEL_ID,
     COLMAP_RADIAL_MODEL_ID,
+    COLMAP_SIMPLE_FISHEYE_MODEL_ID,
     COLMAP_SIMPLE_PINHOLE_MODEL_ID,
+    COLMAP_SIMPLE_RADIAL_FISHEYE_MODEL_ID,
     COLMAP_SIMPLE_RADIAL_MODEL_ID,
     COLMAP_SUPPORTED_CAMERA_MODEL_NAMES,
     ColmapCamera,
@@ -58,7 +63,15 @@ def _camera_intrinsics(model_id: int, params: tuple[float, ...]) -> tuple[float,
     if model_id == COLMAP_SIMPLE_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     if model_id == COLMAP_RADIAL_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], params[4], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     if model_id == COLMAP_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], 0.0, 0.0, 0.0, 0.0
+    # Fisheye models carry KB4 theta-polynomial coefficients: k1/k2 land in the k1/k2
+    # fields and k3/k4 in the k3/k4 fields (p1/p2/k5/k6 stay zero).
+    if model_id == COLMAP_OPENCV_FISHEYE_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5], 0.0, 0.0, params[6], params[7], 0.0, 0.0
     if model_id == COLMAP_FULL_OPENCV_MODEL_ID: return params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7], params[8], params[9], params[10], params[11]
+    if model_id == COLMAP_SIMPLE_RADIAL_FISHEYE_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    if model_id == COLMAP_RADIAL_FISHEYE_MODEL_ID: return params[0], params[0], params[1], params[2], params[3], params[4], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    # SIMPLE_FISHEYE / FISHEYE are pure equidistant (r = f * theta): no coefficients.
+    if model_id == COLMAP_SIMPLE_FISHEYE_MODEL_ID: return params[0], params[0], params[1], params[2], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    if model_id == COLMAP_FISHEYE_MODEL_ID: return params[0], params[1], params[2], params[3], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     if model_id == COLMAP_EQUIRECTANGULAR_MODEL_ID: return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     raise ValueError(f"Unsupported COLMAP camera model id {model_id}.")
 

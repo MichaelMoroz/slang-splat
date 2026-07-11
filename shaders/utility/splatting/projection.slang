@@ -24,10 +24,10 @@ float support_plane_slack(float3 planeNormal, float supportRadius)
     return supportRadius * length(planeNormal);
 }
 
-bool support_sphere_intersects_view_frustum(PinholeCamera camera, float3 cameraCenter, float supportRadius)
+bool support_sphere_intersects_view_frustum(Camera camera, float3 cameraCenter, float supportRadius)
 {
     if (!(supportRadius > 0.0) || !all(isfinite(cameraCenter)) || !isfinite(supportRadius)) return false;
-    if (camera.is_equirectangular()) return length(cameraCenter) + supportRadius > DEPTH_VISIBILITY_FLOOR;
+    if (camera.is_angular()) return length(cameraCenter) + supportRadius > DEPTH_VISIBILITY_FLOOR;
     if (cameraCenter.z + supportRadius <= DEPTH_VISIBILITY_FLOOR) return false;
 
     float3 leftPlane = float3(camera.params.focalPixels.x, 0.0, camera.params.principalPoint.x);
@@ -41,7 +41,7 @@ bool support_sphere_intersects_view_frustum(PinholeCamera camera, float3 cameraC
     return true;
 }
 
-bool equirectangular_outline_needs_fallback(PinholeCamera camera, float2 outlineMin, float2 outlineMax)
+bool equirectangular_outline_needs_fallback(Camera camera, float2 outlineMin, float2 outlineMax)
 {
     if (!camera.is_equirectangular()) return false;
     // The seam-wrap detection compares against the longitude period (native full-sphere
@@ -52,7 +52,7 @@ bool equirectangular_outline_needs_fallback(PinholeCamera camera, float2 outline
     return (outlineMax.x - outlineMin.x) > 0.5 * period || outlineMin.y <= yTop || outlineMax.y >= yBottom;
 }
 
-bool equirectangular_support_needs_fallback(PinholeCamera camera, float3 cameraCenter, float supportRadius)
+bool equirectangular_support_needs_fallback(Camera camera, float3 cameraCenter, float supportRadius)
 {
     if (!camera.is_equirectangular()) return false;
     float distance = length(cameraCenter);
@@ -72,7 +72,7 @@ bool equirectangular_support_needs_fallback(PinholeCamera camera, float3 cameraC
 // identity sin(dTheta) = sin(alpha) / cos(phi0) = r / horizontal, or full width when the
 // cap contains a pole (horizontal <= r). Encoded as conic = (-xExtent, 0, -yExtent) so
 // every no-analytic-conic binning path picks it up without extra storage.
-void init_equirectangular_cap_rect_ellipse(PinholeCamera camera, float3 cameraCenter, float supportRadius, float2 screenCenter, out Ellipse ellipse)
+void init_equirectangular_cap_rect_ellipse(Camera camera, float3 cameraCenter, float supportRadius, float2 screenCenter, out Ellipse ellipse)
 {
     float2 viewport = max(camera.params.viewport, float2(1.0));
     float distance = length(cameraCenter);
@@ -93,6 +93,104 @@ void init_equirectangular_cap_rect_ellipse(PinholeCamera camera, float3 cameraCe
     ellipse.radiusPx = max(max(xExtent, yExtent), MIN_SCREEN_RADIUS_PX);
     ellipse.conic = float3(-xExtent, 0.0, -yExtent);
     ellipse.bboxExtent = float2(xExtent, yExtent);
+}
+
+bool fisheye_support_needs_fallback(Camera camera, float3 cameraCenter, float supportRadius)
+{
+    if (!camera.is_fisheye()) return false;
+    float distance = length(cameraCenter);
+    if (!(supportRadius > 0.0) || !all(isfinite(cameraCenter)) || !isfinite(supportRadius)) return false;
+    if (distance <= DEPTH_VISIBILITY_FLOOR || supportRadius >= distance) return true;
+
+    float axial = length(cameraCenter.xy);
+    float theta = atan2(axial, cameraCenter.z);
+    float angularRadius = asin(saturate(supportRadius / distance));
+    float angularSlack = TINY_VALUE;
+    // Support cones touching the backward axis (undefined azimuth, the fisheye pole
+    // analog) or containing the optical axis (outline encircles the principal point)
+    // take the bounded annular-sector rect instead of the centered outline fit.
+    return theta + angularRadius + angularSlack >= PI || axial <= supportRadius;
+}
+
+// min/max of cos over the angle interval [lo, hi]: endpoint values, widened to +-1
+// when the interval contains a multiple of 2pi (for +1) or pi + 2pi k (for -1).
+float2 cos_interval_bounds(float lo, float hi)
+{
+    float cosLo = cos(lo);
+    float cosHi = cos(hi);
+    float boundMin = min(cosLo, cosHi);
+    float boundMax = max(cosLo, cosHi);
+    if (floor(hi / TAU_RADIANS) >= ceil(lo / TAU_RADIANS)) boundMax = 1.0;
+    if (floor((hi - PI) / TAU_RADIANS) >= ceil((lo - PI) / TAU_RADIANS)) boundMin = -1.0;
+    return float2(boundMin, boundMax);
+}
+
+float2 interval_product_bounds(float2 a, float2 b)
+{
+    float4 candidates = float4(a.x * b.x, a.x * b.y, a.y * b.x, a.y * b.y);
+    return float2(
+        min(min(candidates.x, candidates.y), min(candidates.z, candidates.w)),
+        max(max(candidates.x, candidates.y), max(candidates.z, candidates.w))
+    );
+}
+
+// Bounded binning rect for the fisheye support-sphere direction cap. The cap spans
+// polar angles theta0 +- alpha (alpha = asin(r/d)) which map to the radial interval
+// [thetaD(lo), thetaD(hi)] * focal around the principal point, and the azimuth interval
+// phi0 +- asin(r/axial) (full circle when the cap contains the optical axis,
+// axial <= r). The screen-space bbox of that annular sector is exact interval
+// arithmetic: offset = (fx * thetaD * cos(phi), fy * thetaD * sin(phi)). Encoded as
+// conic = (-xExtent, 0, -yExtent) like the equirect cap rect.
+void init_fisheye_cap_rect_ellipse(Camera camera, float3 cameraCenter, float supportRadius, out Ellipse ellipse)
+{
+    float distance = length(cameraCenter);
+    if (!(distance > DEPTH_VISIBILITY_FLOOR) || !(supportRadius > 0.0) || supportRadius >= distance)
+    {
+        init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
+        return;
+    }
+
+    float axial = length(cameraCenter.xy);
+    float theta = atan2(axial, cameraCenter.z);
+    float angularRadius = asin(saturate(supportRadius / distance));
+    float thetaLo = clamp(theta - angularRadius, 0.0, PI);
+    float thetaHi = clamp(theta + angularRadius, 0.0, PI);
+    float unusedDerivative;
+    float radialLo = max(camera.fisheye_distort_theta(thetaLo, unusedDerivative), 0.0);
+    float radialHi = max(camera.fisheye_distort_theta(thetaHi, unusedDerivative), radialLo);
+    float2 radialInterval = float2(radialLo, radialHi);
+
+    bool fullAzimuth = axial <= supportRadius;
+    float2 cosInterval = float2(-1.0, 1.0);
+    float2 sinInterval = float2(-1.0, 1.0);
+    if (!fullAzimuth)
+    {
+        float azimuth = atan2(cameraCenter.y, cameraCenter.x);
+        float azimuthHalfExtent = asin(saturate(supportRadius / axial));
+        cosInterval = cos_interval_bounds(azimuth - azimuthHalfExtent, azimuth + azimuthHalfExtent);
+        sinInterval = cos_interval_bounds(azimuth - azimuthHalfExtent - 0.5 * PI, azimuth + azimuthHalfExtent - 0.5 * PI);
+    }
+    float2 focal = max(camera.params.focalPixels, float2(SMALL_VALUE));
+    float2 xBounds = focal.x * interval_product_bounds(radialInterval, cosInterval);
+    float2 yBounds = focal.y * interval_product_bounds(radialInterval, sinInterval);
+    float2 xExtentCenter = float2(0.5 * (xBounds.y - xBounds.x), 0.5 * (xBounds.x + xBounds.y));
+    float2 yExtentCenter = float2(0.5 * (yBounds.y - yBounds.x), 0.5 * (yBounds.x + yBounds.y));
+    float xExtent = max(xExtentCenter.x, MIN_BBOX_EXTENT_PX);
+    float yExtent = max(yExtentCenter.x, MIN_BBOX_EXTENT_PX);
+    ellipse.centerPx = camera.params.principalPoint + float2(xExtentCenter.y, yExtentCenter.y);
+    ellipse.radiusPx = max(max(xExtent, yExtent), MIN_SCREEN_RADIUS_PX);
+    ellipse.conic = float3(-xExtent, 0.0, -yExtent);
+    ellipse.bboxExtent = float2(xExtent, yExtent);
+}
+
+void init_angular_cap_rect_ellipse(Camera camera, float3 cameraCenter, float supportRadius, float2 screenCenter, out Ellipse ellipse)
+{
+    if (camera.is_fisheye())
+    {
+        init_fisheye_cap_rect_ellipse(camera, cameraCenter, supportRadius, ellipse);
+        return;
+    }
+    init_equirectangular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
 }
 
 bool solve_symmetric_3x3(
@@ -198,7 +296,7 @@ bool fit_centered_projected_outline_ellipse(float2 outlinePoints[EQUIRECTANGULAR
     return all(isfinite(ellipse.centerPx)) && isfinite(ellipse.radiusPx) && all(isfinite(ellipse.conic)) && ellipse.radiusPx > 0.0;
 }
 
-bool equirectangular_centered_ellipse_needs_fallback(PinholeCamera camera, Ellipse ellipse)
+bool centered_ellipse_needs_fallback(Camera camera, Ellipse ellipse)
 {
     float detConic = ellipse.conic.x * ellipse.conic.z - ellipse.conic.y * ellipse.conic.y;
     if (detConic <= 0.0 || !isfinite(detConic)) return true;
@@ -356,7 +454,7 @@ bool solve_conic_renorm(float2 points[ELLIPSE_POINT_COUNT], float eps, out float
     return true;
 }
 
-bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera, out Ellipse ellipse)
+bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, Camera camera, out Ellipse ellipse)
 {
     ellipse.centerPx = 0.0;
     ellipse.radiusPx = 0.0;
@@ -394,7 +492,7 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
     if (tangentBasisVLength <= ELLIPSE_EPS || !isfinite(tangentBasisVLength)) return false;
     tangentBasisV /= tangentBasisVLength;
 
-    if (camera.is_equirectangular())
+    if (camera.is_angular())
     {
         if (!hasScreenCenter)
         {
@@ -402,10 +500,13 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
             init_fullscreen_fallback_ellipse(camera.params.viewport, ellipse);
             return true;
         }
-        if (equirectangular_support_needs_fallback(camera, cameraCenter, supportRadius))
+        bool supportNeedsFallback = camera.is_fisheye()
+            ? fisheye_support_needs_fallback(camera, cameraCenter, supportRadius)
+            : equirectangular_support_needs_fallback(camera, cameraCenter, supportRadius);
+        if (supportNeedsFallback)
         {
             if (!supportIntersectsFrustum) return false;
-            init_equirectangular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
+            init_angular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
             return true;
         }
         float2 outlinePoints[EQUIRECTANGULAR_ELLIPSE_POINT_COUNT];
@@ -422,7 +523,7 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
             if (!camera.project_world_to_screen(worldPoint, screenPoint))
             {
                 if (!supportIntersectsFrustum) return false;
-                init_equirectangular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
+                init_angular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
                 return true;
             }
             outlinePoints[i] = screenPoint;
@@ -431,9 +532,9 @@ bool compute_ellipsoid_outline_ellipse(Ellipsoid ellipsoid, PinholeCamera camera
         }
         if (equirectangular_outline_needs_fallback(camera, outlineMin, outlineMax)
             || !fit_centered_projected_outline_ellipse(outlinePoints, screenCenter, ellipse)
-            || equirectangular_centered_ellipse_needs_fallback(camera, ellipse))
+            || centered_ellipse_needs_fallback(camera, ellipse))
         {
-            init_equirectangular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
+            init_angular_cap_rect_ellipse(camera, cameraCenter, supportRadius, screenCenter, ellipse);
         }
         return true;
     }

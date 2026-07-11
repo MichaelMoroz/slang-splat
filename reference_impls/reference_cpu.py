@@ -222,12 +222,80 @@ def _equirectangular_support_needs_fallback(camera_center: np.ndarray, support_r
     return abs(theta) + angular_radius + angular_slack >= math.pi or abs(phi) + angular_radius + angular_slack >= 0.5 * math.pi
 
 
+def _fisheye_support_needs_fallback(camera_center: np.ndarray, support_radius: float) -> bool:
+    center = np.asarray(camera_center, dtype=np.float64).reshape(3)
+    radius = float(support_radius)
+    if not (np.isfinite(center).all() and math.isfinite(radius) and radius > 0.0):
+        return False
+    distance = float(np.linalg.norm(center))
+    if distance <= 1e-4 or radius >= distance:
+        return True
+    axial = float(np.linalg.norm(center[:2]))
+    theta = math.atan2(axial, float(center[2]))
+    angular_radius = math.asin(np.clip(radius / distance, 0.0, 1.0))
+    angular_slack = 1e-8
+    return theta + angular_radius + angular_slack >= math.pi or axial <= radius
+
+
+def _cos_interval_bounds(lo: float, hi: float) -> tuple[float, float]:
+    cos_lo, cos_hi = math.cos(lo), math.cos(hi)
+    bound_min, bound_max = min(cos_lo, cos_hi), max(cos_lo, cos_hi)
+    tau = 2.0 * math.pi
+    if math.floor(hi / tau) >= math.ceil(lo / tau):
+        bound_max = 1.0
+    if math.floor((hi - math.pi) / tau) >= math.ceil((lo - math.pi) / tau):
+        bound_min = -1.0
+    return bound_min, bound_max
+
+
+def _interval_product_bounds(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+    candidates = (a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1])
+    return min(candidates), max(candidates)
+
+
+def _init_fisheye_cap_rect(camera_center: np.ndarray, support_radius: float, camera: Camera, width: int, height: int) -> tuple[np.ndarray, float, np.ndarray]:
+    center = np.asarray(camera_center, dtype=np.float64).reshape(3)
+    distance = float(np.linalg.norm(center))
+    radius = float(support_radius)
+    if not (distance > 1e-4 and radius > 0.0) or radius >= distance:
+        return _init_fullscreen_fallback_ellipse(width, height)
+    axial = float(np.linalg.norm(center[:2]))
+    theta = math.atan2(axial, float(center[2]))
+    angular_radius = math.asin(np.clip(radius / distance, 0.0, 1.0))
+    coeffs = camera._fisheye_coefficients()
+    theta_lo = float(np.clip(theta - angular_radius, 0.0, math.pi))
+    theta_hi = float(np.clip(theta + angular_radius, 0.0, math.pi))
+    radial_lo = max(Camera._fisheye_distort_theta(theta_lo, coeffs)[0], 0.0)
+    radial_hi = max(Camera._fisheye_distort_theta(theta_hi, coeffs)[0], radial_lo)
+    radial_interval = (radial_lo, radial_hi)
+
+    if axial <= radius:
+        cos_interval = (-1.0, 1.0)
+        sin_interval = (-1.0, 1.0)
+    else:
+        azimuth = math.atan2(float(center[1]), float(center[0]))
+        azimuth_half_extent = math.asin(np.clip(radius / axial, 0.0, 1.0))
+        cos_interval = _cos_interval_bounds(azimuth - azimuth_half_extent, azimuth + azimuth_half_extent)
+        sin_interval = _cos_interval_bounds(azimuth - azimuth_half_extent - 0.5 * math.pi, azimuth + azimuth_half_extent - 0.5 * math.pi)
+    fx, fy = camera.focal_pixels_xy(width, height)
+    cx, cy = camera.principal_point(width, height)
+    x_lo, x_hi = _interval_product_bounds(radial_interval, cos_interval)
+    y_lo, y_hi = _interval_product_bounds(radial_interval, sin_interval)
+    x_lo, x_hi = fx * x_lo, fx * x_hi
+    y_lo, y_hi = fy * y_lo, fy * y_hi
+    x_extent = max(0.5 * (x_hi - x_lo), float(MIN_BBOX_EXTENT_PX))
+    y_extent = max(0.5 * (y_hi - y_lo), float(MIN_BBOX_EXTENT_PX))
+    center_px = np.array((cx + 0.5 * (x_lo + x_hi), cy + 0.5 * (y_lo + y_hi)), dtype=np.float32)
+    conic = np.array((-x_extent, 0.0, -y_extent), dtype=np.float32)
+    return center_px, float(max(max(x_extent, y_extent), 1.0)), conic
+
+
 def _support_sphere_intersects_view_frustum(camera_center: np.ndarray, camera: Camera, width: int, height: int, support_radius: float) -> bool:
     center = np.asarray(camera_center, dtype=np.float64).reshape(3)
     radius = float(support_radius)
     if not (np.isfinite(center).all() and math.isfinite(radius) and radius > 0.0):
         return False
-    if camera.is_equirectangular:
+    if camera.is_angular:
         return float(np.linalg.norm(center)) + radius > 1e-4
     if center[2] + radius <= 1e-4:
         return False
@@ -283,12 +351,23 @@ def _compute_outline_ellipse(
         return None
     tangent_basis_v /= tangent_basis_v_norm
 
-    if camera.is_equirectangular:
+    if camera.is_angular:
         if not screen_ok:
             return _init_fullscreen_fallback_ellipse(width, height) if support_intersects_frustum else None
         support_radius = float(np.max(scale))
-        if _equirectangular_support_needs_fallback(camera_center, support_radius, width, height):
-            return _init_equirectangular_cap_rect(camera_center, support_radius, screen_center, width, height) if support_intersects_frustum else None
+
+        def _cap_rect() -> tuple[np.ndarray, float, np.ndarray]:
+            if camera.is_fisheye:
+                return _init_fisheye_cap_rect(camera_center, support_radius, camera, width, height)
+            return _init_equirectangular_cap_rect(camera_center, support_radius, screen_center, width, height)
+
+        support_needs_fallback = (
+            _fisheye_support_needs_fallback(camera_center, support_radius)
+            if camera.is_fisheye
+            else _equirectangular_support_needs_fallback(camera_center, support_radius, width, height)
+        )
+        if support_needs_fallback:
+            return _cap_rect() if support_intersects_frustum else None
         outline_points = np.zeros((EQUIRECTANGULAR_ELLIPSE_POINT_COUNT, 2), dtype=np.float32)
         outline_min = np.full((2,), 1e30, dtype=np.float32)
         outline_max = np.full((2,), -1e30, dtype=np.float32)
@@ -299,17 +378,19 @@ def _compute_outline_ellipse(
             world_point = world_pos + _quat_rotate(local_point * scale, q_inv)
             screen_point, point_ok = camera.project_world_to_screen(world_point, width, height)
             if not point_ok:
-                return _init_equirectangular_cap_rect(camera_center, support_radius, screen_center, width, height) if support_intersects_frustum else None
+                return _cap_rect() if support_intersects_frustum else None
             outline_points[index] = screen_point
             outline_min = np.minimum(outline_min, screen_point)
             outline_max = np.maximum(outline_max, screen_point)
-        needs_cap_rect = (float(outline_max[0] - outline_min[0]) > 0.5 * float(width)) or float(outline_min[1]) <= 0.0 or float(outline_max[1]) >= float(height)
+        needs_cap_rect = camera.is_equirectangular and (
+            (float(outline_max[0] - outline_min[0]) > 0.5 * float(width)) or float(outline_min[1]) <= 0.0 or float(outline_max[1]) >= float(height)
+        )
         fitted = None if needs_cap_rect else _fit_centered_outline_ellipse(outline_points, screen_center)
         if fitted is not None:
             center_px, _, conic = fitted
             if not _equirectangular_centered_ellipse_needs_fallback(center_px, conic, width, height):
                 return fitted
-        return _init_equirectangular_cap_rect(camera_center, support_radius, screen_center, width, height)
+        return _cap_rect()
 
     outline_points = np.zeros((5, 2), dtype=np.float32)
     outline_min = np.full((2,), 1e30, dtype=np.float32)
@@ -434,7 +515,7 @@ def project_splats(
         radius_px = float(max(radius_px + float(ELLIPSE_RADIUS_PAD_PX), 1.0))
         center_radius_depth[index] = np.array((center_px[0], center_px[1], radius_px, cam_distance), dtype=np.float32)
         ellipse_conic[index] = conic
-        visible_depth = cam_distance > 1e-4 if camera.is_equirectangular else depth_value > 1e-4
+        visible_depth = cam_distance > 1e-4 if camera.is_angular else depth_value > 1e-4
         visible = (
             visible_depth
             and center_px[0] + radius_px >= 0.0

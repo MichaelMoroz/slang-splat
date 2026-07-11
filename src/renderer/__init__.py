@@ -1,4 +1,4 @@
-from .camera import PROJECTION_MODEL_EQUIRECTANGULAR, PROJECTION_MODEL_PINHOLE, Camera
+from .camera import PROJECTION_MODEL_EQUIRECTANGULAR, PROJECTION_MODEL_FISHEYE, PROJECTION_MODEL_PINHOLE, Camera
 from .gaussian_renderer import GaussianRenderer, RenderOutput
 from .renderer_context import GaussianRenderSettings, GaussianRendererContext
 
@@ -8,6 +8,7 @@ __all__ = [
     "GaussianRenderSettings",
     "GaussianRendererContext",
     "PROJECTION_MODEL_EQUIRECTANGULAR",
+    "PROJECTION_MODEL_FISHEYE",
     "PROJECTION_MODEL_PINHOLE",
     "RenderOutput",
 ]

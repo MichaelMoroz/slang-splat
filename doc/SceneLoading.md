@@ -37,12 +37,19 @@ Output is `GaussianScene` with contiguous `float32` arrays.
   - `SIMPLE_RADIAL` (id `2`)
   - `RADIAL` (id `3`)
   - `OPENCV` (id `4`)
+  - `OPENCV_FISHEYE` (id `5`)
   - `FULL_OPENCV` (id `6`)
+  - `SIMPLE_RADIAL_FISHEYE` (id `8`)
+  - `RADIAL_FISHEYE` (id `9`)
+  - `SIMPLE_FISHEYE` (id `14`)
+  - `FISHEYE` (id `15`)
   - `EQUIRECTANGULAR` (id `17`)
 - With the default sparse layout setting, COLMAP reconstruction files may live under `sparse/0`, directly under `sparse`, directly under the selected root, or in a one-level named child sparse export such as `sparse-cubic-fixed/sparse`.
 - Default training image lookup tries `images_4`, `images`, and then the reconstruction root. If the sparse model was discovered in a named child folder, that folder is searched too.
 - Radial and OPENCV distortion terms are preserved per camera and consumed by both screen-space projection and raster ray generation.
 - `EQUIRECTANGULAR` cameras use COLMAP's two metadata parameters (`width`, `height`) and do not carry focal, principal point, or distortion values. Imported training frames keep those fields at zero and select spherical camera projection from the stored model id.
+- Fisheye models (`OPENCV_FISHEYE`, `SIMPLE_RADIAL_FISHEYE`, `RADIAL_FISHEYE`, and the coefficient-free upstream `SIMPLE_FISHEYE`/`FISHEYE`, which reduce to the pure equidistant mapping) use Kannala-Brandt theta-polynomial semantics: `thetaD = theta * (1 + k1 th^2 + k2 th^4 + k3 th^6 + k4 th^8)` with `theta = atan2(|xy|, z)`, so lenses beyond 180 degrees remain well defined. The theta coefficients ride in the standard `k1`..`k4` fields (dimensionless — they do not rescale with image size) and select fisheye camera projection from the stored model id.
+- The importer's `Fisheye Mask FOV (deg)` setting (0 = off, auto-detected from the dark image border on COLMAP root selection) excludes pixels outside the image circle implied by `thetaD(fov/2)` from the training loss, SSIM, metrics, and refinement statistics. The mask is a training-time geometric test in normalized sensor UV (exact under crop, subsample, and downscale) driven by two shader uniforms; the dataset images and BC7 caches are never modified and no Target Alpha mode is required.
 - Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
 - `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using local point-neighborhood covariance eigenframes for gaussian rotation and anisotropy while keeping nearest-neighbor spacing as the overall scale reference before storing 3DGS log-scales.
 - Pointcloud-based COLMAP initialization filters sparse points by the importer-selected minimum camera-observation threshold before direct seeding, diffused resampling, and point-spacing heuristics are computed.

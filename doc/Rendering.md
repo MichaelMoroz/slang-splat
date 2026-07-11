@@ -7,7 +7,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Camera parameters and camera-space math are centralized in `shaders/utility/math/camera.slang`:
   - `CameraParams`
   - `ICamera`
-  - `PinholeCamera`
+  - `Camera`
 - Shared splat data structures and reusable projection/raster math live under `shaders/utility/splatting`, while renderer bindings remain grouped in `shaders/renderer/gaussian_types.slang`:
   - `g_Camera` (`CameraParams`) for camera basis/position, anisotropic intrinsics (`focalPixels: float2`, `principalPoint: float2`), clip range, lens distortion, and projection model.
   - `g_Prepass` (`PrepassParams`) for splat counts, tile/depth packing, prepass capacities, and projection/binning limits.
@@ -78,7 +78,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Raster evaluation uses the true decoded support cached in prepass with no separate pixel-floor clamp or fallback alpha branch.
 - Debug processed-count, grad-norm, and ellipse-outline views are handled in the same forward replay loop as normal rendering rather than by a separate debug pass.
 - Writes RGBA output texture. `csRasterize` writes the normal display/gamma output; `csRasterizeLinear` reuses the same forward replay and writes linear radiance for viewer post-processing.
-- Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`, which dispatches internally based on the camera projection model.
+- Primary ray generation goes through `Camera.screen_to_world_ray(...)`, which dispatches internally based on the camera projection model.
 
 ### PPISP Viewer Preview
 - `shaders/utility/ppisp_tonemap.slang` owns the differentiable PPISP exposure, vignetting, chroma-correction, CRF math, and the stable analytic inverse reused by photometric compensation.

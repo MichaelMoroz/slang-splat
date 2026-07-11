@@ -3,6 +3,7 @@ import "utility/math/constants.slang";
 static const uint CAMERA_UNDISTORT_NEWTON_ITERS = 6u;
 static const uint CAMERA_PROJECTION_PINHOLE = 0u;
 static const uint CAMERA_PROJECTION_EQUIRECTANGULAR = 1u;
+static const uint CAMERA_PROJECTION_FISHEYE = 2u;
 
 struct CameraParams
 {
@@ -36,13 +37,13 @@ interface ICamera
     float3 position_world();
 };
 
-struct PinholeCamera : ICamera
+struct Camera : ICamera
 {
     CameraParams params;
 
-    static PinholeCamera from_params(CameraParams paramsIn)
+    static Camera from_params(CameraParams paramsIn)
     {
-        PinholeCamera camera;
+        Camera camera;
         camera.params = paramsIn;
         return camera;
     }
@@ -72,9 +73,22 @@ struct PinholeCamera : ICamera
         return params.projectionModel == CAMERA_PROJECTION_EQUIRECTANGULAR;
     }
 
+    bool is_fisheye()
+    {
+        return params.projectionModel == CAMERA_PROJECTION_FISHEYE;
+    }
+
+    // Equirectangular and fisheye share angular-projection semantics: depth is the
+    // radial camera distance and visibility is not bounded by pinhole frustum planes.
+    bool is_angular()
+    {
+        return is_equirectangular() || is_fisheye();
+    }
+
     float2 project_camera_to_screen_linear(float3 cameraPos)
     {
         if (is_equirectangular()) return project_camera_to_screen_equirectangular(cameraPos);
+        if (is_fisheye()) return project_camera_to_screen_fisheye(cameraPos);
         float invDepth = 1.0 / max(cameraPos.z, SMALL_VALUE);
         return cameraPos.xy * (params.focalPixels * invDepth) + params.principalPoint;
     }
@@ -125,6 +139,53 @@ struct PinholeCamera : ICamera
         float2 screenPos = float2(theta * focal.x, -phi * focal.y) + principal;
         screenPos.x = equirect_wrap_x(screenPos.x);
         return screenPos;
+    }
+
+    // Fisheye (COLMAP OPENCV_FISHEYE / Kannala-Brandt) angle polynomial:
+    // thetaD = theta * (1 + k1 th^2 + k2 th^4 + k3 th^6 + k4 th^8), with the
+    // coefficients riding in the OpenCV distortion slots as (k1, k2) = K1K2P1P2.xy
+    // and (k3, k4) = K3K4K5K6.xy. theta = atan2(|xy|, z), so lenses beyond 180
+    // degrees stay well defined (COLMAP itself only calibrates theta < pi/2).
+    float fisheye_distort_theta(float theta, out float dThetaD)
+    {
+        float k1 = params.projDistortionK1K2P1P2.x;
+        float k2 = params.projDistortionK1K2P1P2.y;
+        float k3 = params.projDistortionK3K4K5K6.x;
+        float k4 = params.projDistortionK3K4K5K6.y;
+        float t2 = theta * theta;
+        dThetaD = 1.0 + t2 * (3.0 * k1 + t2 * (5.0 * k2 + t2 * (7.0 * k3 + t2 * (9.0 * k4))));
+        return theta * (1.0 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))));
+    }
+
+    float fisheye_theta_from_distorted(float thetaD)
+    {
+        float estimate = clamp(thetaD, 0.0, PI);
+        if (abs(params.projDistortionK1K2P1P2.x) <= SMALL_VALUE
+            && abs(params.projDistortionK1K2P1P2.y) <= SMALL_VALUE
+            && abs(params.projDistortionK3K4K5K6.x) <= SMALL_VALUE
+            && abs(params.projDistortionK3K4K5K6.y) <= SMALL_VALUE) return estimate;
+
+        [unroll] for (uint iter = 0u; iter < CAMERA_UNDISTORT_NEWTON_ITERS; iter++)
+        {
+            float derivative;
+            float error = fisheye_distort_theta(estimate, derivative) - thetaD;
+            if (abs(error) <= SMALL_VALUE) break;
+            if (!(abs(derivative) > SMALL_VALUE) || !isfinite(derivative)) break;
+            float nextEstimate = clamp(estimate - error / derivative, 0.0, PI);
+            if (!isfinite(nextEstimate)) break;
+            estimate = nextEstimate;
+        }
+        return estimate;
+    }
+
+    float2 project_camera_to_screen_fisheye(float3 cameraPos)
+    {
+        float axial = length(cameraPos.xy);
+        float theta = atan2(axial, cameraPos.z);
+        float dThetaD;
+        float thetaD = fisheye_distort_theta(theta, dThetaD);
+        float2 dir = axial > SMALL_VALUE ? cameraPos.xy / axial : float2(0.0, 0.0);
+        return dir * (thetaD * params.focalPixels) + params.principalPoint;
     }
 
     float radial_distortion(float r2, out float dRadialDr2)
@@ -211,6 +272,24 @@ struct PinholeCamera : ICamera
             screenPos = project_camera_to_screen_equirectangular(cameraPos);
             return all(isfinite(screenPos));
         }
+        if (is_fisheye())
+        {
+            if (!all(isfinite(cameraPos)) || length(cameraPos) <= SMALL_VALUE)
+            {
+                screenPos = 0.0;
+                return false;
+            }
+            // Directly behind the optical axis the azimuth is undefined (the fisheye
+            // analog of the equirect pole); fail so outline sampling falls back to the
+            // bounded cap rect.
+            if (length(cameraPos.xy) <= SMALL_VALUE && cameraPos.z < 0.0)
+            {
+                screenPos = 0.0;
+                return false;
+            }
+            screenPos = project_camera_to_screen_fisheye(cameraPos);
+            return all(isfinite(screenPos));
+        }
         if (cameraPos.z <= SMALL_VALUE)
         {
             screenPos = 0.0;
@@ -229,7 +308,7 @@ struct PinholeCamera : ICamera
 
     float3 screen_to_world(float2 screenPos, float depth)
     {
-        if (is_equirectangular()) return params.camPos + screen_to_world_ray(screenPos) * max(depth, 0.0);
+        if (is_angular()) return params.camPos + screen_to_world_ray(screenPos) * max(depth, 0.0);
         float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
         float depthSafe = max(depth, SMALL_VALUE);
         float2 uv = undistort_normalized((screenPos - params.principalPoint) / focalSafe);
@@ -250,6 +329,17 @@ struct PinholeCamera : ICamera
             sincos(phi, sinPhi, cosPhi);
             return normalize(camera_to_world(float3(cosPhi * sinTheta, -sinPhi, cosPhi * cosTheta)));
         }
+        if (is_fisheye())
+        {
+            float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
+            float2 uv = (screenPos - params.principalPoint) / focalSafe;
+            float radial = length(uv);
+            float theta = fisheye_theta_from_distorted(radial);
+            float sinTheta, cosTheta;
+            sincos(theta, sinTheta, cosTheta);
+            float2 dir = radial > SMALL_VALUE ? uv / radial : float2(0.0, 0.0);
+            return normalize(camera_to_world(float3(dir * sinTheta, cosTheta)));
+        }
         float2 focalSafe = max(params.focalPixels, float2(SMALL_VALUE));
         float2 uv = undistort_normalized((screenPos - params.principalPoint) / focalSafe);
         return normalize(camera_to_world(float3(uv, 1.0)));
@@ -258,9 +348,9 @@ struct PinholeCamera : ICamera
     float pixel_world_size_max(float depth)
     {
         float depthSafe = max(depth, SMALL_VALUE);
-        if (is_equirectangular())
+        if (is_angular())
         {
-            float2 focal = max(equirect_focal(), float2(SMALL_VALUE));
+            float2 focal = max(is_equirectangular() ? equirect_focal() : params.focalPixels, float2(SMALL_VALUE));
             float angularPixelSize = max(1.0 / focal.x, 1.0 / focal.y);
             return SPLAT_PIXEL_CLAMP_PX * depthSafe * angularPixelSize;
         }
@@ -271,7 +361,7 @@ struct PinholeCamera : ICamera
     float camera_depth(float3 worldPos)
     {
         float3 cameraPos = world_point_to_camera(worldPos);
-        return is_equirectangular() ? length(cameraPos) : cameraPos.z;
+        return is_angular() ? length(cameraPos) : cameraPos.z;
     }
 
     bool is_depth_in_range(float depthValue)
@@ -303,7 +393,7 @@ float2 nearest_circle_sample_to_viewport_center(float2 circleCenterPx, float cir
     return circleCenterPx + toViewportCenter * (circleRadiusPx / distanceToViewportCenter);
 }
 
-bool world_support_radius_from_screen_circle(PinholeCamera camera, float3 worldPos, float circleRadiusPx, out float supportRadius)
+bool world_support_radius_from_screen_circle(Camera camera, float3 worldPos, float circleRadiusPx, out float supportRadius)
 {
     supportRadius = 0.0;
     if (!(circleRadiusPx > SMALL_VALUE)) return false;

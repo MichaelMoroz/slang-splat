@@ -11,11 +11,13 @@ from ..utility import VEC_EPS, as_float3, normalize3
 SPLAT_PIXEL_CLAMP_PX = 0.75
 PROJECTION_MODEL_PINHOLE = 0
 PROJECTION_MODEL_EQUIRECTANGULAR = 1
-PROJECTION_MODEL_VALUES = (PROJECTION_MODEL_PINHOLE, PROJECTION_MODEL_EQUIRECTANGULAR)
+PROJECTION_MODEL_FISHEYE = 2
+PROJECTION_MODEL_VALUES = (PROJECTION_MODEL_PINHOLE, PROJECTION_MODEL_EQUIRECTANGULAR, PROJECTION_MODEL_FISHEYE)
 _DISTORTION_COEFF_COUNT = 8
 _DISTORTION_EPS = 1e-12
 _DISTORTION_NEWTON_ITERS = 8
 _EQUIRECTANGULAR_EPS = 1e-12
+_FISHEYE_EPS = 1e-12
 
 
 @dataclass(slots=True)
@@ -69,8 +71,8 @@ class Camera:
         return replace(self, fx=float(fx), fy=float(fy), cx=float(cx) - float(crop_x), cy=float(cy) - float(crop_y))
 
     def pixel_world_size_max(self, depth: float, width: int, height: int) -> float:
-        if self.is_equirectangular:
-            fx, fy, _, _ = self._equirect_intrinsics(width, height)
+        if self.is_angular:
+            fx, fy = self._equirect_intrinsics(width, height)[:2] if self.is_equirectangular else self.focal_pixels_xy(width, height)
             angular_pixel_size = max(1.0 / max(fx, 1e-8), 1.0 / max(fy, 1e-8))
             return float(SPLAT_PIXEL_CLAMP_PX * max(float(depth), 1e-8) * angular_pixel_size)
         return float(SPLAT_PIXEL_CLAMP_PX * max(float(depth), 1e-8) / max(min(self.focal_pixels_xy(width, height)), 1e-8))
@@ -130,6 +132,16 @@ class Camera:
     @property
     def is_equirectangular(self) -> bool:
         return int(self.projection_model) == PROJECTION_MODEL_EQUIRECTANGULAR
+
+    @property
+    def is_fisheye(self) -> bool:
+        return int(self.projection_model) == PROJECTION_MODEL_FISHEYE
+
+    @property
+    def is_angular(self) -> bool:
+        """Equirectangular and fisheye share angular-projection semantics: depth is the
+        radial camera distance and visibility is not bounded by pinhole frustum planes."""
+        return self.is_equirectangular or self.is_fisheye
 
     @staticmethod
     def _resolve_distortion_defaults(defaults: tuple[float, ...] | None = None) -> tuple[float, float, float, float, float, float, float, float]:
@@ -259,10 +271,72 @@ class Camera:
     def camera_point_to_world(self, camera_pos: np.ndarray) -> np.ndarray:
         return self.position + self.camera_to_world(camera_pos)
 
+    def _fisheye_coefficients(self) -> tuple[float, float, float, float]:
+        """KB4 theta-polynomial coefficients (COLMAP OPENCV_FISHEYE), riding in the
+        standard k1/k2/k3/k4 distortion fields; p1/p2/k5/k6 are unused for fisheye."""
+        k1, k2, _, _, k3, k4, _, _ = self.distortion_params()
+        return k1, k2, k3, k4
+
+    @staticmethod
+    def _fisheye_distort_theta(theta: float, coeffs: tuple[float, float, float, float]) -> tuple[float, float]:
+        k1, k2, k3, k4 = (float(value) for value in coeffs)
+        t2 = float(theta) * float(theta)
+        theta_d = float(theta) * (1.0 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))))
+        derivative = 1.0 + t2 * (3.0 * k1 + t2 * (5.0 * k2 + t2 * (7.0 * k3 + t2 * (9.0 * k4))))
+        return theta_d, derivative
+
+    @staticmethod
+    def _fisheye_theta_from_distorted(theta_d: float, coeffs: tuple[float, float, float, float], iters: int = _DISTORTION_NEWTON_ITERS) -> float:
+        estimate = float(np.clip(theta_d, 0.0, np.pi))
+        if all(abs(float(value)) <= _FISHEYE_EPS for value in coeffs):
+            return estimate
+        for _ in range(max(int(iters), 0)):
+            distorted, derivative = Camera._fisheye_distort_theta(estimate, coeffs)
+            error = distorted - float(theta_d)
+            if abs(error) <= _FISHEYE_EPS:
+                break
+            if (not np.isfinite(derivative)) or abs(derivative) <= _FISHEYE_EPS:
+                break
+            next_estimate = float(np.clip(estimate - error / derivative, 0.0, np.pi))
+            if not np.isfinite(next_estimate):
+                break
+            estimate = next_estimate
+        return estimate
+
+    def _project_fisheye_camera_to_screen(self, camera_pos: np.ndarray, width: int, height: int) -> tuple[np.ndarray, bool]:
+        cam = np.asarray(camera_pos, dtype=np.float64).reshape(3)
+        axial = float(np.linalg.norm(cam[:2]))
+        if (not np.isfinite(cam).all()) or float(np.linalg.norm(cam)) <= _FISHEYE_EPS:
+            return np.zeros((2,), dtype=np.float32), False
+        # Directly behind the optical axis the azimuth is undefined (the fisheye analog
+        # of the equirect pole).
+        if axial <= _FISHEYE_EPS and float(cam[2]) < 0.0:
+            return np.zeros((2,), dtype=np.float32), False
+        theta = float(np.arctan2(axial, float(cam[2])))
+        theta_d, _ = self._fisheye_distort_theta(theta, self._fisheye_coefficients())
+        direction = cam[:2] / axial if axial > _FISHEYE_EPS else np.zeros((2,), dtype=np.float64)
+        fx, fy = self.focal_pixels_xy(width, height)
+        cx, cy = self.principal_point(width, height)
+        screen = direction * theta_d * np.array((fx, fy), dtype=np.float64) + np.array((cx, cy), dtype=np.float64)
+        return screen.astype(np.float32, copy=False), bool(np.isfinite(screen).all())
+
+    def _fisheye_screen_to_world_ray(self, screen_pos: np.ndarray, width: int, height: int) -> np.ndarray:
+        screen = np.asarray(screen_pos, dtype=np.float64).reshape(2)
+        fx, fy = self.focal_pixels_xy(width, height)
+        cx, cy = self.principal_point(width, height)
+        uv = (screen - np.array((cx, cy), dtype=np.float64)) / np.maximum(np.array((fx, fy), dtype=np.float64), _FISHEYE_EPS)
+        radial = float(np.linalg.norm(uv))
+        theta = self._fisheye_theta_from_distorted(radial, self._fisheye_coefficients())
+        direction = uv / radial if radial > _FISHEYE_EPS else np.zeros((2,), dtype=np.float64)
+        ray_camera = np.array((direction[0] * np.sin(theta), direction[1] * np.sin(theta), np.cos(theta)), dtype=np.float32)
+        return np.asarray(normalize3(self.camera_to_world(ray_camera), eps=VEC_EPS), dtype=np.float32)
+
     def project_camera_to_screen(self, camera_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> tuple[np.ndarray, bool]:
         cam = np.asarray(camera_pos, dtype=np.float32).reshape(3)
         if self.is_equirectangular:
             return self._project_equirectangular_camera_to_screen(cam, width, height)
+        if self.is_fisheye:
+            return self._project_fisheye_camera_to_screen(cam, width, height)
         depth = float(cam[2])
         if not np.isfinite(depth) or depth <= 1e-12:
             return np.zeros((2,), dtype=np.float32), False
@@ -308,7 +382,7 @@ class Camera:
         return self.project_camera_to_screen(self.world_point_to_camera(world_pos), width, height, default_k1, default_k2)
 
     def screen_to_world(self, screen_pos: np.ndarray, depth: float, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> np.ndarray:
-        if self.is_equirectangular:
+        if self.is_angular:
             return self.position + self.screen_to_world_ray(screen_pos, width, height) * np.float32(max(float(depth), 0.0))
         fx, fy = self.focal_pixels_xy(width, height)
         cx, cy = self.principal_point(width, height)
@@ -323,6 +397,8 @@ class Camera:
     def screen_to_world_ray(self, screen_pos: np.ndarray, width: int, height: int, default_k1: float = 0.0, default_k2: float = 0.0) -> np.ndarray:
         if self.is_equirectangular:
             return self._equirectangular_screen_to_world_ray(screen_pos, width, height)
+        if self.is_fisheye:
+            return self._fisheye_screen_to_world_ray(screen_pos, width, height)
         world = self.screen_to_world(screen_pos, 1.0, width, height, default_k1, default_k2)
         return np.asarray(normalize3(world - self.position, eps=VEC_EPS), dtype=np.float32)
 

@@ -25,6 +25,11 @@ from src.scene._internal.colmap_binary import count_colmap_points3d
 from src.scene._internal.colmap_ops import transform_colmap_reconstruction_custom_rotation
 from src.scene._internal.colmap_types import (
     COLMAP_EQUIRECTANGULAR_MODEL_ID,
+    COLMAP_FISHEYE_MODEL_ID,
+    COLMAP_OPENCV_FISHEYE_MODEL_ID,
+    COLMAP_RADIAL_FISHEYE_MODEL_ID,
+    COLMAP_SIMPLE_FISHEYE_MODEL_ID,
+    COLMAP_SIMPLE_RADIAL_FISHEYE_MODEL_ID,
     ColmapCamera,
     ColmapFrame,
     ColmapImage,
@@ -50,6 +55,14 @@ def _write_cameras_bin(path: Path, model_id: int = 1) -> None:
             handle.write(struct.pack("<dddd", 420.0, 200.0, 100.0, 0.07))
         elif model_id == 3:
             handle.write(struct.pack("<ddddd", 420.0, 200.0, 100.0, 0.07, -0.02))
+        elif model_id == COLMAP_OPENCV_FISHEYE_MODEL_ID:
+            handle.write(struct.pack("<dddddddd", 400.0, 420.0, 200.0, 100.0, 0.07, -0.02, 0.001, -0.002))
+        elif model_id == COLMAP_RADIAL_FISHEYE_MODEL_ID:
+            handle.write(struct.pack("<ddddd", 420.0, 200.0, 100.0, 0.07, -0.02))
+        elif model_id == COLMAP_SIMPLE_FISHEYE_MODEL_ID:
+            handle.write(struct.pack("<ddd", 420.0, 200.0, 100.0))
+        elif model_id == COLMAP_FISHEYE_MODEL_ID:
+            handle.write(struct.pack("<dddd", 400.0, 420.0, 200.0, 100.0))
         elif model_id == COLMAP_EQUIRECTANGULAR_MODEL_ID:
             handle.write(struct.pack("<dd", 400.0, 200.0))
         else:
@@ -103,7 +116,12 @@ def _write_cameras_txt(path: Path, model_name: str = "PINHOLE") -> None:
         "SIMPLE_RADIAL": "420 200 100 0.07",
         "RADIAL": "420 200 100 0.07 -0.02",
         "OPENCV": "400 420 200 100 0.07 -0.02 0.001 -0.002",
+        "OPENCV_FISHEYE": "400 420 200 100 0.07 -0.02 0.001 -0.002",
         "FULL_OPENCV": "400 420 200 100 0.07 -0.02 0.001 -0.002 0.0 0.0 0.0 0.0",
+        "SIMPLE_RADIAL_FISHEYE": "420 200 100 0.07",
+        "RADIAL_FISHEYE": "420 200 100 0.07 -0.02",
+        "SIMPLE_FISHEYE": "420 200 100",
+        "FISHEYE": "400 420 200 100",
         "EQUIRECTANGULAR": "400 200",
     }[model_name]
     path.write_text(
@@ -402,6 +420,176 @@ def test_colmap_loader_supports_equirectangular_camera_model(tmp_path: Path, tre
     assert frame.fx == frame.fy == frame.cx == frame.cy == 0.0
     assert ok
     np.testing.assert_allclose(screen, np.asarray((0.75 * frame.width, 0.5 * frame.height), dtype=np.float32), rtol=0.0, atol=1e-5)
+
+
+@pytest.mark.parametrize("tree_builder", (_build_tiny_colmap_tree, _build_tiny_colmap_text_tree))
+def test_colmap_loader_supports_opencv_fisheye_camera_model(tmp_path: Path, tree_builder) -> None:
+    root = (
+        tree_builder(tmp_path, model_id=COLMAP_OPENCV_FISHEYE_MODEL_ID)
+        if tree_builder is _build_tiny_colmap_tree
+        else tree_builder(tmp_path, model_name="OPENCV_FISHEYE")
+    )
+
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+    frame_camera = frame.make_camera()
+
+    assert camera.model_id == COLMAP_OPENCV_FISHEYE_MODEL_ID
+    assert frame_camera.is_fisheye
+    assert np.isclose(camera.fx, 400.0)
+    assert np.isclose(camera.fy, 420.0)
+    # KB4 theta-polynomial coefficients land in k1/k2/k3/k4 (p1/p2 stay zero).
+    assert np.isclose(camera.k1, 0.07)
+    assert np.isclose(camera.k2, -0.02)
+    assert np.isclose(camera.k3, 0.001)
+    assert np.isclose(camera.k4, -0.002)
+    assert camera.p1 == camera.p2 == 0.0
+    # The 200x100 image on disk halves the declared 400x200 camera: focal and principal
+    # scale, the dimensionless theta coefficients do not.
+    assert np.isclose(frame.fx, 200.0)
+    assert np.isclose(frame.fy, 210.0)
+    assert np.isclose(frame.cx, 100.0)
+    assert np.isclose(frame.cy, 50.0)
+    assert np.isclose(frame.k3, 0.001)
+    assert np.isclose(frame.k4, -0.002)
+
+    theta = 0.5 * np.pi
+    t2 = theta * theta
+    theta_d = theta * (1.0 + t2 * (0.07 + t2 * (-0.02 + t2 * (0.001 + t2 * -0.002))))
+    screen, ok = frame_camera.project_camera_to_screen(np.array((1.0, 0.0, 0.0), dtype=np.float32), frame.width, frame.height)
+    assert ok
+    np.testing.assert_allclose(screen, np.asarray((frame.cx + frame.fx * theta_d, frame.cy), dtype=np.float32), rtol=0.0, atol=1e-3)
+
+
+@pytest.mark.parametrize("tree_builder", (_build_tiny_colmap_tree, _build_tiny_colmap_text_tree))
+def test_colmap_loader_supports_plain_fisheye_camera_model(tmp_path: Path, tree_builder) -> None:
+    """Upstream COLMAP id 15 (FISHEYE): pure equidistant fx fy cx cy, no coefficients."""
+    root = (
+        tree_builder(tmp_path, model_id=COLMAP_FISHEYE_MODEL_ID)
+        if tree_builder is _build_tiny_colmap_tree
+        else tree_builder(tmp_path, model_name="FISHEYE")
+    )
+
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+    frame_camera = frame.make_camera()
+
+    assert camera.model_id == COLMAP_FISHEYE_MODEL_ID
+    assert frame_camera.is_fisheye
+    assert np.isclose(camera.fx, 400.0)
+    assert np.isclose(camera.fy, 420.0)
+    assert camera.k1 == camera.k2 == camera.k3 == camera.k4 == 0.0
+    screen, ok = frame_camera.project_camera_to_screen(np.array((1.0, 0.0, 0.0), dtype=np.float32), frame.width, frame.height)
+    assert ok
+    np.testing.assert_allclose(screen, np.asarray((frame.cx + frame.fx * 0.5 * np.pi, frame.cy), dtype=np.float32), rtol=0.0, atol=1e-3)
+
+
+def test_colmap_loader_supports_simple_fisheye_camera_model(tmp_path: Path) -> None:
+    root = _build_tiny_colmap_tree(tmp_path, model_id=COLMAP_SIMPLE_FISHEYE_MODEL_ID)
+
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+
+    assert camera.model_id == COLMAP_SIMPLE_FISHEYE_MODEL_ID
+    assert frame.make_camera().is_fisheye
+    assert np.isclose(camera.fx, 420.0)
+    assert np.isclose(camera.fy, 420.0)
+    assert camera.k1 == camera.k2 == 0.0
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected_k2"),
+    [("SIMPLE_RADIAL_FISHEYE", 0.0), ("RADIAL_FISHEYE", -0.02)],
+)
+def test_colmap_loader_supports_radial_fisheye_camera_models(tmp_path: Path, model_name: str, expected_k2: float) -> None:
+    root = _build_tiny_colmap_text_tree(tmp_path, model_name=model_name)
+
+    recon = load_colmap_reconstruction(root)
+    camera = recon.cameras[7]
+    frame = build_training_frames(recon, images_subdir="images_4")[0]
+
+    expected_id = COLMAP_SIMPLE_RADIAL_FISHEYE_MODEL_ID if model_name == "SIMPLE_RADIAL_FISHEYE" else COLMAP_RADIAL_FISHEYE_MODEL_ID
+    assert camera.model_id == expected_id
+    assert frame.make_camera().is_fisheye
+    assert np.isclose(camera.fx, 420.0)
+    assert np.isclose(camera.fy, 420.0)
+    assert np.isclose(camera.k1, 0.07)
+    assert np.isclose(camera.k2, expected_k2)
+
+
+def _fisheye_detect_camera(model_id: int = COLMAP_OPENCV_FISHEYE_MODEL_ID) -> ColmapCamera:
+    return ColmapCamera(camera_id=1, model_id=model_id, width=256, height=256, fx=100.0, fy=100.0, cx=128.0, cy=128.0)
+
+
+def _write_disc_image(path: Path, disc_radius_px: float | None, size: int = 256) -> None:
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
+    if disc_radius_px is None:
+        luma = np.full((size, size), 200, dtype=np.uint8)
+    else:
+        inside = (xx + 0.5 - 0.5 * size) ** 2 + (yy + 0.5 - 0.5 * size) ** 2 <= disc_radius_px * disc_radius_px
+        luma = np.where(inside, np.uint8(200), np.uint8(2))
+    Image.fromarray(luma, mode="L").save(path)
+
+
+def test_fisheye_circle_fov_detection_estimates_disc_radius(tmp_path: Path) -> None:
+    image_path = tmp_path / "disc.png"
+    _write_disc_image(image_path, disc_radius_px=90.0)
+
+    # Equidistant zero-k lens: radius 90 px at f = 100 -> theta = 0.9 rad -> 103.1 deg.
+    fov = colmap_ops.detect_fisheye_circle_fov_degrees(_fisheye_detect_camera(), [image_path])
+    assert np.isclose(fov, np.degrees(2.0 * 0.9), atol=2.0)
+
+
+def test_fisheye_circle_fov_detection_skips_full_frame_and_non_fisheye(tmp_path: Path) -> None:
+    full_frame_path = tmp_path / "full.png"
+    _write_disc_image(full_frame_path, disc_radius_px=None)
+    disc_path = tmp_path / "disc.png"
+    _write_disc_image(disc_path, disc_radius_px=90.0)
+
+    assert colmap_ops.detect_fisheye_circle_fov_degrees(_fisheye_detect_camera(), [full_frame_path]) == 0.0
+    assert colmap_ops.detect_fisheye_circle_fov_degrees(_fisheye_detect_camera(model_id=1), [disc_path]) == 0.0
+
+
+def test_fisheye_mask_uv_params_maps_fov_to_sensor_uv_circle(tmp_path: Path) -> None:
+    image_path = tmp_path / "fisheye.png"
+    Image.fromarray(np.full((128, 128, 3), 200, dtype=np.uint8), mode="RGB").save(image_path)
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=image_path,
+        q_wxyz=np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=60.0,
+        fy=60.0,
+        cx=64.0,
+        cy=64.0,
+        width=128,
+        height=128,
+        model_id=COLMAP_OPENCV_FISHEYE_MODEL_ID,
+        fisheye_mask_fov_degrees=90.0,
+    )
+
+    center_uv, inv_radius_uv = colmap_ops.fisheye_mask_uv_params(frame)
+
+    # Equidistant (zero-k) 90-degree mask radius: fx * pi/4 = 47.1 px around (cx, cy),
+    # expressed in normalized sensor UV.
+    radius_px = 60.0 * np.pi / 4.0
+    np.testing.assert_allclose(center_uv, (0.5, 0.5), rtol=0.0, atol=1e-9)
+    np.testing.assert_allclose(inv_radius_uv, (128.0 / radius_px, 128.0 / radius_px), rtol=1e-6, atol=0.0)
+
+    # The mask never mutates the dataset image.
+    rgba8 = colmap_ops.load_training_frame_rgba8(frame)
+    assert rgba8[0, 0, 3] == 255
+    np.testing.assert_array_equal(rgba8[64, :, :3], np.full((128, 3), 200, dtype=np.uint8))
+
+    # Non-fisheye models and fov 0 resolve to disabled (zero) params.
+    frame.model_id = 1
+    assert colmap_ops.fisheye_mask_uv_params(frame) == ((0.0, 0.0), (0.0, 0.0))
+    frame.model_id = COLMAP_OPENCV_FISHEYE_MODEL_ID
+    frame.fisheye_mask_fov_degrees = 0.0
+    assert colmap_ops.fisheye_mask_uv_params(frame) == ((0.0, 0.0), (0.0, 0.0))
 
 
 @pytest.mark.parametrize("model_name", ["OPENCV", "FULL_OPENCV"])

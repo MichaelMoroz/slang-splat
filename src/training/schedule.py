@@ -23,6 +23,26 @@ def _coerce_int(value: Any, default: int) -> int:
         return int(default)
 
 
+def resolve_schedule_stretch(training_hparams: Any) -> float:
+    """Global schedule time-dilation factor: every step-anchored stage boundary,
+    duration, and cadence is multiplied by it (equivalently, schedules are evaluated at
+    step / stretch). 1.0 = the authored schedule; auto-suggested from the dataset frame
+    count at COLMAP import."""
+    return max(_coerce_float(getattr(training_hparams, "schedule_stretch", 1.0), 1.0), 1e-2)
+
+
+def _stretched_step(training_hparams: Any, step: int) -> float:
+    return _coerce_int(step, 0) / resolve_schedule_stretch(training_hparams)
+
+
+def suggest_schedule_stretch(frame_count: int, reference_frame_count: int = 100) -> float:
+    """Import-time suggestion: each doubling of the dataset over the reference adds one
+    unit of stretch (100 frames -> 1x, 200 -> 2x, 400 -> 3x), never below 1."""
+    frames = max(int(frame_count), 1)
+    stretch = 1.0 + math.log2(frames / float(max(int(reference_frame_count), 1)))
+    return round(max(stretch, 1.0), 2)
+
+
 def _schedule_duration(training_hparams: Any) -> int:
     return _coerce_int(getattr(training_hparams, "lr_schedule_steps", _SCHEDULE_REFERENCE_STEPS), _SCHEDULE_REFERENCE_STEPS)
 
@@ -37,7 +57,7 @@ def _schedule_progress(training_hparams: Any, step: int) -> float:
     duration = _schedule_duration(training_hparams)
     if duration <= 0:
         return 0.0
-    return min(max(_coerce_int(step, 0), 0), duration) / float(duration)
+    return min(max(_stretched_step(training_hparams, step), 0.0), float(duration)) / float(duration)
 
 
 def resolve_lr_schedule_breakpoints(training_hparams: Any) -> tuple[int, int, int, int]:
@@ -395,7 +415,7 @@ def resolve_sh_band(training_hparams: Any, step: int) -> int:
             resolved_band = _resolve_legacy_sh_band(training_hparams, "use_sh", False)
         return min(resolved_band, resolve_max_sh_band(training_hparams))
     stage1, stage2, stage3, stage4 = resolve_stage_schedule_steps(training_hparams)
-    current_step = max(int(step), 0)
+    current_step = max(_stretched_step(training_hparams, step), 0.0)
     if current_step < stage1:
         resolved_band = _clamp_sh_band(getattr(training_hparams, "sh_band", _resolve_legacy_sh_band(training_hparams, "use_sh", False)), 0)
     elif current_step < stage2:
@@ -420,7 +440,7 @@ def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:
     duration = _coerce_int(getattr(training_hparams, "lr_schedule_steps", 30_000), 30_000)
     if not enabled or duration <= 0:
         return start
-    progress = min(max(int(step), 0), duration) / float(duration)
+    progress = min(max(_stretched_step(training_hparams, step), 0.0), float(duration)) / float(duration)
     return start + (end - start) * progress
 
 
@@ -446,7 +466,7 @@ def resolve_refinement_target_splat_ratio(training_hparams: Any, step: int) -> f
 
 
 def resolve_refinement_active_target_splat_ratio(training_hparams: Any, step: int) -> float:
-    return resolve_refinement_target_splat_ratio(training_hparams, step) if int(step) >= _resolve_refinement_start_step(training_hparams) else 0.0
+    return resolve_refinement_target_splat_ratio(training_hparams, step) if _stretched_step(training_hparams, step) >= _resolve_refinement_start_step(training_hparams) else 0.0
 
 
 def _resolve_refinement_target_splat_count(training_hparams: Any, step: int) -> int:
@@ -492,7 +512,7 @@ def resolve_refinement_prune_lowest_contribution_ratio(training_hparams: Any, st
 def resolve_refinement_prune_ratio(training_hparams: Any, splat_count: int, step: int = 0) -> float:
     base_ratio = resolve_refinement_prune_lowest_contribution_ratio(training_hparams, step)
     current_count = max(int(splat_count), 0)
-    if current_count <= 0 or int(step) < _resolve_refinement_start_step(training_hparams):
+    if current_count <= 0 or _stretched_step(training_hparams, step) < _resolve_refinement_start_step(training_hparams):
         return base_ratio
     target_count = _resolve_refinement_target_splat_count(training_hparams, step)
     if target_count <= 0 or target_count >= current_count:
@@ -511,17 +531,26 @@ def resolve_refinement_min_contribution(training_hparams: Any, step: int, frame_
 
 
 def resolve_effective_refinement_interval(training_hparams: Any, frame_count: int = 1) -> int:
+    # The interval stretches with the schedule so the number of refinement passes (and
+    # the per-pass min-contribution decay trajectory) dilates uniformly with the stages.
     interval = max(int(getattr(training_hparams, "refinement_interval", 200)), 1)
+    interval = max(int(round(interval * resolve_schedule_stretch(training_hparams))), 1)
     return max(interval, max(int(frame_count), 1))
 
 
 def should_run_refinement_step(training_hparams: Any, step: int, frame_count: int = 1) -> bool:
+    # The start step gates the entire refinement pass, not just growth: before it the
+    # pass would still prune (at the stage-resolved lowest-contribution ratio), cull by
+    # alpha/contribution, and apply the min-screen-size clamp, silently collapsing large
+    # init clouds hundreds of steps before "Start Refinement After".
+    if _stretched_step(training_hparams, step) < _resolve_refinement_start_step(training_hparams):
+        return False
     interval = resolve_effective_refinement_interval(training_hparams, frame_count)
     return int(step) > 0 and int(step) % interval == 0
 
 
 def resolve_refinement_clone_budget(training_hparams: Any, splat_count: int, step: int = 0, frame_count: int = 1) -> int:
-    if int(step) < _resolve_refinement_start_step(training_hparams):
+    if _stretched_step(training_hparams, step) < _resolve_refinement_start_step(training_hparams):
         return 0
     max_gaussians = max(int(getattr(training_hparams, "max_gaussians", 0)), 0)
     if max_gaussians <= 0:

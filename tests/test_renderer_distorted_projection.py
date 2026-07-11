@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from reference_impls.reference_cpu import project_splats
-from src.renderer import Camera, GaussianRenderer, PROJECTION_MODEL_EQUIRECTANGULAR
+from src.renderer import Camera, GaussianRenderer, PROJECTION_MODEL_EQUIRECTANGULAR, PROJECTION_MODEL_FISHEYE
 from src.scene import GaussianScene, rgb_to_sh0
 
 _log_sigma = lambda sigma: np.log(np.asarray(sigma, dtype=np.float32))
@@ -81,6 +81,42 @@ def _scene_from_positions(positions: np.ndarray, sigma: float = _EQUIRECT_SPLAT_
 
 def _is_cap_rect_ellipse(conic: np.ndarray) -> bool:
     return float(conic[0]) < 0.0 and float(conic[2]) < 0.0
+
+
+_FISHEYE_TEST_WIDTH = 256
+_FISHEYE_TEST_HEIGHT = 256
+
+
+def _fisheye_camera(focal: float, k1: float = 0.0, k2: float = 0.0) -> Camera:
+    return Camera(
+        position=np.zeros((3,), dtype=np.float32),
+        target=np.array((0.0, 0.0, 1.0), dtype=np.float32),
+        up=np.array((0.0, 1.0, 0.0), dtype=np.float32),
+        near=0.1,
+        far=50.0,
+        fx=float(focal),
+        fy=float(focal),
+        cx=0.5 * _FISHEYE_TEST_WIDTH,
+        cy=0.5 * _FISHEYE_TEST_HEIGHT,
+        distortion_k1=k1,
+        distortion_k2=k2,
+        projection_model=PROJECTION_MODEL_FISHEYE,
+    )
+
+
+def _fisheye_ring_positions(theta_degrees: tuple[float, ...], azimuth_count: int) -> np.ndarray:
+    thetas = np.deg2rad(np.asarray(theta_degrees, dtype=np.float64))
+    azimuths = 2.0 * np.pi * (np.arange(azimuth_count, dtype=np.float64) + 0.5) / float(azimuth_count)
+    theta_grid, azimuth_grid = np.meshgrid(thetas, azimuths)
+    directions = np.stack(
+        (
+            np.sin(theta_grid) * np.cos(azimuth_grid),
+            np.sin(theta_grid) * np.sin(azimuth_grid),
+            np.cos(theta_grid),
+        ),
+        axis=-1,
+    ).reshape(-1, 3)
+    return (directions * _EQUIRECT_SPHERE_RADIUS).astype(np.float32)
 
 
 def test_projection_keeps_in_view_splat_for_highly_distorted_camera(device):
@@ -301,3 +337,97 @@ def test_equirectangular_renderer_bins_splats_across_seam_and_poles(device):
     assert float(np.max(image[0, 0, :])) > 1e-3
     assert float(np.max(image[0, width // 2, :])) > 1e-3
     assert float(np.max(image[0, -1, :])) > 1e-3
+
+
+def test_projection_keeps_side_splat_for_fisheye_camera(device):
+    # 180-degree-across equidistant lens; the splat sits 60 degrees off-axis.
+    camera = _fisheye_camera(focal=_FISHEYE_TEST_WIDTH / np.pi)
+    theta = np.deg2rad(60.0)
+    scene = _scene_from_positions(np.array(((np.sin(theta), 0.0, np.cos(theta)),), dtype=np.float32) * _EQUIRECT_SPHERE_RADIUS, sigma=0.01)
+    renderer = GaussianRenderer(device, width=_FISHEYE_TEST_WIDTH, height=_FISHEYE_TEST_HEIGHT, radius_scale=1.6, list_capacity_multiplier=16)
+
+    screen_point, ok = camera.project_world_to_screen(scene.positions[0], renderer.width, renderer.height)
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale)
+    debug = renderer.debug_pipeline_data(scene, camera)
+
+    assert ok
+    assert 0.0 <= float(screen_point[0]) < float(renderer.width)
+    assert 0.0 <= float(screen_point[1]) < float(renderer.height)
+    assert int(projected.valid[0]) == 1
+    assert int(np.asarray(debug["splat_visible"], dtype=np.uint32)[0]) == 1
+    assert int(debug["generated_entries"]) > 0
+
+
+def test_fisheye_renderer_matches_cpu_reference_ring(device):
+    camera = _fisheye_camera(focal=_FISHEYE_TEST_WIDTH / np.pi, k1=0.03, k2=-0.008)
+    positions = _fisheye_ring_positions((10.0, 30.0, 55.0, 80.0), azimuth_count=8)
+    scene = _scene_from_positions(positions)
+    renderer = GaussianRenderer(
+        device,
+        width=_FISHEYE_TEST_WIDTH,
+        height=_FISHEYE_TEST_HEIGHT,
+        radius_scale=_EQUIRECT_RADIUS_SCALE,
+        alpha_cutoff=_EQUIRECT_ALPHA_CUTOFF,
+        list_capacity_multiplier=_EQUIRECT_LIST_CAPACITY_MULTIPLIER,
+    )
+
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale, alpha_cutoff=renderer.alpha_cutoff)
+    debug = renderer.debug_pipeline_data(scene, camera)
+    gpu_visible = np.asarray(debug["splat_visible"], dtype=np.uint32)
+    gpu_center_radius_depth = np.asarray(debug["screen_center_radius_depth"], dtype=np.float32)
+    gpu_ellipse_conic = np.asarray(debug["screen_ellipse_conic"], dtype=np.float32)[:, :3]
+
+    assert int(np.sum(projected.valid, dtype=np.uint32)) == scene.count
+    assert int(np.sum(gpu_visible, dtype=np.uint32)) == scene.count
+    assert int(debug["generated_entries"]) > 0
+    assert np.all(np.isfinite(projected.center_radius_depth))
+    assert np.all(np.isfinite(projected.ellipse_conic))
+    np.testing.assert_allclose(gpu_center_radius_depth, projected.center_radius_depth, rtol=0.0, atol=3e-3)
+    np.testing.assert_allclose(gpu_ellipse_conic, projected.ellipse_conic, rtol=5e-3, atol=2e-4)
+
+
+def test_fisheye_renderer_bins_behind_axis_and_center_splats(device):
+    # 360-degree-across lens so directly-behind content maps to the half-width ring.
+    camera = _fisheye_camera(focal=_FISHEYE_TEST_WIDTH / (2.0 * np.pi))
+    theta_behind = np.deg2rad(172.0)
+    positions = np.array(
+        (
+            (np.sin(theta_behind), 0.0, np.cos(theta_behind)),
+            (0.0, 0.0, 1.0),
+        ),
+        dtype=np.float32,
+    ) * _EQUIRECT_SPHERE_RADIUS
+    scene = _scene_from_positions(positions, sigma=_EQUIRECT_BOUNDARY_SPLAT_SIGMA)
+    scene.sh_coeffs = rgb_to_sh0(scene.colors)[:, None, :].astype(np.float32)
+    renderer = GaussianRenderer(
+        device,
+        width=_FISHEYE_TEST_WIDTH,
+        height=_FISHEYE_TEST_HEIGHT,
+        radius_scale=_EQUIRECT_RADIUS_SCALE,
+        alpha_cutoff=_EQUIRECT_ALPHA_CUTOFF,
+        list_capacity_multiplier=1024,
+        allocate_training_work_buffers=False,
+        allocate_grad_work_buffers=False,
+    )
+
+    projected = project_splats(scene, camera, renderer.width, renderer.height, renderer.radius_scale, alpha_cutoff=renderer.alpha_cutoff)
+    debug = renderer.debug_pipeline_data(scene, camera)
+    conic = np.asarray(debug["screen_ellipse_conic"], dtype=np.float32)[:, :3]
+    image = renderer.render(scene, camera, background=(0.0, 0.0, 0.0)).image[:, :, :3]
+
+    # The behind-axis splat's support cone touches the backward axis: bounded cap rect,
+    # not a fullscreen conic. The forward splat contains the optical axis: cap rect too.
+    assert _is_cap_rect_ellipse(conic[0])
+    assert _is_cap_rect_ellipse(conic[1])
+    assert int(np.sum(np.asarray(debug["splat_visible"], dtype=np.uint32))) == scene.count
+    assert 0 < int(debug["generated_entries"])
+    assert int(debug["sorted_count"]) == int(debug["generated_entries"])
+    np.testing.assert_allclose(conic, projected.ellipse_conic, rtol=5e-3, atol=2e-4)
+    np.testing.assert_allclose(
+        np.asarray(debug["screen_center_radius_depth"], dtype=np.float32),
+        projected.center_radius_depth,
+        rtol=0.0,
+        atol=3e-3,
+    )
+    # Forward splat must light the image center.
+    assert float(np.max(image[_FISHEYE_TEST_HEIGHT // 2 - 4 : _FISHEYE_TEST_HEIGHT // 2 + 5, _FISHEYE_TEST_WIDTH // 2 - 4 : _FISHEYE_TEST_WIDTH // 2 + 5, :])) > 0.05

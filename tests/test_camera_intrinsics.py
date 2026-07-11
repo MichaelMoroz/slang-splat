@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.renderer import Camera, PROJECTION_MODEL_EQUIRECTANGULAR
+from src.renderer import Camera, PROJECTION_MODEL_EQUIRECTANGULAR, PROJECTION_MODEL_FISHEYE
 
 
 def test_look_at_camera_defaults_to_center_principal_point():
@@ -81,6 +81,68 @@ def test_full_opencv_distorted_screen_ray_roundtrips_through_projection():
 
     assert ok
     np.testing.assert_allclose(projected, screen, rtol=0.0, atol=1e-4)
+
+
+def _fisheye_camera(**distortion) -> Camera:
+    return Camera(
+        position=np.zeros((3,), dtype=np.float32),
+        target=np.array((0.0, 0.0, 1.0), dtype=np.float32),
+        up=np.array((0.0, 1.0, 0.0), dtype=np.float32),
+        fx=200.0,
+        fy=200.0,
+        cx=320.0,
+        cy=240.0,
+        projection_model=PROJECTION_MODEL_FISHEYE,
+        **distortion,
+    )
+
+
+def test_fisheye_equidistant_projection_maps_known_angles():
+    camera = _fisheye_camera()
+    width, height = 640, 480
+
+    # Zero coefficients reduce KB4 to the pure equidistant mapping r = f * theta.
+    cases = (
+        ((0.0, 0.0, 1.0), (320.0, 240.0)),
+        ((1.0, 0.0, 0.0), (320.0 + 200.0 * np.pi / 2.0, 240.0)),
+        ((0.0, 1.0, 0.0), (320.0, 240.0 + 200.0 * np.pi / 2.0)),
+        ((1.0, 0.0, -1.0), (320.0 + 200.0 * 0.75 * np.pi, 240.0)),
+    )
+    for camera_pos, expected_screen in cases:
+        screen, ok = camera.project_camera_to_screen(np.asarray(camera_pos, dtype=np.float32), width, height)
+        assert ok
+        np.testing.assert_allclose(screen, np.asarray(expected_screen, dtype=np.float32), rtol=0.0, atol=1e-4)
+
+    # Directly behind the optical axis the azimuth is undefined.
+    _, ok = camera.project_camera_to_screen(np.array((0.0, 0.0, -1.0), dtype=np.float32), width, height)
+    assert not ok
+
+
+def test_fisheye_distorted_screen_ray_roundtrips_through_projection():
+    camera = _fisheye_camera(distortion_k1=0.03, distortion_k2=-0.008, distortion_k3=0.002, distortion_k4=-0.0004)
+    width, height = 640, 480
+
+    for screen in ((320.0, 240.0), (517.5, 201.25), (80.25, 400.5), (600.0, 30.0)):
+        screen_pos = np.asarray(screen, dtype=np.float32)
+        ray = camera.screen_to_world_ray(screen_pos, width, height)
+        point = camera.position + ray * np.float32(5.0)
+        projected, ok = camera.project_world_to_screen(point, width, height)
+        assert ok
+        np.testing.assert_allclose(projected, screen_pos, rtol=0.0, atol=1e-3)
+
+
+def test_fisheye_projection_roundtrips_beyond_180_degrees():
+    camera = _fisheye_camera(distortion_k1=0.02, distortion_k2=-0.004)
+    width, height = 640, 480
+
+    # theta = 130 degrees: well behind the camera plane, valid for a >180 lens.
+    theta = np.deg2rad(130.0)
+    direction = np.array((np.sin(theta), 0.0, np.cos(theta)), dtype=np.float32)
+    screen, ok = camera.project_world_to_screen(camera.position + direction * np.float32(4.0), width, height)
+    assert ok
+    ray = camera.screen_to_world_ray(screen, width, height)
+    np.testing.assert_allclose(ray, direction, rtol=0.0, atol=1e-4)
+    assert camera.gpu_params(width, height)["projectionModel"] == np.uint32(PROJECTION_MODEL_FISHEYE)
 
 
 def test_equirectangular_projection_maps_full_sphere_and_roundtrips():

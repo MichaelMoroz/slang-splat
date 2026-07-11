@@ -72,6 +72,9 @@ uniform uint g_TargetAlphaMode;
 uniform float g_TargetAlphaThreshold;
 uniform uint g_BatchStepIndex;
 uniform TrainingSubsampleParams g_TrainingSubsample;
+// Fisheye image-circle mask (normalized native sensor UV); zero radius = disabled.
+uniform float2 g_FisheyeMaskCenterUV;
+uniform float2 g_FisheyeMaskInvRadiusUV;
 uniform float g_SSIMWeight;
 uniform float g_SSIMC2;
 uniform float g_ColorspaceMod;
@@ -374,7 +377,7 @@ void store_splat_state(RWStructuredBuffer<float> params, uint splatCount, uint p
     store_splat_raw_opacity(params, splatCount, packedParamCount, splatId, state.rawOpacity);
 }
 
-PinholeCamera refinement_camera(uint cameraIndex)
+Camera refinement_camera(uint cameraIndex)
 {
     uint baseRow = cameraIndex * REFINEMENT_CAMERA_ROW_COUNT;
     float4 row0 = g_RefinementCameraRows[baseRow + 0u];
@@ -402,7 +405,7 @@ PinholeCamera refinement_camera(uint cameraIndex)
     params.projDistortionK1K2P1P2 = float4(row5.z, row5.w, row6.x, row6.y);
     params.projDistortionK3K4K5K6 = float4(row6.z, row6.w, row7.x, row7.y);
     params.projectionModel = uint(max(row7.z, 0.0));
-    return PinholeCamera.from_params(params);
+    return Camera.from_params(params);
 }
 
 float3 apply_support_radius_lower_bound(float3 logScale, float supportRadius)
@@ -415,7 +418,7 @@ float3 apply_support_radius_lower_bound(float3 logScale, float supportRadius)
     return logScale + log(supportRadius / currentSupportRadius);
 }
 
-float refinement_min_support_radius(PinholeCamera camera, float3 worldPos)
+float refinement_min_support_radius(Camera camera, float3 worldPos)
 {
     float cameraDistance = length(worldPos - camera.position_world());
     return camera.pixel_world_size_max(cameraDistance) * (max(g_RefinementMinScreenRadiusPx, 0.0) / SPLAT_PIXEL_CLAMP_PX);
@@ -654,11 +657,11 @@ float3 debug_target_linear_rgb(float3 target)
     return g_DebugTargetIsLinear != 0u ? max(sanitized, 0.0) : training_target_to_linear_rgb(sanitized);
 }
 
-float3 debug_training_camera_display_rgb(float3 rgb, float alpha, uint isLinear, uint applyLossColorspace, uint sourceUsesTargetLossColorspace)
+float3 debug_training_camera_display_rgb(float3 rgb, float alpha, float fisheyeMask, uint isLinear, uint applyLossColorspace, uint sourceUsesTargetLossColorspace)
 {
     if (applyLossColorspace == 0u) return debug_display_rgb(rgb, isLinear);
     float3 linearRgb = isLinear != 0u ? max(sanitize_float3(rgb, SANITIZE_HUGE_VALUE), 0.0) : training_target_to_linear_rgb(max(sanitize_float3(rgb, SANITIZE_HUGE_VALUE), 0.0));
-    if (sourceUsesTargetLossColorspace != 0u) linearRgb *= training_target_rgb_mask(alpha);
+    if (sourceUsesTargetLossColorspace != 0u) linearRgb *= training_target_rgb_alpha_mask(alpha) * fisheyeMask;
     return sourceUsesTargetLossColorspace != 0u
         ? training_rendered_to_display_rgb(training_target_loss_colorspace_rgb(linearRgb))
         : training_rendered_to_display_rgb(training_rendered_loss_colorspace_rgb(linearRgb));
@@ -671,12 +674,12 @@ float3 debug_ppisp_display_rgb(float3 rgb, uint isLinear, float2 sensorCoord)
     return training_rendered_to_display_rgb(ppisp_apply_tonemap(linearRgb, sensorCoord, g_LetterboxPPISPParams));
 }
 
-float training_target_mask(float alpha)
+float training_fisheye_mask(uint2 pixel)
 {
-    return g_TargetAlphaMode == TARGET_ALPHA_MODE_SKIP_MASK ? (saturate(alpha) >= saturate(g_TargetAlphaThreshold) ? 1.0 : 0.0) : 1.0;
+    return training_fisheye_mask_allows(pixel, g_TrainingSubsample, g_FisheyeMaskCenterUV, g_FisheyeMaskInvRadiusUV) ? 1.0 : 0.0;
 }
 
-float training_target_rgb_mask(float alpha)
+float training_target_rgb_alpha_mask(float alpha)
 {
     float clampedAlpha = saturate(alpha);
     float threshold = saturate(g_TargetAlphaThreshold);
@@ -685,10 +688,22 @@ float training_target_rgb_mask(float alpha)
     return 1.0;
 }
 
-float training_target_alpha_mask(float alpha)
+float training_target_mask(uint2 pixel, float alpha)
+{
+    float alphaMask = g_TargetAlphaMode == TARGET_ALPHA_MODE_SKIP_MASK ? (saturate(alpha) >= saturate(g_TargetAlphaThreshold) ? 1.0 : 0.0) : 1.0;
+    return alphaMask * training_fisheye_mask(pixel);
+}
+
+float training_target_rgb_mask(uint2 pixel, float alpha)
+{
+    return training_target_rgb_alpha_mask(alpha) * training_fisheye_mask(pixel);
+}
+
+float training_target_alpha_mask(uint2 pixel, float alpha)
 {
     if (g_TargetAlphaMode != TARGET_ALPHA_MODE_ALPHA_TARGET) return 0.0;
-    return saturate(alpha) < saturate(g_TargetAlphaThreshold) ? 1.0 : 0.0;
+    float alphaMask = saturate(alpha) < saturate(g_TargetAlphaThreshold) ? 1.0 : 0.0;
+    return alphaMask * training_fisheye_mask(pixel);
 }
 
 bool training_target_alpha_enabled()
@@ -934,7 +949,7 @@ void csComputeSSIMFeatures(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint2 pixel = uint2(px, py);
     float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, SANITIZE_HUGE_VALUE);
     float4 targetRgba = training_target_rgba(pixel);
-    float weight = training_target_rgb_mask(targetRgba.w);
+    float weight = training_target_rgb_mask(pixel, targetRgba.w);
     SSIMMoments moments = ssim_feature_moments(rendered, targetRgba.xyz);
     scale_ssim_moments(moments, weight);
     store_ssim_moments(g_SSIMMoments, pixel, moments);
@@ -971,9 +986,9 @@ void csComputeBlendedLossForward(
         float3 target = targetRgba.xyz;
         float3 renderedLoss = training_rendered_loss_colorspace_rgb(rendered);
         float3 targetLoss = training_target_loss_colorspace_rgb(target);
-        float targetMask = training_target_mask(rawTargetRgba.w);
-        float rgbTargetMask = training_target_rgb_mask(rawTargetRgba.w);
-        float alphaTargetMask = training_target_alpha_mask(rawTargetRgba.w);
+        float targetMask = training_target_mask(pixel, rawTargetRgba.w);
+        float rgbTargetMask = training_target_rgb_mask(pixel, rawTargetRgba.w);
+        float alphaTargetMask = training_target_alpha_mask(pixel, rawTargetRgba.w);
         float renderedAlpha = saturate(g_Rendered[pixel].w);
         float4 psnrTargetRgba = training_psnr_target_rgba(pixel);
         float3 psnrRendered = training_psnr_rendered_rgb(rendered, training_psnr_sensor_coord(pixel));
@@ -998,10 +1013,10 @@ void csComputeBlendedLossForward(
         float blendedRgbLoss = lerp(l1Loss, dssimLoss, g_SSIMWeight);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount) * rgbTargetMask;
         float displayMSE = rgb_mse_loss(
-            debug_training_camera_display_rgb(psnrRendered, 1.0, 1u, 1u, 0u),
-            debug_training_camera_display_rgb(psnrTargetRgba.xyz, psnrTargetRgba.w, 1u, 1u, 1u),
+            debug_training_camera_display_rgb(psnrRendered, 1.0, training_fisheye_mask(pixel), 1u, 1u, 0u),
+            debug_training_camera_display_rgb(psnrTargetRgba.xyz, psnrTargetRgba.w, training_fisheye_mask(pixel), 1u, 1u, 1u),
             g_InvPixelCount
-        ) * training_target_rgb_mask(psnrTargetRgba.w);
+        ) * training_target_rgb_mask(pixel, psnrTargetRgba.w);
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], SANITIZE_HUGE_VALUE);
         localRgbLoss = isfinite(blendedRgbLoss) ? blendedRgbLoss : 0.0;
         localDisplayMSE = isfinite(displayMSE) ? displayMSE : 0.0;
@@ -1073,7 +1088,7 @@ void csComputeSSIMBlurredGradients(uint3 dispatchThreadID : SV_DispatchThreadID)
     clear_ssim_feature_grads(g_SSIMBlurredFeatureGrads, pixel);
     if (!(g_SSIMWeight > 0.0)) return;
 
-    float rgbTargetMask = training_target_rgb_mask(training_target_rgba(pixel).w);
+    float rgbTargetMask = training_target_rgb_mask(pixel, training_target_rgba(pixel).w);
     if (!(rgbTargetMask > 0.0)) return;
 
     SSIMMoments weightedMoments = load_ssim_moments(g_SSIMBlurredMoments, pixel);
@@ -1109,9 +1124,9 @@ void csComputeBlendedLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, SANITIZE_HUGE_VALUE);
     float4 targetRgba = training_target_rgba(pixel);
     float3 target = targetRgba.xyz;
-    float targetMask = training_target_mask(targetRgba.w);
-    float rgbTargetMask = training_target_rgb_mask(targetRgba.w);
-    float alphaTargetMask = training_target_alpha_mask(targetRgba.w);
+    float targetMask = training_target_mask(pixel, targetRgba.w);
+    float rgbTargetMask = training_target_rgb_mask(pixel, targetRgba.w);
+    float alphaTargetMask = training_target_alpha_mask(pixel, targetRgba.w);
     float3 renderedLoss = training_rendered_loss_colorspace_rgb(rendered);
     float3 targetLoss = training_target_loss_colorspace_rgb(target);
     float renderedAlpha = saturate(g_Rendered[pixel].w);
@@ -1503,7 +1518,9 @@ void csComputeSSIMFeaturesDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint2 pixel = uint2(px, py);
     float3 rendered = sanitize_float3(g_DebugRendered[pixel].xyz, SANITIZE_HUGE_VALUE);
     float3 target = debug_target_linear_rgb(g_DebugTarget[pixel].xyz);
-    float weight = training_target_rgb_mask(sanitize_scalar(g_DebugTarget[pixel].w, SANITIZE_HUGE_VALUE));
+    // Debug pixels live in training-pixel space (crop window / stratified grid); the
+    // bound g_TrainingSubsample resolves them to native sensor positions for the mask.
+    float weight = training_target_rgb_alpha_mask(sanitize_scalar(g_DebugTarget[pixel].w, SANITIZE_HUGE_VALUE)) * training_fisheye_mask(pixel);
     SSIMMoments moments = ssim_feature_moments(rendered, target);
     scale_ssim_moments(moments, weight);
     store_ssim_moments(g_SSIMMoments, pixel, moments);
@@ -1519,7 +1536,7 @@ void csComposeDSSIMDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (px >= g_DebugWidth || py >= g_DebugHeight) return;
 
     uint2 pixel = uint2(px, py);
-    float targetMask = training_target_rgb_mask(sanitize_scalar(g_DebugTarget[pixel].w, SANITIZE_HUGE_VALUE));
+    float targetMask = training_target_rgb_alpha_mask(sanitize_scalar(g_DebugTarget[pixel].w, SANITIZE_HUGE_VALUE)) * training_fisheye_mask(pixel);
     float blurredWeight = load_ssim_weight(g_SSIMBlurredMoments, pixel);
     if (!(targetMask > 0.0) || !(blurredWeight > 0.0))
     {
@@ -1577,6 +1594,6 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     float2 sensorCoord = float2((float(srcX) + 0.5) / srcW, (float(srcY) + 0.5) / srcH);
     float3 displayRgb = g_LetterboxApplyPPISP != 0u
         ? debug_ppisp_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear, sensorCoord)
-        : debug_training_camera_display_rgb(sampled.xyz, sampled.w, g_LetterboxSourceIsLinear, g_LetterboxApplyLossColorspace, g_LetterboxSourceUsesTargetLossColorspace);
+        : debug_training_camera_display_rgb(sampled.xyz, sampled.w, training_fisheye_mask(uint2(srcX, srcY)), g_LetterboxSourceIsLinear, g_LetterboxApplyLossColorspace, g_LetterboxSourceUsesTargetLossColorspace);
     g_LetterboxOutput[uint2(px, py)] = float4(displayRgb, 1.0);
 }

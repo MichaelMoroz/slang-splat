@@ -114,7 +114,7 @@ uint load_prepared_projected_ellipse_variants(
     // cameras). A duplicate is emitted when its shifted extent still intersects the
     // viewport and the splat does not already span a full period (which would make the
     // primary and the duplicate double-bin the same tiles).
-    PinholeCamera wrapCamera = PinholeCamera.from_params(g_Camera);
+    Camera wrapCamera = Camera.from_params(g_Camera);
     float wrapPeriod = equirectangular ? max(wrapCamera.equirect_period(), 1.0) : viewportWidth;
     float xExtent = ellipse0.isBBoxRect() ? ellipse0.rectExtent().x : ellipse0.radiusPx;
     bool spansFullPeriod = 2.0 * xExtent >= wrapPeriod;
@@ -141,8 +141,8 @@ uint scanline_loop_count(ScanlineLoopConfig loopCfg)
 float binning_center_tighten()
 {
     bool distorted = any(abs(g_Camera.projDistortionK1K2P1P2) > SMALL_VALUE) || any(abs(g_Camera.projDistortionK3K4K5K6) > SMALL_VALUE);
-    bool equirectangular = g_Camera.projectionModel == CAMERA_PROJECTION_EQUIRECTANGULAR;
-    return (equirectangular || distorted) ? 0.0 : 0.5;
+    bool angular = g_Camera.projectionModel == CAMERA_PROJECTION_EQUIRECTANGULAR || g_Camera.projectionModel == CAMERA_PROJECTION_FISHEYE;
+    return (angular || distorted) ? 0.0 : 0.5;
 }
 
 uint emit_projected_ellipse_scanlines(uint splatId, Ellipse preparedEllipse, ScanlineLoopConfig loopCfg, uint writeIndex, uint writeEnd)
@@ -183,7 +183,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_SplatVisibleAreaPx[splatId] = 0.0;
 
     Gaussian3D gaussian = load_gaussian3d(splatId);
-    PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+    Camera camera = Camera.from_params(g_Camera);
     float3 cameraPosition = camera.position_world();
     RasterGaussian rasterGaussian = build_raster_gaussian(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, cameraPosition, g_Raster.shBand, gaussian);
     // Preview first (toned-down blue), then the committed selection on top, so an already
@@ -204,7 +204,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (camDistance < g_Camera.minCameraDistance) return;
     float depthValue = camPos.z;
     float supportRadius = max(projectionEllipsoid.projectedScale.x, max(projectionEllipsoid.projectedScale.y, projectionEllipsoid.projectedScale.z));
-    bool hasProjectionDistortion = camera.is_equirectangular() || any(abs(g_Camera.projDistortionK1K2P1P2) > SMALL_VALUE) || any(abs(g_Camera.projDistortionK3K4K5K6) > SMALL_VALUE);
+    bool hasProjectionDistortion = camera.is_angular() || any(abs(g_Camera.projDistortionK1K2P1P2) > SMALL_VALUE) || any(abs(g_Camera.projDistortionK3K4K5K6) > SMALL_VALUE);
     if (!hasProjectionDistortion && !support_sphere_intersects_view_frustum(camera, camPos, supportRadius)) return;
 
     Ellipse projectedEllipse;
@@ -226,7 +226,7 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         sortCameraPosition += rng_normal3_box_muller(rngState) * g_SortCameraDitherSigma;
     }
     float3 sortCameraOffset = projectionEllipsoid.centerWorld - sortCameraPosition;
-    float sortKey = (g_SortSplatKeyMode == SORT_SPLAT_KEY_Z_DEPTH && !camera.is_equirectangular()) ? camera.world_to_camera(sortCameraOffset).z : length(sortCameraOffset);
+    float sortKey = (g_SortSplatKeyMode == SORT_SPLAT_KEY_Z_DEPTH && !camera.is_angular()) ? camera.world_to_camera(sortCameraOffset).z : length(sortCameraOffset);
     uint writeIndex = 0u;
     InterlockedAdd(g_VisibleCounter[0], 1u, writeIndex);
     if (writeIndex >= g_Prepass.splatCount) return;

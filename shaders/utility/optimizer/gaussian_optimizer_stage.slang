@@ -140,7 +140,7 @@ void scale_active_sh_coeffs(inout TrainableGaussianState state, float scale, uin
 float3 clamp_screen_scale_upper_bound(float3 position, float3 logScale)
 {
     if (g_EnableCurrentCameraScreenScaleCap == 0u) return logScale;
-    PinholeCamera camera = PinholeCamera.from_params(g_CurrentCamera);
+    Camera camera = Camera.from_params(g_CurrentCamera);
     if (length(position - camera.position_world()) < g_CurrentCamera.minCameraDistance) return logScale;
     float maxSigmaSlope = g_MaxViewAngleSlope / max(g_RendererRadiusScale * GAUSSIAN_SUPPORT_SIGMA_RADIUS, SMALL_VALUE);
     if (!(maxSigmaSlope > SMALL_VALUE)) return logScale;

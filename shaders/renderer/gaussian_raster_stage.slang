@@ -16,6 +16,9 @@ uniform TrainingSubsampleParams g_TrainingSubsample;
 uniform Texture2D<float4> g_Target;
 uniform uint g_UseTargetAlphaMask;
 uniform float g_TargetAlphaThreshold;
+// Fisheye image-circle mask (normalized native sensor UV); zero radius = disabled.
+uniform float2 g_FisheyeMaskCenterUV;
+uniform float2 g_FisheyeMaskInvRadiusUV;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform StructuredBuffer<float> g_SplatAges;
 uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
@@ -829,12 +832,12 @@ RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
 
     if (g_TrainingSubsample.enabled != 0u)
     {
-        PinholeCamera camera = PinholeCamera.from_params(g_TrainingNativeCamera);
+        Camera camera = Camera.from_params(g_TrainingNativeCamera);
         uint2 samplePixel = training_sample_native_pixel(info.pixelCoord, g_TrainingSubsample);
         info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(float2(samplePixel) + 0.5));
     } else
     {
-        PinholeCamera camera = PinholeCamera.from_params(g_Camera);
+        Camera camera = Camera.from_params(g_Camera);
         info.rayDir = camera.world_to_camera(camera.screen_to_world_ray(info.samplePoint));
     }
 
@@ -848,6 +851,7 @@ RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
 bool raster_target_allows_contribution(RasterPixelInfo info)
 {
     if (!info.pixelActive) return true;
+    if (!training_fisheye_mask_allows(info.pixelCoord, g_TrainingSubsample, g_FisheyeMaskCenterUV, g_FisheyeMaskInvRadiusUV)) return false;
     if (g_UseTargetAlphaMask == 0u) return true;
     uint2 targetPixel = g_TrainingSubsample.enabled == 0u ? info.pixelCoord : training_sample_native_pixel(info.pixelCoord, g_TrainingSubsample);
     return saturate(g_Target[targetPixel].w) >= saturate(g_TargetAlphaThreshold);

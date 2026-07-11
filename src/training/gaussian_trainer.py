@@ -18,7 +18,7 @@ from ..scan.prefix_sum import GPUPrefixSum
 from ..sort.radix_sort import GPURadixSort
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..scene._internal.colmap_types import COLMAP_PINHOLE_MODEL_ID
-from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, load_training_frame_rgba8, point_nn_scales
+from ..scene._internal.colmap_ops import TRAINING_FRAME_LOAD_THREADS, fisheye_mask_active, fisheye_mask_uv_params, load_training_frame_rgba8, point_nn_scales
 from .alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
 from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .dataset_texture_pool import DatasetTexturePool, PreloadedDatasetTextures
@@ -40,7 +40,7 @@ from .defaults import (
 )
 from .optimizer import GaussianOptimizer
 from .ppisp import PPISPTonemapParams, PPISPTonemapProvider
-from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_ratio, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
+from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_ratio, resolve_max_allowed_density, resolve_schedule_stretch, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -120,6 +120,38 @@ def _hash_u32_scalar(value: int) -> np.uint32:
 def _refinement_hash_combine(seed: int, value: int) -> np.uint32:
     mixed = (int(value) * _REFINEMENT_HASH_MIX + _REFINEMENT_HASH_INIT) & 0xFFFFFFFF
     return _hash_u32_scalar((int(seed) ^ mixed) & 0xFFFFFFFF)
+
+
+_FISHEYE_CROP_ORIGIN_ATTEMPTS = 8
+
+
+def _crop_center_inside_fisheye_circle(crop_x: int, crop_y: int, crop_width: int, crop_height: int, native_width: int, native_height: int, center_uv: tuple[float, float], inv_radius_uv: tuple[float, float]) -> bool:
+    center_x = (float(crop_x) + 0.5 * float(crop_width)) / max(float(native_width), 1.0)
+    center_y = (float(crop_y) + 0.5 * float(crop_height)) / max(float(native_height), 1.0)
+    dx = (center_x - float(center_uv[0])) * float(inv_radius_uv[0])
+    dy = (center_y - float(center_uv[1])) * float(inv_radius_uv[1])
+    return dx * dx + dy * dy <= 1.0
+
+
+def _resolve_crop_origin(seed: int, max_x: int, max_y: int, crop_width: int, crop_height: int, frame: ColmapFrame) -> tuple[int, int]:
+    """Deterministic crop origin for a crop step. With an active fisheye circle mask,
+    rejection-sample so the window center lands inside the image circle — a window in
+    the dark border is fully masked and trains nothing — falling back to a window
+    centered on the circle. Without a mask this reproduces the legacy origin exactly."""
+    crop_x = int(_refinement_hash_combine(seed, 2)) % (max_x + 1)
+    crop_y = int(_refinement_hash_combine(seed, 3)) % (max_y + 1)
+    if not fisheye_mask_active(frame):
+        return crop_x, crop_y
+    center_uv, inv_radius_uv = fisheye_mask_uv_params(frame)
+    native_width, native_height = max(int(frame.width), 1), max(int(frame.height), 1)
+    for attempt in range(_FISHEYE_CROP_ORIGIN_ATTEMPTS):
+        if _crop_center_inside_fisheye_circle(crop_x, crop_y, crop_width, crop_height, native_width, native_height, center_uv, inv_radius_uv):
+            return crop_x, crop_y
+        crop_x = int(_refinement_hash_combine(seed, 4 + 2 * attempt)) % (max_x + 1)
+        crop_y = int(_refinement_hash_combine(seed, 5 + 2 * attempt)) % (max_y + 1)
+    fallback_x = int(round(float(center_uv[0]) * native_width - 0.5 * float(crop_width)))
+    fallback_y = int(round(float(center_uv[1]) * native_height - 0.5 * float(crop_height)))
+    return min(max(fallback_x, 0), max_x), min(max(fallback_y, 0), max_y)
 
 
 def _refinement_camera_hash(camera_id: int) -> np.uint32:
@@ -218,7 +250,9 @@ def resolve_training_resolution(width: int, height: int, downscale_factor: int) 
 
 
 def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperParams", step: int) -> int:
-    resolved_step = max(int(step), 0)
+    # The auto-downscale ladder is step-anchored, so it dilates with the schedule
+    # stretch like every other stage boundary.
+    resolved_step = max(int(int(step) / resolve_schedule_stretch(training_hparams)), 0)
     mode = int(getattr(training_hparams, "train_downscale_mode", 1))
     legacy_factor = int(getattr(training_hparams, "train_downscale_factor", 1))
     if mode == 1 and legacy_factor != 1:
@@ -355,6 +389,9 @@ class TrainingHyperParams:
     max_gaussians: int = TRAINING_BUILD_ARG_DEFAULTS["max_gaussians"]; train_downscale_mode: int = TRAINING_BUILD_ARG_DEFAULTS["train_downscale_mode"]; train_auto_start_downscale: int = TRAINING_BUILD_ARG_DEFAULTS["train_auto_start_downscale"]
     train_downscale_base_iters: int = TRAINING_BUILD_ARG_DEFAULTS["train_downscale_base_iters"]; train_downscale_iter_step: int = TRAINING_BUILD_ARG_DEFAULTS["train_downscale_iter_step"]; train_downscale_max_iters: int = TRAINING_BUILD_ARG_DEFAULTS["train_downscale_max_iters"]
     train_downscale_factor: int = TRAINING_BUILD_ARG_DEFAULTS["train_downscale_factor"]; train_subsample_factor: int = TRAINING_BUILD_ARG_DEFAULTS["train_subsample_factor"]
+    # Global schedule time-dilation: every step-anchored stage boundary, duration, and
+    # cadence is multiplied by this factor (auto-suggested from frame count at import).
+    schedule_stretch: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("schedule_stretch", 1.0))
 
     def __post_init__(self) -> None:
         self.lr_schedule_enabled = bool(self.lr_schedule_enabled)
@@ -396,6 +433,7 @@ class TrainingHyperParams:
         self.train_downscale_max_iters = int(self.train_downscale_max_iters)
         self.train_subsample_factor = int(self.train_subsample_factor)
         self.train_downscale_factor = int(self.train_downscale_factor)
+        self.schedule_stretch = max(float(self.schedule_stretch), 1e-2)
 
 
 @dataclass(slots=True)
@@ -670,8 +708,7 @@ class GaussianTrainer:
             return _TrainingSamplePlan(crop=False, crop_x=0, crop_y=0)
         max_x = max(native_width - int(crop_width), 0)
         max_y = max(native_height - int(crop_height), 0)
-        crop_x = int(_refinement_hash_combine(seed, 2)) % (max_x + 1)
-        crop_y = int(_refinement_hash_combine(seed, 3)) % (max_y + 1)
+        crop_x, crop_y = _resolve_crop_origin(int(seed), max_x, max_y, int(crop_width), int(crop_height), frame)
         return _TrainingSamplePlan(crop=True, crop_x=crop_x, crop_y=crop_y)
 
     def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None, plan: _TrainingSamplePlan | None = None) -> dict[str, object]:
@@ -691,7 +728,8 @@ class GaussianTrainer:
                 "mode": np.uint32(1 if resolved_plan.crop else 0),
                 "cropX": np.uint32(max(int(resolved_plan.crop_x), 0)),
                 "cropY": np.uint32(max(int(resolved_plan.crop_y), 0)),
-            }
+            },
+            **self._fisheye_mask_vars(frame),
         }
 
     def _training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
@@ -716,6 +754,15 @@ class GaussianTrainer:
             return camera.cropped(resolved_plan.crop_x, resolved_plan.crop_y, max(int(frame.width), 1), max(int(frame.height), 1))
         return self.make_frame_camera(frame_index, int(self.renderer.width), int(self.renderer.height))
 
+    def _fisheye_mask_vars(self, frame: ColmapFrame) -> dict[str, object]:
+        # Training-time fisheye image-circle mask (normalized sensor UV, zeros =
+        # disabled); the dataset images themselves stay untouched.
+        center_uv, inv_radius_uv = fisheye_mask_uv_params(frame)
+        return {
+            "g_FisheyeMaskCenterUV": spy.float2(float(center_uv[0]), float(center_uv[1])),
+            "g_FisheyeMaskInvRadiusUV": spy.float2(float(inv_radius_uv[0]), float(inv_radius_uv[1])),
+        }
+
     def _native_training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
         frame = self._frame(frame_index)
@@ -730,7 +777,8 @@ class GaussianTrainer:
                 "mode": np.uint32(0),
                 "cropX": np.uint32(0),
                 "cropY": np.uint32(0),
-            }
+            },
+            **self._fisheye_mask_vars(frame),
         }
 
     def _target_request_uses_native_texture(self, frame_index: int, *, native_resolution: bool, step: int | None = None) -> bool:
@@ -2517,25 +2565,40 @@ class GaussianTrainer:
         self._ensure_train_target_texture()
         self._invalidate_downscaled_target()
 
-    def read_live_scene(self) -> GaussianScene:
-        groups = self.renderer.read_scene_groups(self._scene_count)
-        color_alpha = np.asarray(groups["color_alpha"], dtype=np.float32)
-        sh_coeffs = pad_sh_coeffs(groups["sh_coeffs"], SUPPORTED_SH_COEFF_COUNT)
-        colors = sh_coeffs_to_display_colors(sh_coeffs)
-        opacities = np.reciprocal(1.0 + np.exp(-color_alpha[:, 3])).astype(np.float32, copy=False)
-        refinable = None
+    def capture_live_scene(self):
+        """Split scene readout: GPU readback now, numpy conversion in the closure.
+
+        The returned zero-arg callable touches no GPU state, so save paths can run
+        the SH padding / color conversion / scene assembly (the expensive half) on
+        a background thread instead of stalling the render thread.
+        """
+        renderer = self.renderer
+        flat, count = renderer.read_scene_flat(self._scene_count)
+        splat_init = None
         if "splat_init" in self._refinement_buffers:
             splat_init = buffer_to_numpy(self._refinement_buffers["splat_init"], np.float32).reshape(-1, 4)[: self._scene_count]
-            refinable = np.ascontiguousarray(splat_init[:, 3] >= 0.0, dtype=bool)
-        return GaussianScene(
-            positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
-            scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
-            rotations=np.asarray(groups["rotations"], dtype=np.float32),
-            opacities=np.asarray(opacities, dtype=np.float32),
-            colors=np.asarray(colors, dtype=np.float32),
-            sh_coeffs=sh_coeffs,
-            refinable=refinable,
-        )
+
+        def _finish() -> GaussianScene:
+            groups = renderer._unpack_param_groups(flat, count)
+            color_alpha = np.asarray(groups["color_alpha"], dtype=np.float32)
+            sh_coeffs = pad_sh_coeffs(groups["sh_coeffs"], SUPPORTED_SH_COEFF_COUNT)
+            colors = sh_coeffs_to_display_colors(sh_coeffs)
+            opacities = np.reciprocal(1.0 + np.exp(-color_alpha[:, 3])).astype(np.float32, copy=False)
+            refinable = None if splat_init is None else np.ascontiguousarray(splat_init[:, 3] >= 0.0, dtype=bool)
+            return GaussianScene(
+                positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
+                scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
+                rotations=np.asarray(groups["rotations"], dtype=np.float32),
+                opacities=np.asarray(opacities, dtype=np.float32),
+                colors=np.asarray(colors, dtype=np.float32),
+                sh_coeffs=sh_coeffs,
+                refinable=refinable,
+            )
+
+        return _finish
+
+    def read_live_scene(self) -> GaussianScene:
+        return self.capture_live_scene()()
 
     def replace_scene(self, scene: GaussianScene) -> None:
         """Swap in an externally edited scene, resetting optimizer state.

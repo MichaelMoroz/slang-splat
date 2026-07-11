@@ -127,6 +127,7 @@ $$
 
 Each $w_i$ is then projected through the full camera model, including distortion, to produce five screen points for pinhole-style cameras.
 Equirectangular cameras use the same tangent circle but sample eight outline points, since the spherical map is more nonlinear near the poles and seam.
+Fisheye cameras (Kannala-Brandt, $x = F \,\theta_d(\theta)\, \hat{u} + p_0$ with $\theta = \operatorname{atan2}(\|(x, y)\|, z)$ and $\theta_d = \theta (1 + k_1 \theta^2 + k_2 \theta^4 + k_3 \theta^6 + k_4 \theta^8)$) also sample eight outline points and share the centered fit below; their singular direction is the backward optical axis rather than the poles/seam.
 
 ### 2.3 Five-Point Conic Fit
 
@@ -142,7 +143,7 @@ $$
 A (x_i - m_x)^2 + 2 B (x_i - m_x)(y_i - m_y) + C (y_i - m_y)^2 = 1
 $$
 
-in least squares. This keeps the raster conic centered on the spherical ray through the Gaussian center while matching the alpha-cutoff boundary around the projected outline. If the sampled outline crosses the left-right seam, touches the polar rows, or the fitted conic extent reaches those boundaries, the projection uses the conservative fullscreen fallback.
+in least squares. This keeps the raster conic centered on the spherical ray through the Gaussian center while matching the alpha-cutoff boundary around the projected outline. If the sampled outline crosses the left-right seam, touches the polar rows, or the fitted conic extent reaches those boundaries, the projection uses the bounded angular-cap rect fallback (equirect: latitude band times longitude interval; fisheye: bbox of the annular sector spanned by the support cone's $\theta$ and azimuth intervals). Fisheye support cones that touch the backward axis or contain the optical axis skip the fit and take the cap rect directly.
 
 Equivalently, in homogeneous coordinates $x_h = (x, y, 1)^T$,
 
