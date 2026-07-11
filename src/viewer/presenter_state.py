@@ -21,6 +21,7 @@ from ..training import (
     resolve_refinement_prune_lowest_contribution_ratio,
     resolve_refinement_target_splat_ratio,
     resolve_rotation_lr_mul,
+    resolve_schedule_stretch,
     resolve_scale_lr_mul,
     resolve_sh_band,
     resolve_sh_lr_mul,
@@ -66,6 +67,7 @@ def _schedule_state_from_controls(viewer: object) -> object:
         lr_schedule_stage1_step=int(_control_value(viewer, "lr_schedule_stage1_step", DEFAULT_LR_STAGE1_STEP)),
         lr_schedule_stage2_step=int(_control_value(viewer, "lr_schedule_stage2_step", DEFAULT_LR_STAGE2_STEP)),
         lr_schedule_stage3_step=int(_control_value(viewer, "lr_schedule_stage3_step", DEFAULT_LR_STAGE3_STEP)),
+        schedule_stretch=float(_control_value(viewer, "schedule_stretch", 1.0)),
         lr_pos_mul=float(_control_value(viewer, "lr_pos_mul", 1.0)),
         lr_pos_stage1_mul=float(_control_value(viewer, "lr_pos_stage1_mul", 0.75)),
         lr_pos_stage2_mul=float(_control_value(viewer, "lr_pos_stage2_mul", 0.2)),
@@ -144,10 +146,13 @@ def _schedule_state_from_controls(viewer: object) -> object:
 
 
 def _schedule_steps(training: object) -> tuple[int, int, int, int]:
-    stage1 = max(int(getattr(training, "lr_schedule_stage1_step", 0)), 0)
-    stage2 = max(int(getattr(training, "lr_schedule_stage2_step", stage1)), stage1)
-    stage3 = max(int(getattr(training, "lr_schedule_stage3_step", stage2)), stage2)
-    return stage1, stage2, stage3, max(int(getattr(training, "lr_schedule_steps", stage3)), stage3)
+    # Displayed in actual training steps: the authored boundaries dilated by the
+    # schedule stretch, matching where the resolvers fire them.
+    stretch = resolve_schedule_stretch(training)
+    stage1 = max(int(round(int(getattr(training, "lr_schedule_stage1_step", 0)) * stretch)), 0)
+    stage2 = max(int(round(int(getattr(training, "lr_schedule_stage2_step", 0)) * stretch)), stage1)
+    stage3 = max(int(round(int(getattr(training, "lr_schedule_stage3_step", 0)) * stretch)), stage2)
+    return stage1, stage2, stage3, max(int(round(int(getattr(training, "lr_schedule_steps", 0)) * stretch)), stage3)
 
 
 def _schedule_runtime(viewer: object) -> tuple[object, int]:
@@ -181,7 +186,7 @@ def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, 
             int(trainer.effective_refinement_interval()) if hasattr(trainer, "effective_refinement_interval") else int(training.refinement_interval),
             resolve_refinement_active_target_splat_ratio(training, current_step) * 100.0,
             resolve_refinement_target_splat_ratio(training, current_step) * 100.0,
-            max(int(getattr(training, "refinement_growth_start_step", 0)), 0),
+            max(int(round(int(getattr(training, "refinement_growth_start_step", 0)) * resolve_schedule_stretch(training))), 0),
             current_prune * 100.0,
             resolve_refinement_prune_lowest_contribution_ratio(training, current_step) * 100.0,
             max(float(getattr(training, "refinement_max_growth_per_step", 0.15)), 0.0) * 100.0,
@@ -195,10 +200,10 @@ def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, 
         )
     training = _schedule_state_from_controls(viewer)
     return (
-        max(int(viewer.c("refinement_interval").value), 1),
+        max(int(round(int(viewer.c("refinement_interval").value) * resolve_schedule_stretch(training))), 1),
         resolve_refinement_active_target_splat_ratio(training, 0) * 100.0,
         resolve_refinement_target_splat_ratio(training, 0) * 100.0,
-        max(int(viewer.c("refinement_growth_start_step").value), 0),
+        max(int(round(int(viewer.c("refinement_growth_start_step").value) * resolve_schedule_stretch(training))), 0),
         min(max(float(viewer.c("refinement_prune_lowest_contribution_ratio").value), 0.0), 1.0) * 100.0,
         min(max(float(viewer.c("refinement_prune_lowest_contribution_ratio").value), 0.0), 1.0) * 100.0,
         max(float(viewer.c("refinement_max_growth_per_step").value), 0.0) * 100.0,
@@ -777,7 +782,9 @@ def _build_camera_overlay_geometry(viewer: object) -> tuple[np.ndarray, np.ndarr
             continue
         if not (np.all(np.isfinite(position)) and np.all(np.isfinite(right)) and np.all(np.isfinite(up)) and np.all(np.isfinite(forward))):
             continue
-        if bool(getattr(camera, "is_equirectangular", False)):
+        if bool(getattr(camera, "is_angular", False)):
+            # Equirect and fisheye view volumes are not pinhole pyramids; a cube reads
+            # as "sees (nearly) everywhere" for both.
             cameras.append(_camera_overlay_cube_corners(position, (right, up, forward), overlay_far).astype(np.float32, copy=False))
             frame_indices.append(int(frame_index))
             camera_positions.append(position.astype(np.float32, copy=False))
@@ -850,7 +857,7 @@ def _camera_min_dist_rings(position: np.ndarray, basis: tuple[np.ndarray, np.nda
 def _project_overlay_points(viewer_camera: object, points_world: np.ndarray, viewport_width: int, viewport_height: int) -> tuple[np.ndarray, np.ndarray]:
     if not hasattr(viewer_camera, "basis") or not hasattr(viewer_camera, "focal_pixels_xy") or not hasattr(viewer_camera, "principal_point"):
         return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=bool)
-    if bool(getattr(viewer_camera, "is_equirectangular", False)) and hasattr(viewer_camera, "project_world_to_screen"):
+    if bool(getattr(viewer_camera, "is_angular", False)) and hasattr(viewer_camera, "project_world_to_screen"):
         screen = np.zeros((points_world.shape[0], 2), dtype=np.float32)
         valid = np.isfinite(points_world).all(axis=1)
         for point_index in np.flatnonzero(valid):
@@ -1001,6 +1008,12 @@ def _run_training_batch(viewer: object, max_steps: int | None = None) -> int:
     factor_after = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
     viewer.s.training_runtime_factor_changed = factor_after != factor_before
     viewer.s.last_training_batch_steps = steps
+    if steps > 0:
+        # Between-batches safe point: the same point Export PLY relies on, so the
+        # step-driven project autosave captures a consistent scene (GUI + headless).
+        from . import project as _project
+
+        _project.maybe_autosave(viewer)
     return steps
 
 

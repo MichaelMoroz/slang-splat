@@ -431,6 +431,7 @@
       "colmap_selected_camera_ids": [],
       "seed": 1234,
       "train_iters": 0,
+      "autosave_interval_steps": 15000,
       "photometric": null,
       "reinitialize": false,
       "metrics": null,

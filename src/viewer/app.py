@@ -26,7 +26,7 @@ from ..training.image_color_init import TrainingImageColorInitializer
 from ..utility import SHADER_ROOT, device_type_name, drain_deferred_resource_releases, load_compute_items, load_compute_kernels, normalize3
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
-from . import frame_capture, presenter, session, splat_editor
+from . import frame_capture, presenter, project, session, splat_editor
 from .constants import _WINDOW_TITLE
 from .state import (
     COLMAP_ROTATION_MODE_AUTO,
@@ -156,6 +156,11 @@ def _mark_recent_interaction(viewer: object, timestamp: float | None = None) -> 
         return
     resolved = float(timestamp) if timestamp is not None else time.perf_counter()
     state.last_interaction_time = resolved
+
+
+def _project_dir_from_dialog_path(path: str | Path) -> Path:
+    target = Path(path)
+    return target if target.suffix.lower() == ".splatproj" else target.with_suffix(".splatproj")
 
 
 def _viewer_ui_values(viewer: object) -> dict[str, object]:
@@ -440,6 +445,121 @@ def _yaw_pitch_from_forward(forward: np.ndarray) -> tuple[float, float]:
     pitch = math.asin(max(min(float(direction[1]), 1.0), -1.0))
     return float(yaw), float(pitch)
 
+
+# Free-camera quaternions (wxyz, camera-to-world): right = q*x, up = q*y, forward = q*z.
+_QUAT_IDENTITY = (1.0, 0.0, 0.0, 0.0)
+
+
+def _quat_normalize(q: np.ndarray) -> np.ndarray:
+    quat = np.asarray(q, dtype=np.float64).reshape(4)
+    return (quat / max(float(np.linalg.norm(quat)), _VIEW_VEC_EPS)).astype(np.float32)
+
+
+def _quat_multiply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = (float(v) for v in np.asarray(a, dtype=np.float64).reshape(4))
+    bw, bx, by, bz = (float(v) for v in np.asarray(b, dtype=np.float64).reshape(4))
+    return np.array(
+        (
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ),
+        dtype=np.float32,
+    )
+
+
+def _quat_from_axis_angle(axis: tuple[float, float, float], angle: float) -> np.ndarray:
+    half = 0.5 * float(angle)
+    sin_half = math.sin(half)
+    return np.array((math.cos(half), axis[0] * sin_half, axis[1] * sin_half, axis[2] * sin_half), dtype=np.float32)
+
+
+def _quat_rotate_vec(q: np.ndarray, v: tuple[float, float, float]) -> np.ndarray:
+    w, x, y, z = (float(value) for value in np.asarray(q, dtype=np.float64).reshape(4))
+    qv = np.array((x, y, z), dtype=np.float64)
+    vec = np.asarray(v, dtype=np.float64).reshape(3)
+    return (vec + 2.0 * np.cross(qv, np.cross(qv, vec) + w * vec)).astype(np.float32)
+
+
+def _quat_from_basis(right: np.ndarray, up: np.ndarray, forward: np.ndarray) -> np.ndarray:
+    """Quaternion whose columns (right, up, forward) form the camera-to-world rotation."""
+    rotation = np.stack(
+        (
+            np.asarray(right, dtype=np.float64).reshape(3),
+            np.asarray(up, dtype=np.float64).reshape(3),
+            np.asarray(forward, dtype=np.float64).reshape(3),
+        ),
+        axis=1,
+    )
+    trace = float(rotation[0, 0] + rotation[1, 1] + rotation[2, 2])
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        quat = (0.25 * s, (rotation[2, 1] - rotation[1, 2]) / s, (rotation[0, 2] - rotation[2, 0]) / s, (rotation[1, 0] - rotation[0, 1]) / s)
+    elif rotation[0, 0] > rotation[1, 1] and rotation[0, 0] > rotation[2, 2]:
+        s = math.sqrt(1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2]) * 2.0
+        quat = ((rotation[2, 1] - rotation[1, 2]) / s, 0.25 * s, (rotation[0, 1] + rotation[1, 0]) / s, (rotation[0, 2] + rotation[2, 0]) / s)
+    elif rotation[1, 1] > rotation[2, 2]:
+        s = math.sqrt(1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2]) * 2.0
+        quat = ((rotation[0, 2] - rotation[2, 0]) / s, (rotation[0, 1] + rotation[1, 0]) / s, 0.25 * s, (rotation[1, 2] + rotation[2, 1]) / s)
+    else:
+        s = math.sqrt(1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1]) * 2.0
+        quat = ((rotation[1, 0] - rotation[0, 1]) / s, (rotation[0, 2] + rotation[2, 0]) / s, (rotation[1, 2] + rotation[2, 1]) / s, 0.25 * s)
+    return _quat_normalize(np.array(quat, dtype=np.float64))
+
+
+def _quat_from_yaw_pitch(yaw: float, pitch: float, world_up: np.ndarray) -> np.ndarray:
+    """Zero-roll orientation matching the horizon camera's yaw/pitch basis."""
+    cy, sy = math.cos(float(yaw)), math.sin(float(yaw))
+    cp, sp = math.cos(float(pitch)), math.sin(float(pitch))
+    forward = np.array((cp * sy, sp, cp * cy), dtype=np.float64)
+    up_ref = np.asarray(world_up, dtype=np.float64).reshape(3)
+    right = np.cross(up_ref, forward)
+    right /= max(float(np.linalg.norm(right)), _VIEW_VEC_EPS)
+    up = np.cross(forward, right)
+    up /= max(float(np.linalg.norm(up)), _VIEW_VEC_EPS)
+    return _quat_from_basis(right, up, forward)
+
+
+def _camera_state_rotation(state: object) -> np.ndarray:
+    rotation = getattr(state, "camera_rot", None)
+    return np.array(_QUAT_IDENTITY, dtype=np.float32) if rotation is None else np.asarray(rotation, dtype=np.float32).reshape(4)
+
+
+def _camera_basis_from_state(state: object) -> tuple[spy.float3, spy.float3, spy.float3]:
+    """(right, up, forward): horizon mode derives them from yaw/pitch around the locked
+    world up; free mode reads them from the free-rotation quaternion."""
+    if bool(getattr(state, "camera_free_mode", False)):
+        rotation = _camera_state_rotation(state)
+        right = spy.float3(*(float(v) for v in _quat_rotate_vec(rotation, (1.0, 0.0, 0.0))))
+        up = spy.float3(*(float(v) for v in _quat_rotate_vec(rotation, (0.0, 1.0, 0.0))))
+        forward = spy.float3(*(float(v) for v in _quat_rotate_vec(rotation, (0.0, 0.0, 1.0))))
+        return right, up, forward
+    cy, sy = math.cos(float(state.yaw)), math.sin(float(state.yaw))
+    cp, sp = math.cos(float(state.pitch)), math.sin(float(state.pitch))
+    forward = normalize3(spy.float3(cp * sy, sp, cp * cy), eps=_VIEW_VEC_EPS)
+    right = normalize3(smath.cross(state.up, forward), eps=_VIEW_VEC_EPS)
+    up = normalize3(smath.cross(forward, right), eps=_VIEW_VEC_EPS)
+    return right, up, forward
+
+
+def _sync_camera_mode(viewer: object) -> None:
+    """Reconcile the UI toggle with the camera state: entering free mode adopts the
+    current yaw/pitch as a zero-roll quaternion; leaving it re-levels the horizon by
+    keeping only the forward direction."""
+    state = viewer.s
+    free = bool(getattr(getattr(viewer, "ui", None), "_values", {}).get("camera_free_mode", False))
+    if free == bool(getattr(state, "camera_free_mode", False)):
+        return
+    if free:
+        state.camera_rot = _quat_from_yaw_pitch(state.yaw, state.pitch, np.asarray(state.up, dtype=np.float32))
+    else:
+        forward = _quat_rotate_vec(_camera_state_rotation(state), (0.0, 0.0, 1.0))
+        yaw, pitch = _yaw_pitch_from_forward(np.asarray(forward, dtype=np.float32))
+        state.yaw = yaw
+        state.pitch = min(max(pitch, -_PITCH_LIMIT), _PITCH_LIMIT)
+    state.camera_free_mode = free
+
 def _training_param_value(name: str, value_for) -> object:
     value = value_for(_TRAINING_PARAM_KEYS[name])
     return int(value) if name == "train_subsample_factor" else value
@@ -505,8 +625,9 @@ class ViewerCore:
         return normalize3(spy.float3(cp * sy, sp, cp * cy), eps=_VIEW_VEC_EPS)
 
     def camera(self) -> Camera:
-        forward = self._forward()
-        return Camera.look_at(position=self.s.camera_pos, target=self.s.camera_pos + forward, up=self.s.up, fov_y_degrees=float(self.s.fov_y), near=float(self.s.near), far=float(self.s.far))
+        _, up, forward = _camera_basis_from_state(self.s)
+        camera_up = up if bool(getattr(self.s, "camera_free_mode", False)) else self.s.up
+        return Camera.look_at(position=self.s.camera_pos, target=self.s.camera_pos + forward, up=camera_up, fov_y_degrees=float(self.s.fov_y), near=float(self.s.near), far=float(self.s.far))
 
     def apply_camera_fit(self, bounds) -> None:
         fit = fit_camera(bounds, self.s.fov_y)
@@ -518,6 +639,7 @@ class ViewerCore:
         self.c("move_speed").value = float(fit.move_speed)
         self.s.yaw = 0.0
         self.s.pitch = 0.0
+        self.s.camera_rot = np.array(_QUAT_IDENTITY, dtype=np.float32)
         self.s.move_vel = spy.float3(0.0, 0.0, 0.0)
         self.s.rot_vel = spy.float2(0.0, 0.0)
 
@@ -552,6 +674,14 @@ class ViewerCore:
             self.c("move_speed").value = float(move_speed)
         self.s.yaw = yaw
         self.s.pitch = pitch
+        # Free mode adopts the full source orientation including roll, so jumping to a
+        # training camera reproduces its exact framing; the horizon representation above
+        # keeps only the forward direction (re-leveled).
+        try:
+            basis_right, basis_up, basis_forward = resolved_camera.basis()
+            self.s.camera_rot = _quat_from_basis(basis_right, basis_up, basis_forward)
+        except Exception:
+            self.s.camera_rot = _quat_from_yaw_pitch(yaw, pitch, np.asarray(self.s.up, dtype=np.float32))
         self.s.move_vel = spy.float3(0.0, 0.0, 0.0)
         self.s.rot_vel = spy.float2(0.0, 0.0)
 
@@ -672,6 +802,11 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
         cb = self.toolkit.callbacks
         cb.load_ply = self._load_ply_callback
         cb.export_ply = self._export_ply_callback
+        cb.open_project = self._open_project_callback
+        cb.save_project = self._save_project_callback
+        cb.save_project_as = self._save_project_as_callback
+        cb.project_collision_choice = self._project_collision_choice_callback
+        cb.project_relink_choice = self._project_relink_choice_callback
         cb.browse_colmap_root = self._browse_colmap_root_callback
         cb.browse_colmap_images = self._browse_colmap_images_callback
         cb.browse_colmap_alpha_mask = self._browse_colmap_alpha_mask_callback
@@ -765,7 +900,80 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
             self._run_action(lambda: session.choose_colmap_custom_mesh(self, Path(path)))
 
     def _import_colmap_callback(self) -> None:
-        self._run_action(lambda: session.import_colmap_from_ui(self))
+        def _request() -> None:
+            if project.request_colmap_import(self) != "unwritable":
+                return
+            # Mandatory creation: the default project dir is unwritable, so a
+            # location must be chosen before the import may proceed.
+            path = spy.platform.save_file_dialog([spy.platform.FileDialogFilter("Splat Project", "*.splatproj")])
+            if path is None:
+                raise RuntimeError("COLMAP import cancelled: no writable project location was chosen.")
+            project.start_colmap_import(self, _project_dir_from_dialog_path(path))
+
+        self._run_action(_request)
+
+    def set_project_window_title(self, project_name: str | None) -> None:
+        title = _WINDOW_TITLE if not project_name else f"{_WINDOW_TITLE} — {project_name}"
+        self._window_title = title
+        window = getattr(self, "_window", None)
+        if window is not None:
+            try:
+                window.title = title
+            except Exception:
+                pass
+
+    def _open_project_callback(self) -> None:
+        path = spy.platform.open_file_dialog([
+            spy.platform.FileDialogFilter("Splat Project", "project.json;*.splatproj"),
+            spy.platform.FileDialogFilter("All Files", "*.*"),
+        ])
+        if path:
+            self._run_action(lambda: project.open_project(self, Path(path)))
+
+    def _project_save_completed(self, saved: Path, error: Exception | None) -> None:
+        # Runs on the writer thread; a plain dict text update is GIL-safe.
+        self.t("defaults_status").text = f"Project save failed: {error}" if error else f"Saved project {saved}"
+
+    def _save_project_callback(self) -> None:
+        if self.s.project.dir is None:
+            self._save_project_as_callback()
+            return
+        self._run_action(lambda: self._start_project_save(None))
+
+    def _start_project_save(self, target: Path | None) -> None:
+        # Resolve the display path before spawning the writer: on_complete may fire
+        # before save_project's return value is assigned.
+        resolved = Path(target) if target is not None else self.s.project.dir
+        project.save_project(self, target, on_complete=lambda error: self._project_save_completed(resolved, error))
+        self.t("defaults_status").text = f"Saving project {resolved}…"
+
+    def _save_project_as_callback(self) -> None:
+        path = spy.platform.save_file_dialog([spy.platform.FileDialogFilter("Splat Project", "*.splatproj")])
+        if path is None:
+            return
+        target = _project_dir_from_dialog_path(path)
+        self._run_action(lambda: self._start_project_save(target))
+
+    def _project_collision_choice_callback(self, choice: str) -> None:
+        chosen: Path | None = None
+        if choice == "choose":
+            path = spy.platform.save_file_dialog([spy.platform.FileDialogFilter("Splat Project", "*.splatproj")])
+            if path is None:
+                choice = "cancel"
+            else:
+                chosen = _project_dir_from_dialog_path(path)
+        self._run_action(lambda: project.collision_choice(self, choice, chosen_dir=chosen))
+
+    def _project_relink_choice_callback(self, choice: str) -> None:
+        located: Path | None = None
+        if choice == "locate":
+            path = spy.platform.choose_folder_dialog()
+            if path is None:
+                # No folder picked: keep the pending open (and its modal) alive.
+                self._run_action(lambda: project.relink_choice(self, "none"))
+                return
+            located = Path(path)
+        self._run_action(lambda: project.relink_choice(self, choice, located_root=located))
 
     def _reload_callback(self) -> None:
         if self.s.scene_path is not None:
@@ -783,6 +991,7 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
                     images_root=import_cfg.images_root,
                     alpha_mask_root=getattr(import_cfg, "alpha_mask_root", None),
                     use_alpha_masks=bool(getattr(import_cfg, "use_alpha_masks", False)),
+                    fisheye_mask_fov_degrees=float(getattr(import_cfg, "fisheye_mask_fov_degrees", 0.0)),
                     depth_root=import_cfg.depth_root,
                     init_mode=import_cfg.init_mode,
                     rotation_mode=getattr(
@@ -963,6 +1172,7 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
             traceback.print_exc()
 
     def update_camera(self, dt: float) -> None:
+        _sync_camera_mode(self)
         self.s.move_speed, self.s.fov_y = float(self.c("move_speed").value), float(self.c("fov").value)
         scroll_active = abs(self.s.scroll_delta) > 1e-5
         if scroll_active:
@@ -987,10 +1197,18 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
         self.s.rot_vel += (target_rot - self.s.rot_vel) * min(1.0, _LOOK_SMOOTH * dt)
         self.s.mouse_delta = spy.float2(0.0, 0.0)
         if float(smath.length(self.s.rot_vel)) > _VIEW_VEC_EPS:
-            self.s.yaw += float(self.s.rot_vel.x)
-            self.s.pitch = min(max(self.s.pitch + float(self.s.rot_vel.y), -_PITCH_LIMIT), _PITCH_LIMIT)
-        forward = self._forward()
-        right, up = normalize3(smath.cross(self.s.up, forward), eps=_VIEW_VEC_EPS), normalize3(smath.cross(forward, normalize3(smath.cross(self.s.up, forward), eps=_VIEW_VEC_EPS)), eps=_VIEW_VEC_EPS)
+            if bool(getattr(self.s, "camera_free_mode", False)):
+                # Free rotation: yaw/pitch spin around the camera's own axes (no world-up
+                # lock, no pitch clamp); their composition rolls naturally, flight-style.
+                delta = _quat_multiply(
+                    _quat_from_axis_angle((0.0, 1.0, 0.0), float(self.s.rot_vel.x)),
+                    _quat_from_axis_angle((1.0, 0.0, 0.0), -float(self.s.rot_vel.y)),
+                )
+                self.s.camera_rot = _quat_normalize(_quat_multiply(_camera_state_rotation(self.s), delta))
+            else:
+                self.s.yaw += float(self.s.rot_vel.x)
+                self.s.pitch = min(max(self.s.pitch + float(self.s.rot_vel.y), -_PITCH_LIMIT), _PITCH_LIMIT)
+        right, up, forward = _camera_basis_from_state(self.s)
         move = spy.float3(float(self.s.keys.get(spy.KeyCode.e, False)) - float(self.s.keys.get(spy.KeyCode.q, False)), float(self.s.keys.get(spy.KeyCode.d, False)) - float(self.s.keys.get(spy.KeyCode.a, False)), float(self.s.keys.get(spy.KeyCode.w, False)) - float(self.s.keys.get(spy.KeyCode.s, False)))
         move_length = float(smath.length(move))
         if scroll_active or self.s.mouse_left or self.s.mouse_right or move_length > _VIEW_VEC_EPS:
@@ -1003,6 +1221,7 @@ class SplatViewer(_ViewerWindowHost, ViewerCore):
         self.s.camera_pos += (up * self.s.move_vel.x + right * self.s.move_vel.y + forward * self.s.move_vel.z) * dt
 
     def shutdown(self) -> None:
+        project.join_pending_writes(self)
         self.toolkit.shutdown()
         super().shutdown()
 

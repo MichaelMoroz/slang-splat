@@ -1103,10 +1103,10 @@ def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
 
     monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
     monkeypatch.setattr(presenter, "_render_debug_target", lambda viewer_obj, enc, frame_idx, width, height, step, sample_vars: ("target_tex", True))
-    monkeypatch.setattr(presenter, "_dispatch_debug_abs_diff", lambda viewer_obj, enc, rendered_tex, target_tex, width, height, *, rendered_is_linear=True, target_is_linear=False: calls.append(("abs_diff", rendered_tex, target_tex, width, height, rendered_is_linear, target_is_linear)) or "abs_diff_tex")
-    monkeypatch.setattr(presenter, "_dispatch_debug_dssim", lambda viewer_obj, enc, rendered_tex, target_tex, width, height, *, target_is_linear=False: calls.append(("dssim", rendered_tex, target_tex, width, height, target_is_linear)) or "dssim_tex")
+    monkeypatch.setattr(presenter, "_dispatch_debug_abs_diff", lambda viewer_obj, enc, rendered_tex, target_tex, width, height, *, rendered_is_linear=True, target_is_linear=False, **kwargs: calls.append(("abs_diff", rendered_tex, target_tex, width, height, rendered_is_linear, target_is_linear)) or "abs_diff_tex")
+    monkeypatch.setattr(presenter, "_dispatch_debug_dssim", lambda viewer_obj, enc, rendered_tex, target_tex, width, height, *, target_is_linear=False, **kwargs: calls.append(("dssim", rendered_tex, target_tex, width, height, target_is_linear)) or "dssim_tex")
     monkeypatch.setattr(presenter, "_dispatch_debug_edge_filter", lambda viewer_obj, enc, source_tex, width, height, *, source_is_linear=False: calls.append(("edge", source_tex, width, height, source_is_linear)) or f"edge_{source_tex}")
-    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False: calls.append(("present", source_tex, source_width, source_height, output_width, output_height, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex")
+    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False, **kwargs: calls.append(("present", source_tex, source_width, source_height, output_width, output_height, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex")
 
     viewer.c("loss_debug_view").value = 2
     assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
@@ -1137,7 +1137,7 @@ def test_render_debug_view_presents_target_using_reported_linearity(monkeypatch)
 
     monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
     monkeypatch.setattr(presenter, "_render_debug_target", lambda viewer_obj, enc, frame_idx, width, height, step, sample_vars: next(target_results))
-    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False: calls.append(("present", source_tex, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex")
+    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False, **kwargs: calls.append(("present", source_tex, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex")
 
     viewer.c("loss_debug_view").value = 0
     assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
@@ -1159,7 +1159,7 @@ def test_render_debug_view_skips_target_work_for_rendered_mode(monkeypatch) -> N
 
     monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
     monkeypatch.setattr(presenter, "_render_debug_target", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rendered view should not render the target path")))
-    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False: calls.append(("present", source_tex, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex")
+    monkeypatch.setattr(presenter, "_dispatch_training_debug_present", lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False, **kwargs: calls.append(("present", source_tex, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex")
 
     viewer.c("loss_debug_view").value = 0
     assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
@@ -1200,7 +1200,7 @@ def test_render_debug_view_routes_target_view_through_target_loss_present(monkey
     monkeypatch.setattr(
         presenter,
         "_dispatch_training_debug_present",
-        lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False: calls.append((source_tex, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex",
+        lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False, **kwargs: calls.append((source_tex, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex",
     )
 
     viewer.c("loss_debug_view").value = 1

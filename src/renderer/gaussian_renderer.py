@@ -750,18 +750,31 @@ class GaussianRenderer:
         """Toggle the selection highlight without discarding the GPU selection mask."""
         self._highlight_enabled = bool(visible)
 
+    def capture_live_scene(self):
+        """Split scene readout: GPU readback now, numpy conversion in the closure.
+
+        The returned zero-arg callable touches no GPU state, so save paths can run
+        the unpack/conversion (the expensive half) on a background thread.
+        """
+        flat, count = self.read_scene_flat(self._scene_count)
+
+        def _finish() -> GaussianScene:
+            groups = self._unpack_param_groups(flat, count)
+            opacities = np.reciprocal(1.0 + np.exp(-groups["color_alpha"][:, 3])).astype(np.float32, copy=False)
+            return GaussianScene(
+                positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
+                scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
+                rotations=np.asarray(groups["rotations"], dtype=np.float32),
+                opacities=opacities,
+                colors=np.asarray(groups["color_alpha"][:, :3], dtype=np.float32),
+                sh_coeffs=np.asarray(groups["sh_coeffs"], dtype=np.float32),
+            )
+
+        return _finish
+
     def read_live_scene(self) -> GaussianScene:
         """Build a CPU scene from the current GPU param buffer (for export/histograms)."""
-        groups = self.read_scene_groups(self._scene_count)
-        opacities = np.reciprocal(1.0 + np.exp(-groups["color_alpha"][:, 3])).astype(np.float32, copy=False)
-        return GaussianScene(
-            positions=np.asarray(groups["positions"][:, :3], dtype=np.float32),
-            scales=np.asarray(groups["scales"][:, :3], dtype=np.float32),
-            rotations=np.asarray(groups["rotations"], dtype=np.float32),
-            opacities=opacities,
-            colors=np.asarray(groups["color_alpha"][:, :3], dtype=np.float32),
-            sh_coeffs=np.asarray(groups["sh_coeffs"], dtype=np.float32),
-        )
+        return self.capture_live_scene()()
 
     def read_selection_mask(self) -> np.ndarray:
         count = int(self._scene_count)
@@ -2170,9 +2183,14 @@ class GaussianRenderer:
         if scene_count > 0 and (required_list_entries > 0 or required_scanline_entries > 0):
             dst._ensure_work_buffers(scene_count, required_list_entries, required_scanline_entries)
 
-    def read_scene_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
+    def read_scene_flat(self, splat_count: int | None = None) -> tuple[np.ndarray, int]:
+        """GPU readback of the packed param buffer; pair with `_unpack_param_groups`."""
         count = self._scene_count if splat_count is None else int(splat_count)
         flat = self._read_array(self._scene_buffers["splat_params"], np.float32, max(count, 1) * self.packed_trainable_param_count)
+        return flat, count
+
+    def read_scene_groups(self, splat_count: int | None = None) -> dict[str, np.ndarray]:
+        flat, count = self.read_scene_flat(splat_count)
         return self._unpack_param_groups(flat, count)
 
     def write_scene_groups(

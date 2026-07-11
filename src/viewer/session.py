@@ -40,6 +40,7 @@ from ..scene._internal.colmap_ops import (
     FIBONACCI_SPHERE_COLOR,
     build_colmap_image_path_index,
     build_depth_path_index,
+    detect_fisheye_circle_fov_degrees,
     generate_depth_init_points,
     load_training_frame_rgba8,
     load_training_frame_rgba8_with_depth_payload,
@@ -54,10 +55,11 @@ from ..training import (
     PhotometricCompensationTrainer,
     resolve_effective_train_render_factor,
     resolve_training_resolution,
+    suggest_schedule_stretch,
 )
 from ..training.image_color_init import TrainingImageColorInitializer
 from ..scene._internal.colmap_binary import count_colmap_points3d
-from ..scene._internal.colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID, COLMAP_PINHOLE_MODEL_ID, ColmapFrame, ColmapReconstruction, point_tables
+from ..scene._internal.colmap_types import COLMAP_EQUIRECTANGULAR_MODEL_ID, COLMAP_FISHEYE_MODEL_IDS, COLMAP_PINHOLE_MODEL_ID, ColmapFrame, ColmapReconstruction, point_tables
 from .session_colmap_utils import (
     _COLMAP_CAMERA_MODEL_NAMES,
     _COLMAP_DB_SAMPLE_LIMIT,
@@ -636,6 +638,7 @@ def _append_training_frame(progress: ColmapImportProgress, image_id: int, image:
         float(getattr(camera, "k6", 0.0)),
         camera_id=int(image.camera_id),
         model_id=int(getattr(camera, "model_id", COLMAP_PINHOLE_MODEL_ID)),
+        fisheye_mask_fov_degrees=max(float(getattr(progress, "fisheye_mask_fov_degrees", 0.0)), 0.0),
     )
     if progress.init_mode == _COLMAP_IMPORT_DEPTH:
         progress.frame_images.append(image)
@@ -973,6 +976,34 @@ def _build_depth_init_source(
     return generate_depth_init_points(payloads, depth_point_count, seed, depth_value_mode)
 
 
+def _suggest_fisheye_mask_fov(recon: ColmapReconstruction, images_root: Path | None) -> float:
+    """Pre-fill the fisheye image-circle mask FOV by detecting the dark border in up to
+    three sample frames. 0 when the dataset has no fisheye camera, the fisheye is
+    full-frame (no dark circle), or detection is inconclusive."""
+    if images_root is None:
+        return 0.0
+    for camera_id, camera in sorted(recon.cameras.items()):
+        if int(getattr(camera, "model_id", -1)) not in COLMAP_FISHEYE_MODEL_IDS:
+            continue
+        names = [str(image.name).strip() for _, image in sorted(recon.images.items()) if int(image.camera_id) == int(camera_id) and str(image.name).strip()]
+        if len(names) == 0:
+            continue
+        sample_paths = []
+        for name_index in sorted({0, len(names) // 2, len(names) - 1}):
+            image_path = resolve_colmap_image_path(images_root, names[name_index])
+            if image_path is not None:
+                sample_paths.append(image_path)
+        if len(sample_paths) == 0:
+            continue
+        try:
+            fov_degrees = detect_fisheye_circle_fov_degrees(camera, sample_paths)
+        except Exception:
+            return 0.0
+        if fov_degrees > 0.0:
+            return fov_degrees
+    return 0.0
+
+
 def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     _reset_dataset_metrics_state(viewer)
     root = Path(dataset_root).resolve()
@@ -989,6 +1020,11 @@ def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
     alpha_mask_root = _suggest_alpha_mask_root_from_dataset_root(root, images_root, image_names)
     _set_ui_path(viewer, "colmap_alpha_mask_root", alpha_mask_root)
     viewer.ui._values["colmap_use_alpha_masks"] = bool(alpha_mask_root is not None)
+    viewer.ui._values["colmap_fisheye_mask_fov"] = _suggest_fisheye_mask_fov(recon, images_root)
+    # Pre-fill from the reconstruction's image count so the import window shows the
+    # suggestion before importing; the finish pass re-derives it from the exact
+    # (camera-filtered, pose-subset) training frame count.
+    viewer.ui._values["schedule_stretch"] = float(suggest_schedule_stretch(len(image_names)))
     total_points, tracked_points = count_colmap_points3d(recon.sparse_dir)
     _set_colmap_camera_preview(viewer, recon, point_stats={"total_points": total_points, "tracked_points_min2": tracked_points})
     viewer.s.last_error = ""
@@ -1572,6 +1608,8 @@ def _store_main_camera_reset_state(viewer: object) -> None:
     state.camera_reset_up = tuple(float(value) for value in up[:3])
     state.camera_reset_yaw = float(getattr(state, "yaw", 0.0))
     state.camera_reset_pitch = float(getattr(state, "pitch", 0.0))
+    camera_rot = np.asarray(getattr(state, "camera_rot", (1.0, 0.0, 0.0, 0.0)), dtype=np.float32).reshape(-1)
+    state.camera_reset_rot = tuple(float(value) for value in camera_rot[:4]) if camera_rot.size >= 4 and np.all(np.isfinite(camera_rot[:4])) else (1.0, 0.0, 0.0, 0.0)
     state.camera_reset_near = float(getattr(state, "near", 0.1))
     state.camera_reset_far = float(getattr(state, "far", 120.0))
     state.camera_reset_move_speed = float(getattr(state, "move_speed", 2.0))
@@ -1592,6 +1630,9 @@ def _restore_main_camera_reset_state(viewer: object) -> bool:
     state.up = spy.float3(*up)
     state.yaw = float(yaw)
     state.pitch = float(pitch)
+    reset_rot = getattr(state, "camera_reset_rot", None)
+    if reset_rot is not None and len(reset_rot) == 4:
+        state.camera_rot = np.asarray(reset_rot, dtype=np.float32)
     state.near = float(near)
     state.far = float(far)
     state.move_speed = float(move_speed)
@@ -2775,8 +2816,14 @@ def _concat_param_tensor_ranges(*payloads: object) -> object:
     )
 
 
-def load_scene(viewer: object, path: Path) -> None:
-    scene = load_gaussian_ply(path)
+def load_scene(viewer: object, path: Path, *, scene: GaussianScene | None = None) -> None:
+    # `scene` lets async callers (project open) hand in a PLY parsed off-thread.
+    scene = load_gaussian_ply(path) if scene is None else scene
+    # Plain PLY sessions are projectless: opening a .splatproj re-activates the
+    # project right after this call (see project._open_ply_project).
+    from . import project as _project
+
+    _project.deactivate_project(viewer)
     _reset_dataset_metrics_state(viewer)
     _reset_loaded_runtime(viewer)
     viewer.s.scene = scene
@@ -2798,6 +2845,7 @@ def _finish_import_colmap_dataset(
     images_root: Path,
     alpha_mask_root: Path | None = None,
     use_alpha_masks: bool = False,
+    fisheye_mask_fov_degrees: float = 0.0,
     depth_root: Path | None = None,
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
@@ -2857,6 +2905,15 @@ def _finish_import_colmap_dataset(
     resolved_dataset_pool_size = _training_dataset_pool_size(viewer) if dataset_pool_size is None else max(int(dataset_pool_size), 0)
     resolved_dataset_residency = _dataset_residency_from_ui(viewer) if dataset_residency is None else str(dataset_residency).lower()
     resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
+    # Larger datasets need proportionally longer schedules: auto-define the stretch
+    # from the frame count (each doubling over 100 frames adds 1x). The Schedule
+    # Stretch field stays editable after import. Project reopens skip the auto-set so
+    # a manually tuned value saved in the project is not stomped by the suggestion.
+    project_resume_pending = getattr(getattr(getattr(viewer, "s", None), "project", None), "pending_resume", None) is not None
+    if not project_resume_pending:
+        suggested_stretch = suggest_schedule_stretch(len(training_frames))
+        viewer.ui._values["schedule_stretch"] = float(suggested_stretch)
+        print(f"Schedule stretch auto-set to {suggested_stretch:g}x for {len(training_frames)} training frames.")
     xyz, _ = _point_tables(recon, min_track_length)
     _reset_loaded_runtime(viewer)
     _reset_training_visual_state(viewer)
@@ -2867,6 +2924,7 @@ def _finish_import_colmap_dataset(
         images_root=images_root,
         alpha_mask_root=alpha_mask_root,
         use_alpha_masks=use_alpha_masks,
+        fisheye_mask_fov_degrees=fisheye_mask_fov_degrees,
         depth_root=depth_root,
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
@@ -2948,6 +3006,12 @@ def _finish_import_colmap_dataset(
         f"Loaded COLMAP: db={None if database_path is None else Path(database_path).resolve()} root={colmap_root} "
         f"frames={len(training_frames)} images={Path(images_root).resolve()} init={init_mode}"
     )
+    # Import completion is the project hook point: consume a pending project
+    # resume (the trainer was just constructed) and enforce mandatory project
+    # creation for both GUI and headless entry points.
+    from . import project as _project
+
+    _project.on_import_completed(viewer)
 
 
 def import_colmap_dataset(
@@ -2958,6 +3022,7 @@ def import_colmap_dataset(
     images_root: Path,
     alpha_mask_root: Path | None = None,
     use_alpha_masks: bool = False,
+    fisheye_mask_fov_degrees: float = 0.0,
     depth_root: Path | None = None,
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
@@ -3016,6 +3081,7 @@ def import_colmap_dataset(
         images_root=Path(images_root).resolve(),
         alpha_mask_root=None if alpha_mask_root is None else Path(alpha_mask_root).resolve(),
         use_alpha_masks=bool(use_alpha_masks and alpha_mask_root is not None),
+        fisheye_mask_fov_degrees=max(float(fisheye_mask_fov_degrees), 0.0),
         rotation_mode=resolved_rotation_mode,
         custom_rotation_deg=resolved_custom_rotation_deg,
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
@@ -3062,6 +3128,11 @@ def import_colmap_dataset(
         downscale_scale=image_downscale_scale,
         max_pose_subset=int(max_pose_subset),
     )
+    # The mask only activates for fisheye camera models (fisheye_mask_active), so
+    # setting it on every frame is harmless for mixed-camera datasets.
+    for frame in training_frames:
+        if hasattr(frame, "fisheye_mask_fov_degrees"):
+            frame.fisheye_mask_fov_degrees = max(float(fisheye_mask_fov_degrees), 0.0)
     pool_size = _resolve_import_dataset_pool_size(
         viewer,
         training_frames,
@@ -3096,6 +3167,7 @@ def import_colmap_dataset(
         images_root=images_root,
         alpha_mask_root=alpha_mask_root,
         use_alpha_masks=use_alpha_masks,
+        fisheye_mask_fov_degrees=fisheye_mask_fov_degrees,
         depth_root=depth_root,
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
@@ -3168,6 +3240,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     alpha_mask_root_text = _ui_path_string(viewer, "colmap_alpha_mask_root")
     alpha_mask_root = None if not alpha_mask_root_text else Path(alpha_mask_root_text).expanduser()
     use_alpha_masks = bool(viewer.ui._values.get("colmap_use_alpha_masks", False))
+    fisheye_mask_fov_degrees = max(float(viewer.ui._values.get("colmap_fisheye_mask_fov", 0.0)), 0.0)
     depth_root_text = _ui_path_string(viewer, "colmap_depth_root")
     depth_root = None if not depth_root_text else Path(depth_root_text).expanduser()
     depth_value_mode = _ui_depth_value_mode(viewer)
@@ -3259,6 +3332,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         images_root=images_root.resolve(),
         alpha_mask_root=None if alpha_mask_root is None else alpha_mask_root.resolve(),
         use_alpha_masks=bool(use_alpha_masks and alpha_mask_root is not None),
+        fisheye_mask_fov_degrees=fisheye_mask_fov_degrees,
         selected_camera_ids=selected_camera_ids,
         depth_root=None if depth_root is None else depth_root.resolve(),
         depth_value_mode=depth_value_mode,
@@ -3404,6 +3478,7 @@ def advance_colmap_import(viewer: object) -> None:
                 colmap_root=progress.colmap_root,
                 database_path=progress.database_path,
                 images_root=progress.images_root,
+                fisheye_mask_fov_degrees=float(getattr(progress, "fisheye_mask_fov_degrees", 0.0)),
                 depth_root=progress.depth_root,
                 selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())),
                 depth_value_mode=progress.depth_value_mode,
@@ -3498,6 +3573,7 @@ def advance_colmap_import(viewer: object) -> None:
                 colmap_root=progress.colmap_root,
                 database_path=progress.database_path,
                 images_root=progress.images_root,
+                fisheye_mask_fov_degrees=float(getattr(progress, "fisheye_mask_fov_degrees", 0.0)),
                 depth_root=progress.depth_root,
                 selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())),
                 depth_value_mode=progress.depth_value_mode,
@@ -3892,6 +3968,7 @@ def set_training_active(viewer: object, active: bool) -> None:
         raise RuntimeError("Stop dataset metrics logging before starting training.")
     if active and viewer.s.trainer is None:
         initialize_training_scene(viewer)
+    was_active = bool(viewer.s.training_active)
     now = float(time.perf_counter())
     if viewer.s.training_active and viewer.s.training_resume_time is not None:
         viewer.s.training_elapsed_s += max(now - float(viewer.s.training_resume_time), 0.0)
@@ -3899,3 +3976,9 @@ def set_training_active(viewer: object, active: bool) -> None:
     viewer.s.training_active = bool(active and viewer.s.trainer is not None)
     if viewer.s.training_active:
         viewer.s.training_resume_time = now
+    elif was_active:
+        # Stop/pause boundary: save so a run stopped mid-interval never rolls
+        # back to the previous autosave crossing on reopen.
+        from . import project as _project
+
+        _project.autosave_on_stop(viewer)

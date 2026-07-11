@@ -19,6 +19,7 @@ RUN_UI_VALUE_FIELDS: tuple[str, ...] = (
     "colmap_selected_camera_ids",
     "seed",
     "train_iters",
+    "autosave_interval_steps",
     "output_ply",
 )
 
@@ -90,7 +91,7 @@ def _set_run_value(values: dict[str, object], key: str, value: object) -> None:
         values[key] = tuple(int(camera_id) for camera_id in _as_tuple(value))
     elif key in _PATH_VALUE_FIELDS:
         values[key] = "" if value is None else str(value)
-    elif key in {"seed", "train_iters"}:
+    elif key in {"seed", "train_iters", "autosave_interval_steps"}:
         values[key] = int(0 if value is None else value)
     else:
         values[key] = value
@@ -168,7 +169,7 @@ def exported_run_values(values: dict[str, object], *, existing_run: dict[str, An
             run[key] = None if value is None or str(value).strip() == "" else str(value)
         elif key == "colmap_selected_camera_ids":
             run[key] = [int(camera_id) for camera_id in _as_tuple(value)]
-        elif key in {"seed", "train_iters"}:
+        elif key in {"seed", "train_iters", "autosave_interval_steps"}:
             run[key] = int(0 if value is None else value)
         else:
             run[key] = value

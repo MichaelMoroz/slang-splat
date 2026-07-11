@@ -5,10 +5,20 @@ scene hierarchy ([SceneHierarchyDesign.md](SceneHierarchyDesign.md)); the projec
 format is designed so feature 3 extends it without a schema break. File/line anchors
 refer to the `streaming` branch as of July 2026.
 
+> **Status (July 2026): stage 1 is implemented** in
+> [`src/viewer/project.py`](../src/viewer/project.py) (manifest capture/save/open,
+> mandatory creation on import, step-based autosave, headless `.splatproj` support,
+> relink + collision modals), with hooks in `session._finish_import_colmap_dataset`
+> (import completion), `session.set_training_active` (stop-boundary save), and
+> `presenter_state._run_training_batch` (autosave safe point). Tests:
+> [`tests/test_viewer_project.py`](../tests/test_viewer_project.py). `Start fresh`
+> archives a stale `scene.ply` to `scene.ply.bak` (resolves the §12 open question
+> as archive-by-rename). Stage 2/3 items remain open.
+
 1. [What the code actually provides (findings vs. the roadmap sketch)](#1-what-the-code-actually-provides)
 2. [Project format](#2-project-format)
 3. [What the config snapshot contains — and what it deliberately omits](#3-the-config-snapshot)
-4. [Save flow](#4-save-flow)
+4. [Save flow, creation on import, and autosave](#4-save-flow-creation-on-import-and-autosave)
 5. [Open flow (GUI and headless)](#5-open-flow)
 6. [Resume semantics](#6-resume-semantics)
 7. [Relinking and dataset modes](#7-relinking-and-dataset-modes)
@@ -90,12 +100,16 @@ overlay already targets.
 
 ## 2. Project format
 
-A project is a **directory** named `name.splatproj/`:
+A project is a **directory**. Every COLMAP import creates one automatically at
+`<colmap_root>/slang_splat/` (§4); user-placed projects (`Save As…`) use the
+`name.splatproj/` naming convention. The directory name is convention only — the
+Open dialog targets `project.json`:
 
 ```
-name.splatproj/
+<colmap_root>/slang_splat/    # default (§4); or name.splatproj/ anywhere via Save As…
   project.json        # manifest (below) — the file the Open dialog targets
-  scene.ply           # trained splats (save_gaussian_ply, include_sh honoring SH band)
+  scene.ply           # latest saved splats (save_gaussian_ply, include_sh honoring SH band)
+                      # — also the single autosave slot, overwritten every 15 000 steps (§4)
   thumbnail.png       # last viewport frame, for recents/browser (stage 2)
   edit_state.json     # optional: splat-editor box/ranges + selection bitmask ref (stage 3)
   selection.bin       # optional: 1 bit/splat packed selection (stage 3)
@@ -122,7 +136,7 @@ name.splatproj/
   "dataset": {
     "mode": "reference",              // "reference" | "embedded" (stage 3)
     "colmap_root_abs": "C:/data/garden",
-    "colmap_root_rel": "../data/garden",   // relative to the .splatproj dir
+    "colmap_root_rel": "../data/garden",   // relative to the project dir (".." for default-location projects, §4)
     "images_root_abs": "C:/data/garden/images_4",
     "images_root_rel": "../data/garden/images_4",
     "fingerprint": { "files": 312, "bytes": 812345678, "newest_mtime": 1750000000,
@@ -164,6 +178,12 @@ Decisions:
   fingerprint (§7). Only the two roots need relinking; every other path in
   `viewer.run` / `viewer.import` (depth root, alpha masks, custom PLY/mesh) is stored
   as saved but *validated* on open with the same relink prompt when missing.
+- **Default location inside the dataset** makes the stored rel roots trivially
+  stable (`colmap_root_rel: ".."`), so moving or renaming the whole dataset folder
+  never triggers the relink prompt (§7). `slang_splat/` sits next to `sparse/` /
+  `images*/` and is touched by neither the dataset fingerprint (which scans the
+  images root only) nor embedded-mode copying (which copies the images root and
+  `sparse/`), so a project cannot recurse into itself.
 
 ## 3. The config snapshot
 
@@ -183,7 +203,7 @@ Deliberately **not** saved (machine/user-local, stays in `config/defaults.json`)
   `_set_graphics_api_callback`, [app.py:927-934](../src/viewer/app.py), is the
   template for updating one key without clobbering the rest).
 
-## 4. Save flow
+## 4. Save flow, creation on import, and autosave
 
 New module `src/viewer/project.py`, actions bound like every other callback
 (`cb.save_project`, `cb.save_project_as`, `cb.open_project` in
@@ -214,6 +234,62 @@ Notes grounded in existing behavior:
 - `Save` (no dialog) reuses the stored project dir; `Save As…` =
   `save_file_dialog` → create `name.splatproj/`.
 
+### Mandatory project creation on COLMAP import
+
+Importing a COLMAP dataset **always creates a project** — there are no projectless
+COLMAP sessions. The location is resolved *before* the import runs (prompts below,
+at `Load COLMAP…` confirm time); the initial `project.json` (config snapshot +
+dataset block, `result.step = 0`) is written at import completion — the same
+trainer-construction point §5 step 5 hooks — and registered in the recents MRU.
+`scene.ply` first appears at the first save/autosave, so opening a never-saved
+project simply re-imports and re-initializes (§5 step 4 with no resume; the resume
+hook checks for `scene.ply`).
+
+- **Collision**: if `<colmap_root>/slang_splat/project.json` already exists, the
+  import prompts — `Open existing` (default; becomes a §5 open) / `Start fresh`
+  (rewrite the manifest, discarding the previous save) / `Choose location…`
+  (`save_file_dialog`, Save As semantics).
+- **Unwritable dataset root** (read-only media, share without write access): fall
+  back to the same `Choose location…` dialog before the import proceeds — the
+  project dir must be known up front because autosave needs it. Cancelling the
+  dialog cancels the import (§12).
+- **Headless parity**: a headless COLMAP run creates/updates the same default
+  project, so long unattended runs get autosave checkpoints and crash-resume for
+  free.
+- Only COLMAP imports are mandatory-project. `Load PLY…` sessions stay projectless
+  until `Save As…` (unchanged).
+
+### Autosave checkpoints
+
+Autosave is **step-driven**: it fires when `trainer.state.step` crosses a multiple
+of the interval, plus on training stop/pause (so a run stopped at step 22 000 does
+not roll back to 15 000 on reopen):
+
+- **Key** (in `viewer.run`, so it travels with the project and applies headless):
+  `autosave_interval_steps` (default 15000; `0` = manual saves only).
+- **What it writes**: exactly the manual save above (steps 1–6) into the **single
+  latest slot** — `project.json` + `scene.ply`, overwriting the previous autosave.
+  No checkpoint history is kept (disk: one scene copy, not N). Autosave is a real
+  save: it clears the dirty flag and bumps `modified`.
+- **Scheduling**: the step-crossing check and the capture run at the same
+  between-batches safe point Export PLY uses, but the capture is the *raw GPU
+  readback only* (`capture_live_scene` splits `read_live_scene`); param unpacking,
+  SH padding, PLY serialization, the first-save dataset fingerprint walk, and all
+  file writes (tmp + atomic replace, so a crash mid-write never corrupts the
+  previous good save) run on a background writer thread. **Manual saves and the
+  stop-boundary save use the same deferred writer** — no save ever blocks the
+  render thread on conversion or IO. Writers chain in submission order (each joins
+  its predecessor on the worker, never on the caller); an autosave crossing hit
+  while a write is in flight is deferred to the next safe point, not dropped. The
+  menu bar shows a `Saving project…` indicator while a write is in flight, and
+  shutdown/headless-exit join the pending writer.
+- **Restore = reopen.** The autosave slot is the ordinary project state; no separate
+  restore UI. `result.step` in the manifest always matches the slot because both are
+  written in the same action.
+- Autosave only advances with training. Config or splat-editor changes made without
+  training steps stay unsaved until a manual save or a stop boundary — the
+  dirty-flag exit modal (§8) is the guard for those.
+
 ## 5. Open flow
 
 ```
@@ -236,6 +312,15 @@ Step 4/5 needs the only genuinely new orchestration in the feature: a small
 `advance_colmap_import` finishes (the import completion point already exists — it is
 where the trainer is constructed today). Everything else is existing calls in a new
 order.
+
+**No render-thread parse**: the `scene.ply` parse starts on a background thread the
+moment the project is opened, so it runs concurrently with the dataset import
+(which usually dominates). If the parse outlives the import, the resume stays
+pending and a per-frame pump applies it once ready — the render thread never
+blocks on the load, and the menu bar shows `Opening project…` while a pending open
+is in flight. Scene-only (PLY-source) projects load through the same pump.
+Autosave is suppressed while a resume is pending so a pre-resume init scene can
+never be captured against the resumed manifest.
 
 **Headless parity**: `run_headless_from_config` accepts a `.splatproj` manifest —
 if the config path ends in `project.json`/`.splatproj`, load the manifest, merge its
@@ -271,7 +356,9 @@ inventing a checkpoint format. Consequences worth stating in the UI/docs:
 ## 7. Relinking and dataset modes
 
 **Reference mode (v1 default).** On open, resolve `colmap_root` in order: absolute
-path → project-relative path → prompt. The prompt is a small modal ("Dataset not
+path → project-relative path → prompt. For default-location projects (§4) the rel
+path is `..`, so a moved or renamed dataset folder resolves silently — the prompt is
+effectively reserved for `Save As…`-relocated projects. The prompt is a small modal ("Dataset not
 found at …") with `Locate…` (`choose_folder_dialog`) / `Open anyway` (scene-only:
 skip import, load `scene.ply` as a plain PLY — the project degrades to a viewer
 session with all settings intact) / `Cancel`. After a successful relink, rewrite the
@@ -298,7 +385,8 @@ File
   Open Project…            Ctrl+O
   Open Recent              ▸ (from defaults.json MRU, existence-checked)
   ─────
-  Save Project             Ctrl+S   (disabled until a project dir exists)
+  Save Project             Ctrl+S   (always enabled in COLMAP sessions (§4);
+                                     disabled only in projectless PLY sessions)
   Save Project As…         Ctrl+Shift+S
   ─────
   Load PLY… / Export PLY… / Load COLMAP… / Reload / Reinitialize Gaussians
@@ -314,7 +402,10 @@ periodic 1 Hz — capture is a dict build, cheap). Title bar shows
 `name.splatproj*`. The existing exit-confirmation modal
 ([Viewer.md "Input Routing"](Viewer.md)) gains a `Save and Exit` button when a dirty
 project is open — it already intercepts both `File → Exit` and native title-bar
-close, so unsaved-changes protection needs no new interception machinery.
+close, so unsaved-changes protection needs no new interception machinery. Autosave
+(§4) clears the dirty flag each time it fires, so during training the modal only
+guards the last < 15 000 steps; because autosave is step-driven, config and editor
+changes made without training remain guarded by the modal until a manual save.
 
 **Status**: the Scene I/O section shows the project name/path alongside the existing
 root/import summary; `defaults_status`-style toast after save (the `t("…")` text
@@ -361,11 +452,17 @@ Designed-in touch points so feature 3 extends rather than breaks the format:
 capture via the three existing exporters; GUI apply path (`apply_config_overlay` +
 source trigger + `pending_project_resume` hook); File menu Save/Save As/Open; window
 title; reference-mode paths with abs→rel→prompt relink (prompt = simple modal);
-`result.step` resume.
+`result.step` resume; mandatory creation on COLMAP import at
+`<colmap_root>/slang_splat/` (collision + unwritable-root prompts); autosave (every
+`autosave_interval_steps` = 15 000 steps + stop/pause boundary, single latest-slot
+overwrite, background write).
 *Verify:* round-trip test (save → wipe UI values to defaults → open → values equal);
 COLMAP project reopens, trainer resumes at saved step with staged params resolved
 for that step (assert LR against `resolve_learning_rate_scale`); PLY-only project
-round-trips; config forward-compat test (§9).
+round-trips; config forward-compat test (§9); every COLMAP import leaves a valid
+`project.json` at the default path (and in recents); autosave at a short test
+interval overwrites the slot with `result.step` in sync with `scene.ply`;
+kill-and-reopen resumes at the last autosaved step.
 
 **Stage 2 — polish.**
 Recents MRU in `defaults.json`; dirty flag + `Save and Exit` in the existing exit
@@ -401,6 +498,15 @@ Embedded dataset mode (with pose-subset-only embedding); edit-state persistence
 - **Windows path portability**: store rel paths POSIX-style (`as_posix()`), resolve
   with `Path`; abs paths keep drive letters and simply fail over to rel/prompt on
   another machine — that is the designed path, not an error case.
+- **Autosave write cost and disk footprint**: a save is ~236 B/splat with SH3
+  (~1.2 GB at 5 M splats), held once on disk (~2× transiently during the tmp +
+  atomic-replace write). At one save per 15 000 steps the write amortizes to noise,
+  but the safe-point GPU readback is synchronous with training — if it stalls large
+  scenes noticeably, measure during stage 1 and consider staging the readback.
+- **Mandatory creation is strict**: cancelling the fallback location dialog cancels
+  the import. If that proves hostile to quick dataset triage, the escape hatch is a
+  scratch project in the temp dir — not a projectless session — so autosave and
+  reopen keep working.
 - **Open**: should `Save Project` also auto-export `output_ply` when
   `viewer.run.output_ply` is set (headless habit), or keep project scene.ply and run
   output strictly separate? Proposed: separate — `scene.ply` is project state,
@@ -409,3 +515,7 @@ Embedded dataset mode (with pose-subset-only embedding); edit-state persistence
   a reopened project at step 30 000 with `train_iters: 30000` has nothing left to do.
   GUI training is unbounded so this only affects headless replay; document that
   continuing a project headless requires raising `train_iters`.
+- **Open**: should `Start fresh` on an import collision (§4) archive the previous
+  project (rename to `slang_splat_old/`) instead of overwriting the manifest and
+  `scene.ply`? Proposed: archive-by-rename — cheap insurance against clobbering a
+  trained result with a misclick.

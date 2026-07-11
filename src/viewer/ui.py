@@ -901,6 +901,16 @@ class ToolkitState:
 def _noop() -> None:
     return None
 
+
+def _project_saving_segments(ui: "ViewerUI") -> tuple[tuple[str, "imgui.ImVec4 | None"], ...]:
+    """Menu-bar indicator while the async project writer or opener runs."""
+    segments: list[tuple[str, object]] = []
+    if bool(ui._values.get("_project_loading", False)):
+        segments += [("Opening project…", imgui.ImVec4(0.4, 0.75, 1.0, 1.0)), (" | ", None)]
+    if bool(ui._values.get("_project_saving", False)):
+        segments += [("Saving project…", imgui.ImVec4(1.0, 0.85, 0.2, 1.0)), (" | ", None)]
+    return tuple(segments)
+
 class ToolkitWindow:
     """Dear ImGui overlay rendered into the active Slangpy AppWindow surface."""
 
@@ -931,6 +941,11 @@ class ToolkitWindow:
         self.callbacks = SimpleNamespace(
             load_ply=_noop,
             export_ply=_noop,
+            open_project=_noop,
+            save_project=_noop,
+            save_project_as=_noop,
+            project_collision_choice=lambda _choice: None,
+            project_relink_choice=lambda _choice: None,
             browse_colmap_root=_noop,
             browse_colmap_images=_noop,
             browse_colmap_alpha_mask=_noop,
@@ -1387,6 +1402,7 @@ class ToolkitWindow:
         self._draw_training_views_window(ui)
         self._draw_resource_debug_window(ui)
         self._draw_exit_confirmation_modal(ui)
+        self._draw_project_modals(ui)
         imgui.render()
         draw_data = imgui.get_draw_data()
         self._frame_textures = simgui.sync_draw_data_textures(self.device, self.renderer, draw_data)
@@ -2179,6 +2195,13 @@ class ToolkitWindow:
     def _draw_file_menu(self, ui: ViewerUI) -> None:
         if not imgui.begin_menu("File"):
             return
+        if _menu_item("Open Project..."):
+            self.callbacks.open_project()
+        if _menu_item("Save Project", enabled=bool(ui._values.get("_project_active", False))):
+            self.callbacks.save_project()
+        if _menu_item("Save Project As...", enabled=bool(ui._values.get("_can_export_ply", False))):
+            self.callbacks.save_project_as()
+        imgui.separator()
         if _menu_item("Load PLY..."):
             self.callbacks.load_ply()
         if _menu_item("Export PLY...", enabled=bool(ui._values.get("_can_export_ply", False))):
@@ -2528,6 +2551,43 @@ class ToolkitWindow:
             imgui.close_current_popup()
         imgui.end_popup()
 
+    def _draw_choice_modal(self, ui: ViewerUI, *, open_key: str, title: str, message_key: str, buttons: tuple[tuple[str, str], ...], choose) -> None:
+        if bool(ui._values.get(open_key, False)):
+            imgui.open_popup(title)
+        scale = max(self._applied_interface_scale, 1.0)
+        imgui.set_next_window_size(imgui.ImVec2(460.0 * scale, 0.0), imgui.Cond_.appearing.value)
+        if not _imgui_opened(imgui.begin_popup_modal(title, None, flags=imgui.WindowFlags_.always_auto_resize.value)):
+            return
+        imgui.text_wrapped(str(ui._values.get(message_key, "")))
+        imgui.separator()
+        for index, (label, choice) in enumerate(buttons):
+            if index > 0:
+                imgui.same_line()
+            if imgui.button(label):
+                # The choice callback owns the open flag: dialogs may re-open the modal.
+                ui._values[open_key] = False
+                choose(choice)
+                imgui.close_current_popup()
+        imgui.end_popup()
+
+    def _draw_project_modals(self, ui: ViewerUI) -> None:
+        self._draw_choice_modal(
+            ui,
+            open_key="_project_collision_open",
+            title="Existing Project",
+            message_key="_project_collision_message",
+            buttons=(("Open Existing", "open"), ("Start Fresh", "fresh"), ("Choose Location...", "choose"), ("Cancel", "cancel")),
+            choose=self.callbacks.project_collision_choice,
+        )
+        self._draw_choice_modal(
+            ui,
+            open_key="_project_relink_open",
+            title="Dataset Not Found",
+            message_key="_project_relink_message",
+            buttons=(("Locate...", "locate"), ("Open Scene Only", "open_anyway"), ("Cancel", "cancel")),
+            choose=self.callbacks.project_relink_choice,
+        )
+
     def _menu_bar_status_text(self, ui: ViewerUI) -> str:
         fps = self.tk.fps_history[-1] if self.tk.fps_history else 0.0
         used_bytes = ui._values.get("_menu_bar_device_vram_bytes")
@@ -2569,6 +2629,7 @@ class ToolkitWindow:
         return imgui.ImVec4(1.0, 0.3, 0.3, 1.0)
 
     def _menu_bar_status_segments(self, ui: ViewerUI) -> tuple[tuple[str, imgui.ImVec4 | None], ...]:
+        saving_segments = _project_saving_segments(ui)
         fps = self.tk.fps_history[-1] if self.tk.fps_history else 0.0
         used_bytes = ui._values.get("_menu_bar_device_vram_bytes")
         total_bytes = ui._values.get("_menu_bar_device_vram_total_bytes")
@@ -2584,6 +2645,7 @@ class ToolkitWindow:
         if fraction is None:
             vram_value_text = used_text if total_text is None else f"{used_text} / {total_text}"
             return (
+                *saving_segments,
                 (f"FPS {fps:.1f}", None),
                 (" | VRAM ", None),
                 (vram_value_text, self._menu_bar_vram_color(ui)),
@@ -2592,6 +2654,7 @@ class ToolkitWindow:
                 (f" | total: {tracked_total_text}", None),
             )
         return (
+            *saving_segments,
             (f"FPS {fps:.1f}", None),
             (" | VRAM ", None),
             (f"{fraction * 100.0:.0f}%", self._menu_bar_vram_color(ui)),
@@ -3236,6 +3299,34 @@ class ToolkitWindow:
                 ui._values["colmap_use_alpha_masks"] = bool(use_alpha_masks)
             imgui.end_disabled()
             ToolkitWindow._set_tooltip("Enable or disable importing alpha from the selected Alpha Mask Folder. When disabled, the source image alpha channel is used instead.")
+            imgui.spacing()
+            # Width from font metrics: the +/- step buttons (one frame-height square
+            # each) are part of the item, so a fixed pixel width starves the text box
+            # at higher interface scales.
+            fov_step_buttons_width = 2.0 * (imgui.get_frame_height() + imgui.get_style().item_inner_spacing.x)
+            imgui.set_next_item_width(imgui.calc_text_size("00360.00").x + fov_step_buttons_width)
+            changed, fisheye_mask_fov = imgui.input_float("Fisheye Mask FOV (deg)", float(ui._values.get("colmap_fisheye_mask_fov", 0.0)), 1.0, 10.0, "%.1f")
+            if changed:
+                ui._values["colmap_fisheye_mask_fov"] = float(max(fisheye_mask_fov, 0.0))
+            ToolkitWindow._set_tooltip(
+                "Full lens FOV in degrees for fisheye cameras with a circular image (dark corners). "
+                "Auto-detected from the images when a COLMAP root with a fisheye camera is selected; adjust or set 0 to disable. "
+                "Pixels outside the image circle are excluded from the training loss geometrically at training time - "
+                "the dataset images and BC7 caches are never modified, and no Target Alpha mode is required. "
+                "Only applies to fisheye camera models."
+            )
+            imgui.spacing()
+            stretch_step_buttons_width = 2.0 * (imgui.get_frame_height() + imgui.get_style().item_inner_spacing.x)
+            imgui.set_next_item_width(imgui.calc_text_size("00360.00").x + stretch_step_buttons_width)
+            changed, schedule_stretch = imgui.input_float("Schedule Stretch", float(ui._values.get("schedule_stretch", 1.0)), 0.1, 0.5, "%.2f")
+            if changed:
+                ui._values["schedule_stretch"] = float(max(schedule_stretch, 0.01))
+            ToolkitWindow._set_tooltip(
+                "Time-dilate every step-anchored training schedule (stage boundaries, schedule end, refinement "
+                "start/interval, auto-downscale ladder) by this factor. Auto-suggested from the dataset frame count "
+                "when a COLMAP root is selected: each doubling over 100 frames adds 1 (100 -> 1x, 200 -> 2x, 400 -> 3x). "
+                "Shared with the Schedule Stretch field in Train Setup."
+            )
             imgui.spacing()
             self._draw_colmap_memory_controls(ui)
             imgui.spacing()
@@ -4195,6 +4286,15 @@ class ToolkitWindow:
             ui._values["fov"] = val
         if imgui.is_item_hovered():
             imgui.set_item_tooltip("Vertical field of view in degrees")
+        changed, free_camera = imgui.checkbox("Free Camera", bool(ui._values.get("camera_free_mode", False)))
+        if changed:
+            ui._values["camera_free_mode"] = bool(free_camera)
+        if imgui.is_item_hovered():
+            imgui.set_item_tooltip(
+                "Free quaternion rotation without a locked up direction: the mouse yaws and pitches "
+                "around the camera's own axes (no pitch limit), so roll accumulates naturally, flight-style. "
+                "Off = horizon-aligned camera. Switching off re-levels the horizon, keeping the view direction."
+            )
         self._draw_control(ui, camera_specs["render_background_mode"])
         if int(ui._values.get("render_background_mode", 1)) == 1:
             self._draw_control(ui, camera_specs["render_background_color"])
@@ -4592,7 +4692,7 @@ def build_ui(renderer) -> ViewerUI:
         default = _VIEWER_RUN_DEFAULTS.get(key, "")
         if key == "colmap_selected_camera_ids":
             values[key] = tuple(int(camera_id) for camera_id in default) if isinstance(default, (list, tuple)) else ()
-        elif key in {"seed", "train_iters"}:
+        elif key in {"seed", "train_iters", "autosave_interval_steps"}:
             values[key] = int(default) if default not in (None, "") else 0
         else:
             values[key] = "" if default is None else default
@@ -4697,6 +4797,15 @@ def build_ui(renderer) -> ViewerUI:
         "_photometric_prepare_active": False,
         "_photometric_prepare_fraction": 0.0,
         "_can_export_ply": False,
+        "_project_active": False,
+        "_project_name": "",
+        "_project_dir": "",
+        "_project_saving": False,
+        "_project_loading": False,
+        "_project_collision_open": False,
+        "_project_collision_message": "",
+        "_project_relink_open": False,
+        "_project_relink_message": "",
     })
 
     texts: dict[str, str] = {

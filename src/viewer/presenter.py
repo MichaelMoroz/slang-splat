@@ -12,7 +12,7 @@ from ..filter import SeparableGaussianBlur
 from ..training.alpha_modes import resolve_target_alpha_mode
 from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from ..training import PPISP_FIELD_SPECS, PPISPTonemapParams, resolve_colorspace_mod, resolve_sh_band
-from . import frame_capture, session
+from . import frame_capture, project, session
 from .buffer_debug import ResourceDebugSnapshot, collect_resource_debug_snapshot, query_total_device_vram_capacity, query_total_device_vram_used_cached, split_resource_usage
 from .presenter_state import (
     _debug_frame_idx,
@@ -248,6 +248,23 @@ def _debug_target_alpha_threshold(viewer: object) -> float:
     return float(np.clip(value, 0.0, 1.0))
 
 
+def _debug_fisheye_mask_vars(viewer: object, frame_idx: int | None, sample_vars: dict[str, object] | None = None) -> dict[str, object]:
+    """Fisheye circle-mask uniforms for the debug/Live Trainer views, so they show the
+    same pixels training sees. Debug pixels live in training-pixel space (crop window /
+    stratified grid), so the step's g_TrainingSubsample rides along to resolve them to
+    native sensor positions. Zeros (disabled) when unavailable."""
+    trainer = getattr(viewer.s, "trainer", None)
+    if trainer is None or frame_idx is None:
+        return {"g_FisheyeMaskCenterUV": spy.float2(0.0, 0.0), "g_FisheyeMaskInvRadiusUV": spy.float2(0.0, 0.0)}
+    try:
+        mask_vars = dict(trainer._fisheye_mask_vars(trainer._frame(int(frame_idx))))
+    except Exception:
+        return {"g_FisheyeMaskCenterUV": spy.float2(0.0, 0.0), "g_FisheyeMaskInvRadiusUV": spy.float2(0.0, 0.0)}
+    if sample_vars is not None and "g_TrainingSubsample" in sample_vars:
+        mask_vars["g_TrainingSubsample"] = sample_vars["g_TrainingSubsample"]
+    return mask_vars
+
+
 def _ensure_debug_dssim_runtime(viewer: object, width: int, height: int) -> None:
     resolution = (int(width), int(height))
     if (
@@ -265,7 +282,7 @@ def _ensure_debug_dssim_runtime(viewer: object, width: int, height: int) -> None
     viewer.s.debug_dssim_blurred_moments = blur.make_buffer(_DEBUG_DSSIM_FEATURE_CHANNELS)
 
 
-def _dispatch_debug_dssim_features(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int, *, target_is_linear: bool = False) -> None:
+def _dispatch_debug_dssim_features(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int, *, target_is_linear: bool = False, fisheye_mask_vars: dict[str, object] | None = None) -> None:
     _ensure_debug_dssim_runtime(viewer, width, height)
     with debug_region(encoder, "Viewer DSSIM Features", 153):
         require_not_none(viewer.s.debug_dssim_features_kernel, "Debug DSSIM feature kernel is not initialized.").dispatch(
@@ -279,12 +296,13 @@ def _dispatch_debug_dssim_features(viewer: object, encoder: spy.CommandEncoder, 
                 "g_Height": int(height),
                 "g_DebugWidth": int(width),
                 "g_DebugHeight": int(height),
+                **({} if fisheye_mask_vars is None else fisheye_mask_vars),
             },
             command_encoder=encoder,
         )
 
 
-def _dispatch_debug_dssim_compose(viewer: object, encoder: spy.CommandEncoder, target_tex: spy.Texture, width: int, height: int) -> spy.Texture:
+def _dispatch_debug_dssim_compose(viewer: object, encoder: spy.CommandEncoder, target_tex: spy.Texture, width: int, height: int, fisheye_mask_vars: dict[str, object] | None = None) -> spy.Texture:
     output = _ensure_texture(viewer, "loss_debug_texture", width, height)
     with debug_region(encoder, "Viewer DSSIM Compose", 154):
         require_not_none(viewer.s.debug_dssim_compose_kernel, "Debug DSSIM compose kernel is not initialized.").dispatch(
@@ -300,21 +318,22 @@ def _dispatch_debug_dssim_compose(viewer: object, encoder: spy.CommandEncoder, t
                 "g_SSIMC2": _debug_ssim_c2(viewer),
                 "g_TargetAlphaMode": _debug_target_alpha_mode(viewer),
                 "g_TargetAlphaThreshold": _debug_target_alpha_threshold(viewer),
+                **({} if fisheye_mask_vars is None else fisheye_mask_vars),
             },
             command_encoder=encoder,
         )
     return output
 
 
-def _dispatch_debug_dssim(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int, *, target_is_linear: bool = False) -> spy.Texture:
-    _dispatch_debug_dssim_features(viewer, encoder, rendered_tex, target_tex, width, height, target_is_linear=target_is_linear)
+def _dispatch_debug_dssim(viewer: object, encoder: spy.CommandEncoder, rendered_tex: spy.Texture, target_tex: spy.Texture, width: int, height: int, *, target_is_linear: bool = False, fisheye_mask_vars: dict[str, object] | None = None) -> spy.Texture:
+    _dispatch_debug_dssim_features(viewer, encoder, rendered_tex, target_tex, width, height, target_is_linear=target_is_linear, fisheye_mask_vars=fisheye_mask_vars)
     require_not_none(viewer.s.debug_dssim_blur, "Debug DSSIM blur is not initialized.").blur(
         encoder,
         require_not_none(viewer.s.debug_dssim_moments, "Debug DSSIM moments buffer is not initialized."),
         require_not_none(viewer.s.debug_dssim_blurred_moments, "Debug DSSIM blurred moments buffer is not initialized."),
         _DEBUG_DSSIM_FEATURE_CHANNELS,
     )
-    return _dispatch_debug_dssim_compose(viewer, encoder, target_tex, width, height)
+    return _dispatch_debug_dssim_compose(viewer, encoder, target_tex, width, height, fisheye_mask_vars=fisheye_mask_vars)
 
 
 def _training_debug_colorspace_mod(viewer: object) -> float:
@@ -337,6 +356,7 @@ def _dispatch_present(
     source_is_linear: bool = False,
     apply_loss_colorspace: bool = False,
     source_uses_target_loss_colorspace: bool = False,
+    fisheye_mask_vars: dict[str, object] | None = None,
 ) -> spy.Texture:
     output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
     vars = {
@@ -352,6 +372,7 @@ def _dispatch_present(
         "g_ColorspaceMod": _training_debug_colorspace_mod(viewer),
         "g_TargetAlphaMode": _debug_target_alpha_mode(viewer),
         "g_TargetAlphaThreshold": _debug_target_alpha_threshold(viewer),
+        **({} if fisheye_mask_vars is None else fisheye_mask_vars),
     }
     with debug_region(encoder, debug_label, 151):
         require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
@@ -374,6 +395,7 @@ def _dispatch_training_debug_present(
     source_is_linear: bool = False,
     apply_loss_colorspace: bool = False,
     source_uses_target_loss_colorspace: bool = False,
+    fisheye_mask_vars: dict[str, object] | None = None,
 ) -> spy.Texture:
     return _dispatch_present(
         viewer,
@@ -387,6 +409,7 @@ def _dispatch_training_debug_present(
         source_is_linear=source_is_linear,
         apply_loss_colorspace=apply_loss_colorspace,
         source_uses_target_loss_colorspace=source_uses_target_loss_colorspace,
+        fisheye_mask_vars=fisheye_mask_vars,
     )
 
 
@@ -576,6 +599,12 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_ui_value(viewer, "_colmap_import_active", bool(header_state["colmap_import_active"]))
     _set_ui_value(viewer, "_colmap_import_fraction", float(header_state["colmap_import_fraction"]))
     _set_ui_value(viewer, "_can_export_ply", bool(header_state["can_export_ply"]))
+    project_state = getattr(viewer.s, "project", None)
+    project_dir = None if project_state is None else getattr(project_state, "dir", None)
+    _set_ui_value(viewer, "_project_active", project_dir is not None)
+    write_thread = None if project_state is None else getattr(project_state, "write_thread", None)
+    _set_ui_value(viewer, "_project_saving", bool(write_thread is not None and write_thread.is_alive()))
+    _set_ui_value(viewer, "_project_loading", project.project_open_in_progress(viewer))
     _set_text(viewer, "colmap_import_status", header_state["colmap_import_status"])
     _set_text(viewer, "colmap_import_current", header_state["colmap_import_current"])
     _set_text(viewer, "scene_stats", header_state["scene_stats"])
@@ -1288,7 +1317,7 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
                 source_is_linear = False
                 source_uses_target_loss_colorspace = False
             elif debug_view == "dssim":
-                source_tex = _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, target_is_linear=target_is_linear)
+                source_tex = _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, target_is_linear=target_is_linear, fisheye_mask_vars=_debug_fisheye_mask_vars(viewer, frame_idx, sample_vars))
                 source_is_linear = False
                 source_uses_target_loss_colorspace = False
             else:
@@ -1306,6 +1335,7 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
             source_is_linear=source_is_linear,
             apply_loss_colorspace=apply_loss_colorspace,
             source_uses_target_loss_colorspace=source_uses_target_loss_colorspace,
+            fisheye_mask_vars=_debug_fisheye_mask_vars(viewer, frame_idx, sample_vars),
         )
 def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
     with debug_region(encoder, "Viewer Main View", 147):
@@ -1357,6 +1387,7 @@ def _render_frame_once(
                 session.reinitialize_training_scene(viewer)
             session.apply_live_params(viewer)
             session.advance_colmap_import(viewer)
+            project.advance_project_open(viewer)
             session.advance_photometric_initialization(viewer)
             session.advance_dataset_metrics(viewer)
             if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):

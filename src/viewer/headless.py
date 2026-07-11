@@ -14,7 +14,7 @@ from ..app.shared import save_snapshot
 from ..repo_defaults import load_config
 from ..renderer import GaussianRenderSettings
 from ..scene import load_gaussian_ply, save_gaussian_ply
-from . import frame_capture, presenter, presenter_state, session
+from . import frame_capture, presenter, presenter_state, project, session
 from .app import ViewerCore, _initial_renderer_params, _precompile_runtime_shaders
 from .buffer_debug import collect_resource_debug_snapshot, write_resource_debug_log
 from .config import apply_config_overlay
@@ -629,14 +629,27 @@ def run_headless(viewer: HeadlessViewer, config: dict[str, Any]) -> int:
     _write_per_view_metrics(viewer, _stats_cfg(run))
     _render_snapshots(viewer, run.get("render"))
     _run_export_stage(viewer, run)
+    # The last project autosave may still be writing on its background thread;
+    # finish it so the run's outputs are complete when this returns.
+    project.join_pending_writes(viewer)
     return 0
 
 
 def run_headless_from_config(config_path: str | Path, *, graphics_api: str | None = None) -> int:
-    config = load_config(config_path)
+    project_dir: Path | None = None
+    manifest: dict[str, Any] | None = None
+    if project.is_project_path(config_path):
+        # A .splatproj manifest is a valid headless config: its result block maps
+        # onto the existing resume_ply/train_start_step keys (one schema, both
+        # entry points).
+        config, project_dir, manifest = project.load_headless_project(config_path)
+    else:
+        config = load_config(config_path)
     api_name = _graphics_api(config) if graphics_api is None else str(graphics_api)
     device = create_default_device(device_type=device_type_from_name(api_name), enable_debug_layers=False)
     viewer = HeadlessViewer(device=device, config=config)
+    if project_dir is not None and manifest is not None:
+        project.activate_project(viewer, project_dir, manifest)
     try:
         return run_headless(viewer, config)
     finally:

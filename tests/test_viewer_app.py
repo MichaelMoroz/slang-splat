@@ -1368,3 +1368,80 @@ def test_export_ply_callback_prefers_training_scene(monkeypatch, tmp_path: Path)
 
     assert saved["scene"] is trained_scene
     assert saved["include_sh"] is True
+
+
+def test_free_camera_basis_matches_horizon_for_zero_roll() -> None:
+    state = SimpleNamespace(yaw=0.7, pitch=-0.3, up=app.spy.float3(0.0, 1.0, 0.0), camera_free_mode=False, camera_rot=None)
+    horizon_basis = app._camera_basis_from_state(state)
+    state.camera_rot = app._quat_from_yaw_pitch(state.yaw, state.pitch, np.array((0.0, 1.0, 0.0), dtype=np.float32))
+    state.camera_free_mode = True
+    free_basis = app._camera_basis_from_state(state)
+
+    for horizon_axis, free_axis in zip(horizon_basis, free_basis, strict=True):
+        np.testing.assert_allclose(np.asarray(free_axis, dtype=np.float32), np.asarray(horizon_axis, dtype=np.float32), rtol=0.0, atol=1e-5)
+
+
+def test_free_camera_pitch_is_unclamped_and_composition_rolls() -> None:
+    # 120 degrees of pitch: far beyond the horizon mode's 89-degree clamp. The update
+    # loop applies pitch as a local-x rotation by -rot_y.
+    rotation = np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float32)
+    rotation = app._quat_normalize(app._quat_multiply(rotation, app._quat_from_axis_angle((1.0, 0.0, 0.0), -np.deg2rad(120.0))))
+    forward = app._quat_rotate_vec(rotation, (0.0, 0.0, 1.0))
+    assert float(forward[1]) > 0.85
+    assert float(forward[2]) < 0.0
+
+    # Local yaw/pitch composition is non-commutative: a yaw/pitch/unyaw/unpitch loop
+    # leaves residual roll (no up-vector re-leveling).
+    loop = np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float32)
+    quarter = np.deg2rad(90.0)
+    for axis, angle in (((0.0, 1.0, 0.0), quarter), ((1.0, 0.0, 0.0), quarter), ((0.0, 1.0, 0.0), -quarter), ((1.0, 0.0, 0.0), -quarter)):
+        loop = app._quat_normalize(app._quat_multiply(loop, app._quat_from_axis_angle(axis, angle)))
+    up_after_loop = app._quat_rotate_vec(loop, (0.0, 1.0, 0.0))
+    assert float(np.linalg.norm(np.asarray(up_after_loop, dtype=np.float32) - np.array((0.0, 1.0, 0.0), dtype=np.float32))) > 0.5
+
+
+def test_sync_camera_mode_round_trips_forward_direction() -> None:
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"camera_free_mode": True}),
+        s=SimpleNamespace(yaw=0.5, pitch=0.2, up=app.spy.float3(0.0, 1.0, 0.0), camera_free_mode=False, camera_rot=None),
+    )
+    app._sync_camera_mode(viewer)
+    assert viewer.s.camera_free_mode is True
+    horizon_forward = app._quat_rotate_vec(viewer.s.camera_rot, (0.0, 0.0, 1.0))
+
+    # Pure roll around the view axis keeps the forward direction; switching back to
+    # horizon mode must recover the original yaw/pitch from it.
+    viewer.s.camera_rot = app._quat_normalize(app._quat_multiply(viewer.s.camera_rot, app._quat_from_axis_angle((0.0, 0.0, 1.0), 0.8)))
+    rolled_forward = app._quat_rotate_vec(viewer.s.camera_rot, (0.0, 0.0, 1.0))
+    np.testing.assert_allclose(rolled_forward, horizon_forward, rtol=0.0, atol=1e-5)
+    viewer.ui._values["camera_free_mode"] = False
+    app._sync_camera_mode(viewer)
+    assert viewer.s.camera_free_mode is False
+    assert abs(float(viewer.s.yaw) - 0.5) < 1e-4
+    assert abs(float(viewer.s.pitch) - 0.2) < 1e-4
+
+
+def test_update_camera_free_mode_rotates_quaternion_not_yaw_pitch() -> None:
+    controls = {"move_speed": SimpleNamespace(value=2.0), "fov": SimpleNamespace(value=60.0)}
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"_splat_editor_gizmo_capturing": False, "camera_free_mode": True}),
+        s=SimpleNamespace(
+            move_speed=2.0, fov_y=60.0, scroll_delta=0.0,
+            mouse_delta=app.spy.float2(10.0, 0.0), mouse_left=True, mouse_right=False, drag_owner="",
+            look_speed=0.003, rot_vel=app.spy.float2(0.0, 0.0), yaw=0.0, pitch=0.0,
+            up=app.spy.float3(0.0, 1.0, 0.0), keys={}, move_vel=app.spy.float3(0.0, 0.0, 0.0),
+            camera_pos=app.spy.float3(0.0, 0.0, -3.0),
+            camera_free_mode=True, camera_rot=np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+            last_time=0.0,
+        ),
+        c=lambda key: controls[key],
+    )
+
+    app.SplatViewer.update_camera(viewer, 0.1)
+
+    forward = app._quat_rotate_vec(viewer.s.camera_rot, (0.0, 0.0, 1.0))
+    assert float(viewer.s.yaw) == 0.0
+    assert float(viewer.s.pitch) == 0.0
+    # Mouse right drag yaws the camera toward its local right (+x at identity).
+    assert float(forward[0]) > 1e-4
+    assert abs(float(forward[1])) < 1e-6

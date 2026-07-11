@@ -43,12 +43,32 @@ class SceneCountProxy:
 
 
 @dataclass(slots=True)
+class ProjectState:
+    """Active splat-project bookkeeping (see src/viewer/project.py)."""
+
+    dir: Path | None = None
+    created: str = ""
+    saved_step: int = 0
+    pending_dir: Path | None = None            # project location for the import in flight
+    pending_import_dir: Path | None = None     # collision prompt target awaiting a choice
+    pending_resume: dict | None = None         # {scene_ply, step, elapsed_s, loader} applied at import completion / pump
+    pending_scene_load: dict | None = None     # {loader, manifest, project_dir} for async scene-only opens
+    pending_elapsed_s: float | None = None     # headless reopen: elapsed restored after import resets it
+    pending_open: tuple | None = None          # (manifest, project_dir) awaiting a relink choice
+    autosave_pending: bool = False             # crossing hit while a write was in flight
+    write_thread: object | None = None
+    fingerprint_cache: tuple | None = None     # (images_root_str, fingerprint dict)
+
+
+@dataclass(slots=True)
 class ColmapImportSettings:
     database_path: Path | None = None
     images_root: Path | None = None
     depth_root: Path | None = None
     alpha_mask_root: Path | None = None
     use_alpha_masks: bool = False
+    # Full lens FOV in degrees for the fisheye image-circle alpha mask (0 = off).
+    fisheye_mask_fov_degrees: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fisheye_mask_fov", 0.0))
     selected_camera_ids: tuple[int, ...] = ()
     depth_value_mode: str = "z_depth"
     init_mode: str = "pointcloud"
@@ -117,6 +137,7 @@ class ColmapImportProgress:
     nn_radius_scale_coef: float
     alpha_mask_root: Path | None = None
     use_alpha_masks: bool = False
+    fisheye_mask_fov_degrees: float = 0.0
     rotation_mode: int = DEFAULT_COLMAP_ROTATION_MODE
     custom_rotation_deg: tuple[float, float, float] = DEFAULT_COLMAP_CUSTOM_ROTATION_DEG
     compress_dataset_using_bc7: bool = False
@@ -244,6 +265,10 @@ def _default_rot_vel() -> spy.float2:
     return spy.float2(0.0, 0.0)
 
 
+def _default_camera_rot() -> np.ndarray:
+    return np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float32)
+
+
 @dataclass(slots=True)
 class ViewerState:
     list_capacity_multiplier: int = DEFAULT_LIST_CAPACITY_MULTIPLIER; max_prepass_memory_mb: int = DEFAULT_MAX_PREPASS_MEMORY_MB
@@ -297,11 +322,16 @@ class ViewerState:
     camera_reset_up: tuple[float, float, float] | None = None
     camera_reset_yaw: float | None = None
     camera_reset_pitch: float | None = None
+    camera_reset_rot: tuple[float, float, float, float] | None = None
     camera_reset_near: float | None = None
     camera_reset_far: float | None = None
     camera_reset_move_speed: float | None = None
     splat_editor: object | None = None
+    project: ProjectState = field(default_factory=ProjectState)
     camera_pos: spy.float3 = field(default_factory=_default_camera_pos); yaw: float = 0.0; pitch: float = 0.0
+    # Free-camera orientation (wxyz quaternion, camera-to-world) and mode flag; the
+    # horizon camera keeps using yaw/pitch around the locked world up.
+    camera_rot: np.ndarray = field(default_factory=_default_camera_rot); camera_free_mode: bool = False
     up: spy.float3 = field(default_factory=_default_up); fov_y: float = 60.0; near: float = 0.1; far: float = 120.0
     move_speed: float = 2.0; look_speed: float = 0.003; background: spy.float3 = field(default_factory=_default_background)
     keys: dict[spy.KeyCode, bool] = field(default_factory=dict); mouse_left: bool = False; mouse_right: bool = False; mouse_delta: spy.float2 = field(default_factory=_default_mouse_delta)

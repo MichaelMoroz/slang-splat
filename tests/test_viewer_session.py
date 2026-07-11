@@ -3809,3 +3809,23 @@ def test_concat_gaussian_scenes_pads_mismatched_sh_coeffs() -> None:
     np.testing.assert_allclose(merged.sh_coeffs[:5, 0, :], 0.3)
     np.testing.assert_allclose(merged.sh_coeffs[5:, 0, :], 0.7)
     np.testing.assert_allclose(merged.sh_coeffs[5:, 1:, :], 0.0)
+
+
+def test_choose_colmap_root_prefills_schedule_stretch_from_image_count(tmp_path: Path) -> None:
+    from src.training import suggest_schedule_stretch
+
+    root, images_root = _build_colmap_tree_without_database(
+        tmp_path,
+        image_names=["images_4/frame_000.png", "images_4/frame_001.png"],
+        image_root_rel=Path("."),
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"schedule_stretch": 99.0}),
+        s=SimpleNamespace(last_error="stale"),
+    )
+
+    session.choose_colmap_root(viewer, root)
+
+    assert viewer.ui._values["schedule_stretch"] == suggest_schedule_stretch(2)
+    assert viewer.ui._values["schedule_stretch"] == 1.0
+    assert viewer.s.last_error == ""

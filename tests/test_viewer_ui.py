@@ -432,6 +432,7 @@ def test_camera_section_does_not_draw_ppisp_controls(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "collapsing_header", lambda _label, *_args: True)
     monkeypatch.setattr(ui.imgui, "drag_float", lambda _label, value, *_args: (False, value))
     monkeypatch.setattr(ui.imgui, "slider_float", lambda _label, value, *_args: (False, value))
+    monkeypatch.setattr(ui.imgui, "checkbox", lambda _label, value: (False, value))
     monkeypatch.setattr(ui.imgui, "is_item_hovered", lambda: False)
     monkeypatch.setattr(ui.imgui, "text_disabled", lambda _text: None)
     monkeypatch.setattr(ui.imgui, "separator", lambda: None)

@@ -257,6 +257,7 @@ def _update_import_settings(
     images_root: Path,
     alpha_mask_root: Path | None,
     use_alpha_masks: bool,
+    fisheye_mask_fov_degrees: float = 0.0,
     depth_root: Path | None,
     selected_camera_ids: tuple[int, ...],
     depth_value_mode: str,
@@ -335,6 +336,7 @@ def _update_import_settings(
         images_root=Path(images_root).resolve(),
         alpha_mask_root=None if alpha_mask_root is None else Path(alpha_mask_root).resolve(),
         use_alpha_masks=bool(use_alpha_masks and alpha_mask_root is not None),
+        fisheye_mask_fov_degrees=max(float(fisheye_mask_fov_degrees), 0.0),
         depth_root=None if depth_root is None else Path(depth_root).resolve(),
         selected_camera_ids=tuple(int(camera_id) for camera_id in selected_camera_ids),
         depth_value_mode=str(depth_value_mode),
@@ -389,6 +391,7 @@ def _update_import_settings(
     _set_ui_path(viewer, "colmap_images_root", images_root)
     _set_ui_path(viewer, "colmap_alpha_mask_root", alpha_mask_root)
     viewer.ui._values["colmap_use_alpha_masks"] = bool(use_alpha_masks and alpha_mask_root is not None)
+    viewer.ui._values["colmap_fisheye_mask_fov"] = max(float(fisheye_mask_fov_degrees), 0.0)
     _set_ui_path(viewer, "colmap_depth_root", depth_root)
     viewer.ui._values["colmap_selected_camera_ids"] = tuple(int(camera_id) for camera_id in selected_camera_ids)
     viewer.ui._values["colmap_depth_value_mode"] = 0 if str(depth_value_mode) == _COLMAP_DEPTH_VALUE_DISTANCE else 1
